@@ -35,6 +35,7 @@ jobs:
       - name: Run tests
         run: pytest -q -W ignore::DeprecationWarning
         env:
+          PYTHONPATH: .
           EDON_ENV: development
           EDON_AUTH_ENABLED: "false"
           EDON_CREDENTIALS_STRICT: "false"
