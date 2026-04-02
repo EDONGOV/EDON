@@ -9,7 +9,18 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/*.pyc
 backend/.env
-backend/audit.log.jsonl
+backend/edon_gateway/.env
+
+# Runtime artifacts — never commit these
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/**/*.db
+backend/audit.log*
+backend/*.jsonl
+backend/regression_out.txt
+backend/backups/
+backend/data/
 
 # Demos
 demos/**/node_modules/

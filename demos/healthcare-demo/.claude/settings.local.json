@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(npx vercel:*)",
+      "Bash(find /c/Users/cjbig/Desktop/EDON/edon-cav-engine/edon_gateway -type f -name *.py)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Read(//c/Users/cjbig/Desktop/EDON/edon-cav-engine/**)",
+      "Bash(python -m uvicorn edon_gateway.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(python:*)"
+    ]
+  }
+}

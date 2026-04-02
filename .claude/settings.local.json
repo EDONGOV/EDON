@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /c/Users/cjbig/Desktop/edongov/backend/*.toml)",
+      "Bash(mv:*)",
+      "Bash(npm run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(mv AUTHENTICATION_METHODS.md docs/)",
+      "Bash(mv CONFIGURATION.md docs/)",
+      "Bash(mv DEMO_MODE_GUIDE.md docs/)",
+      "Bash(mv PROXY_RUNNER_GUIDE.md docs/)",
+      "Bash(mv NETWORK_ISOLATION_GUIDE.md docs/)"
+    ]
+  }
+}
