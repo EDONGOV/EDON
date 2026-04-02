@@ -1,0 +1,15 @@
+{
+  "name": "@edon/sdk",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript client for the EDON AI Governance Gateway",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4"
+  }
+}
