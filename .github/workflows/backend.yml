@@ -53,6 +53,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy
+        if: env.FLY_API_TOKEN != ''
         run: flyctl deploy --remote-only
         working-directory: backend
         env:
