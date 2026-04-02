@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="./favicon.ico" type="image/x-icon">
+    <title>EDON QR — Telegram Entry</title>
+    <style>
+      :root {
+        --fg: #0b0b0c;
+        --muted: #5a5a61;
+        --bg: #ffffff;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: "Inter", "Space Grotesk", system-ui, -apple-system, Segoe UI, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        display: grid;
+        place-items: center;
+      }
+      .sheet {
+        width: min(920px, 90vw);
+        height: min(1280px, 90vh);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: space-between;
+        padding: 72px 48px 56px;
+        text-align: center;
+      }
+      .logo {
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        font-size: 20px;
+        color: var(--fg);
+        text-transform: uppercase;
+      }
+      .hook {
+        font-size: clamp(28px, 4vw, 40px);
+        font-weight: 700;
+        line-height: 1.15;
+        margin-top: 12px;
+      }
+      .qr {
+        margin: 24px 0 8px;
+        width: min(700px, 75vw);
+        height: auto;
+        image-rendering: pixelated;
+      }
+      .expectation {
+        font-size: 16px;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+      }
+      .trust {
+        margin-top: auto;
+        font-size: 13px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="logo">EDON</div>
+      <div class="hook">Scan to watch EDON make decisions</div>
+      <img class="qr" src="./assets/edon_telegram_qr.png" alt="EDON Telegram QR" />
+      <div class="expectation">Opens Telegram instantly</div>
+      <div class="trust">No account required • Live demo</div>
+    </div>
+  </body>
+</html>

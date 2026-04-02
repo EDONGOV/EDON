@@ -1,0 +1,45 @@
+# EDON Gateway - Core Dependencies
+# Minimal dependencies required for the gateway to run
+# This excludes heavy ML libraries (numpy, pandas, etc.) which saves ~500MB+ in Docker image
+
+# Web framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.6
+
+# Data validation
+pydantic>=2.6.0
+
+# HTTP client (for connectors and external API calls)
+requests>=2.31.0
+httpx>=0.27
+
+# System utilities (for validation scripts and monitoring)
+psutil>=5.9.0
+
+# Prometheus metrics (for ops teams and standard tooling)
+prometheus-client==0.21.1
+
+# Billing and payments
+stripe>=7.0.0
+
+# Security - secure password/API key hashing
+bcrypt>=4.0.0
+
+# Security - field-level AES encryption at rest (Fernet = AES-128-CBC + HMAC-SHA256)
+cryptography>=41.0.0
+
+# PostgreSQL support (optional - used when DATABASE_URL=postgresql://... is set)
+# Falls back to built-in SQLite when DATABASE_URL is not set
+psycopg2-binary>=2.9.0
+
+# JWT authentication
+PyJWT>=2.8.0
+
+# .env file loading (used in config.py)
+python-dotenv>=1.0.0
+
+# Redis (optional - used for rate limiting when REDIS_URL is set; falls back to SQLite/PostgreSQL)
+redis>=5.0.0
+
+# Note: SQLite is built-in to Python, no additional DB dependencies needed

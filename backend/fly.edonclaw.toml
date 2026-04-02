@@ -1,0 +1,35 @@
+# Deploy EDON Gateway to existing edonclaw app (edonclaw.fly.dev)
+# Deploy: fly deploy -a edonclaw -c fly.edonclaw.toml
+# Then set secrets: fly secrets set EDON_API_TOKEN=... EDON_TELEGRAM_BOT_SECRET=... -a edonclaw
+
+app = 'edonclaw'
+primary_region = 'dfw'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  EDON_DATABASE_PATH = '/data/edon_gateway.db'
+  EDON_HOST = '0.0.0.0'
+  EDON_PORT = '8000'
+  PYTHONPATH = '/app'
+  # Set to true only during initial bootstrap; flip to false for production lock-down
+  EDON_ALLOW_ENV_TOKEN_IN_PROD = 'false'
+
+[[mounts]]
+  source = 'edon_gateway_data'
+  destination = '/data'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 512

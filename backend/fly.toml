@@ -1,0 +1,59 @@
+# fly.toml app configuration file generated for edon-gateway on 2026-02-08T01:12:42-06:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'edon-gateway'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  ENVIRONMENT = 'production'
+  EDON_ENV = 'production'
+  EDON_DATABASE_PATH = '/app/data/edon_gateway.db'
+  EDON_HOST = '0.0.0.0'
+  EDON_PORT = '8080'
+  PYTHONPATH = '/app'
+  # Set to true only during initial bootstrap; flip to false for production lock-down
+  EDON_ALLOW_ENV_TOKEN_IN_PROD = 'false'
+  EDON_WORKERS = '4'
+  # Explicit CORS origins — required when allow_credentials=True (no wildcard allowed in prod)
+  EDON_CORS_ORIGINS = 'https://edoncore.com,https://www.edoncore.com,https://agent.edoncore.com,https://console.edoncore.com,https://edon-gateway.fly.dev'
+  # Clerk JWT verification — live production instance JWKS endpoint (public, no auth required)
+  # Derived from pk_live_Y2xlcmsuZWRvbmNvcmUuY29tJA → clerk.edoncore.com
+  CLERK_JWKS_URL = 'https://clerk.edoncore.com/.well-known/jwks.json'
+  # CAV integration (fail-open if CAV unavailable)
+  CAV_ENABLED = 'true'
+  CAV_URL = 'https://edon-cav-api.fly.dev'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  # Use 1 if persisting with SQLite (EDON_DATABASE_PATH); use 2+ with PostgreSQL (DATABASE_URL set)
+  min_machines_running = 1
+  processes = ['app']
+
+[[vm]]
+  memory = '1024mb'
+  cpu_kind = 'shared'
+  cpus = 2
+  memory_mb = 1024
+
+[[mounts]]
+  source = 'edon_gateway_data'
+  destination = '/app/data'
+
+# ── PostgreSQL (Phase 6.1) ──────────────────────────────────────────────────
+# To activate PostgreSQL:
+#   1. fly postgres create --name edon-db --region iad
+#   2. fly postgres attach edon-db --app edon-gateway
+#      (This sets DATABASE_URL automatically; gateway auto-detects postgresql:// prefix)
+#   3. Scale min_machines_running to 2+ for HA
+#   4. Remove EDON_DATABASE_PATH env var (SQLite no longer needed)
+#
+# The DATABASE_URL secret is set automatically by `fly postgres attach`.
+# When set, the gateway uses PostgreSQLDatabase (postgres.py) instead of SQLite.

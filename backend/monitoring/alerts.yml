@@ -1,0 +1,57 @@
+groups:
+  - name: edon_gateway
+    rules:
+      - alert: EdonHighLatency
+        expr: edon_latency_p99_ms > 100
+        for: 5m
+        labels:
+          severity: critical
+          service: edon-gateway
+        annotations:
+          summary: "EDON Gateway p99 latency exceeds hospital SLA"
+          description: "p99 latency is {{ $value }}ms (threshold: 100ms). Governance decisions are slow — investigate policy engine or DB load."
+
+      - alert: EdonHighErrorRate
+        expr: |
+          (
+            rate(edon_error_rate_total[5m])
+            /
+            (rate(edon_requests_per_second_total[5m]) + 0.001)
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: edon-gateway
+        annotations:
+          summary: "EDON Gateway error rate above 5%"
+          description: "Error rate is {{ $value | printf \"%.1f\" }}% (threshold: 5%). Check application logs for 5xx errors."
+
+      - alert: EdonReviewQueueDeep
+        expr: edon_review_queue_depth > 50
+        for: 10m
+        labels:
+          severity: warning
+          service: edon-gateway
+        annotations:
+          summary: "EDON human review queue depth is high"
+          description: "{{ $value }} items pending human review for more than 10 minutes. Reviewers may need to be paged."
+
+      - alert: EdonAnomalySpike
+        expr: rate(edon_anomalies_detected_total[2m]) * 60 > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: edon-gateway
+        annotations:
+          summary: "Elevated anomaly detection rate"
+          description: "Anomaly rate is {{ $value | printf \"%.1f\" }}/min (threshold: 10/min). Possible coordinated attack or misbehaving agent."
+
+      - alert: EdonGatewayDown
+        expr: up{job="edon-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: edon-gateway
+        annotations:
+          summary: "EDON Gateway is unreachable"
+          description: "The EDON Gateway Prometheus target has been down for 1 minute. Governance enforcement is offline."

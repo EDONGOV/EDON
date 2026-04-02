@@ -1,0 +1,7 @@
+{
+  "objective": "Allow EDON to proxy safe Clawdbot tool calls",
+  "scope": { "allowed_tools": ["clawdbot.invoke"] },
+  "constraints": { "confirm_irreversible": true, "audit_level": "standard" },
+  "risk_level": "low",
+  "approved_by_user": true
+}

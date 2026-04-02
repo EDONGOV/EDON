@@ -1,0 +1,12 @@
+# Don't copy secrets or local artifacts into the image
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+.git
+*.db
+*.log
+node_modules
+.venv
+venv

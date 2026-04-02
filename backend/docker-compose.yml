@@ -1,0 +1,21 @@
+# EDON Gateway — 1-command run with Docker Compose
+# Usage: cp .env.example .env && set EDON_API_TOKEN=your-token && docker compose up --build
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - EDON_DB_URL=sqlite:////app/data/edon.db
+      - EDON_AUTH_ENABLED=true
+      - EDON_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - gateway_data:/app/data
+
+volumes:
+  gateway_data:

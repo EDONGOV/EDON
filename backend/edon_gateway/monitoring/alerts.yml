@@ -1,0 +1,65 @@
+groups:
+  - name: edon_gateway_alerts
+    rules:
+
+      # ── Latency ──────────────────────────────────────────────────────────────
+      - alert: EdonHighLatency
+        expr: edon_latency_p99_ms > 100
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "EDON Gateway p99 latency above 100ms"
+          description: >
+            p99 governance decision latency is {{ $value | printf "%.1f" }}ms,
+            exceeding the 100ms SLO threshold for more than 5 minutes.
+          runbook_url: "https://docs.edoncore.com/ops/runbooks#high-latency"
+
+      # ── Error Rate ────────────────────────────────────────────────────────────
+      - alert: EdonHighErrorRate
+        expr: >
+          (
+            rate(edon_error_rate_total[5m])
+            /
+            rate(edon_requests_per_second_total[5m])
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "EDON Gateway error rate above 5%"
+          description: >
+            HTTP error rate is {{ $value | printf "%.1f" }}%, exceeding the
+            5% threshold for more than 5 minutes.
+          runbook_url: "https://docs.edoncore.com/ops/runbooks#high-error-rate"
+
+      # ── Review Queue Depth ────────────────────────────────────────────────────
+      - alert: EdonReviewQueueDeep
+        expr: edon_review_queue_depth > 50
+        for: 10m
+        labels:
+          severity: warning
+          team: governance
+        annotations:
+          summary: "EDON human review queue depth exceeds 50 items"
+          description: >
+            {{ $value }} actions are pending human review. Reviewers should
+            triage the queue at /review/queue before actions time out.
+          runbook_url: "https://docs.edoncore.com/ops/runbooks#review-queue-deep"
+
+      # ── Anomaly Spike ─────────────────────────────────────────────────────────
+      - alert: EdonAnomalySpike
+        expr: sum(rate(edon_anomalies_detected_total[2m])) * 60 > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "EDON anomaly detection rate exceeds 10 events/min"
+          description: >
+            Behavioral anomaly detection is firing at
+            {{ $value | printf "%.1f" }} events/min over the last 2 minutes.
+            Investigate agent activity for multi-step attack patterns.
+          runbook_url: "https://docs.edoncore.com/ops/runbooks#anomaly-spike"
