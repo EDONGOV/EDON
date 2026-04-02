@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UserscjbigDesktopedon-agent-ui -maxdepth 2 -name vite.config.* -o -name tailwind.config.* -o -name tsconfig.json)",
+      "Bash(npm run:*)",
+      "Bash(vercel --version)",
+      "Bash(vercel --prod)",
+      "Bash(find C:UserscjbigDesktopedon-agent-ui -type d -name *[Hh]ealth* -o -name *[Dd]emo*)",
+      "Read(//c/Users/cjbig/Desktop/**)",
+      "Bash(mv edon-agent-ui:*)",
+      "Bash(powershell -Command \"Move-Item -Path 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui' -Destination 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend' -Force\")",
+      "Bash(robocopy \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui\" \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend\" /E /XD node_modules .git /XF \"*.log\" /NFL /NDL /NJH /NJS /nc /ns /np)",
+      "Bash(robocopy \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui\" \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend\" /E /XD node_modules .git /NFL /NDL /NJH /NJS)",
+      "Bash(robocopy \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui\" \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend\" /E /XD node_modules .git)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(powershell -Command \"\n\\\\$src = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui'\n\\\\$dst = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend'\n\\\\$exclude = @\\('node_modules', '.git', '*.log'\\)\nGet-ChildItem \\\\$src -Recurse | Where-Object {\n  \\\\$rel = \\\\$_.FullName.Substring\\(\\\\$src.Length\\)\n  \\\\$rel -notmatch '\\\\\\\\\\\\\\\\node_modules\\\\\\\\\\\\\\\\' -and \\\\$rel -notmatch '\\\\\\\\\\\\\\\\.git\\\\\\\\\\\\\\\\'\n} | ForEach-Object {\n  \\\\$dest = \\\\$_.FullName.Replace\\(\\\\$src, \\\\$dst\\)\n  if \\(\\\\$_.PSIsContainer\\) {\n    New-Item -ItemType Directory -Path \\\\$dest -Force | Out-Null\n  } else {\n    Copy-Item \\\\$_.FullName -Destination \\\\$dest -Force\n  }\n}\nWrite-Host 'Done'\n\")",
+      "Bash(powershell -Command \"\n\\\\$src = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui'\n\\\\$dst = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\frontend'\nGet-ChildItem \\\\$src -Recurse | Where-Object {\n  \\\\$rel = \\\\$_.FullName.Substring\\(\\\\$src.Length\\)\n  \\(\\\\$rel -notmatch 'node_modules'\\) -and \\(\\\\$rel -notmatch '[.]git'\\)\n} | ForEach-Object {\n  \\\\$dest = \\\\$_.FullName.Replace\\(\\\\$src, \\\\$dst\\)\n  if \\(\\\\$_.PSIsContainer\\) {\n    New-Item -ItemType Directory -Path \\\\$dest -Force | Out-Null\n  } else {\n    Copy-Item \\\\$_.FullName -Destination \\\\$dest -Force\n  }\n}\nWrite-Host 'Done'\n\")",
+      "Bash(mv \"/c/Users/cjbig/Desktop/edon/frontend/Healthcare Demo\" /c/Users/cjbig/Desktop/edon/demos/healthcare)",
+      "Bash(mv /c/Users/cjbig/Desktop/edon/frontend/Law /c/Users/cjbig/Desktop/edon/demos/law)",
+      "Bash(mv /c/Users/cjbig/Desktop/edon/frontend/logistics /c/Users/cjbig/Desktop/edon/demos/logistics)",
+      "Bash(powershell -Command \"\n\\\\$src = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\EDON\\\\edon-cav-engine\\\\edon_gateway'\n\\\\$dst = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon\\\\backend'\nGet-ChildItem \\\\$src -Recurse | Where-Object {\n  \\\\$rel = \\\\$_.FullName.Substring\\(\\\\$src.Length\\)\n  \\(\\\\$rel -notmatch '[.]venv'\\) -and \\(\\\\$rel -notmatch '__pycache__'\\) -and \\(\\\\$rel -notmatch '[.]git'\\)\n} | ForEach-Object {\n  \\\\$dest = \\\\$_.FullName.Replace\\(\\\\$src, \\\\$dst\\)\n  if \\(\\\\$_.PSIsContainer\\) {\n    New-Item -ItemType Directory -Path \\\\$dest -Force | Out-Null\n  } else {\n    Copy-Item \\\\$_.FullName -Destination \\\\$dest -Force\n  }\n}\nWrite-Host 'Done'\n\")",
+      "Bash(powershell -Command \"\n\\\\$src = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edon-agent-ui'\n\\\\$dst = 'C:\\\\Users\\\\cjbig\\\\Desktop\\\\edongov\\\\frontend'\nGet-ChildItem \\\\$src -Recurse | Where-Object {\n  \\\\$rel = \\\\$_.FullName.Substring\\(\\\\$src.Length\\)\n  \\(\\\\$rel -notmatch 'node_modules'\\) -and \\(\\\\$rel -notmatch '[.]git'\\)\n} | ForEach-Object {\n  \\\\$dest = \\\\$_.FullName.Replace\\(\\\\$src, \\\\$dst\\)\n  if \\(\\\\$_.PSIsContainer\\) {\n    New-Item -ItemType Directory -Path \\\\$dest -Force | Out-Null\n  } else {\n    Copy-Item \\\\$_.FullName -Destination \\\\$dest -Force\n  }\n}\nWrite-Host 'Done'\n\")"
+    ]
+  }
+}

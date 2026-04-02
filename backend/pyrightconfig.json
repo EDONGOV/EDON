@@ -1,0 +1,15 @@
+{
+  "include": ["edon_gateway"],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "venvPath": ".",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "pythonVersion": "3.11"
+    }
+  ]
+}

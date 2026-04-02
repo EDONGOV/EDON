@@ -1,0 +1,35 @@
+# EDON Gateway Policy Configuration
+# Copy this file to policy.yaml and customize for your deployment
+
+# Authentication
+auth:
+  enabled: true
+  token: "production-token-change-me"  # CHANGE THIS!
+
+# Credentials
+credentials:
+  strict_mode: true  # Require all credentials in database
+  token_hardening: true  # Never expose tokens to agents
+
+# Network Security
+network:
+  gating: false  # Set to true if Clawdbot Gateway is on private network
+
+# Default Policy Pack
+default_policy_pack: "personal_safe"  # Options: personal_safe, work_safe, ops_admin
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  max_actions_per_minute: 60
+  max_actions_per_hour: 1000
+
+# Audit
+audit:
+  level: "detailed"  # Options: minimal, standard, detailed
+  export_enabled: true
+
+# Clawdbot Gateway (if running locally)
+clawdbot:
+  url: "http://clawdbot-gateway:18789"  # Internal URL
+  # Token stored in database via POST /credentials/set

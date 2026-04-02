@@ -1,0 +1,7 @@
+{
+  "objective": "Allow Clawdbot sessions_list for connectivity test",
+  "scope": { "allow": ["clawdbot.sessions_list"] },
+  "constraints": { "confirm_irreversible": true, "audit_level": "standard" },
+  "risk_level": "low",
+  "approved_by_user": true
+}

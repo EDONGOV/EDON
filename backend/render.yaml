@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: edon-gateway
+    env: python
+    rootDir: edon_gateway
+    buildCommand: pip install -r ../requirements.gateway.txt
+    startCommand: python -m uvicorn edon_gateway.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: EDON_AUTH_ENABLED
+        value: true
+      - key: EDON_CREDENTIALS_STRICT
+        value: true
+      - key: EDON_TOKEN_HARDENING
+        value: true
+      - key: EDON_VALIDATE_STRICT
+        value: true
+      - key: EDON_DATABASE_PATH
+        value: /tmp/edon_gateway.db
+      - key: EDON_LOG_LEVEL
+        value: INFO
+      - key: EDON_JSON_LOGGING
+        value: true
+      - key: EDON_METRICS_ENABLED
+        value: true
+      - key: EDON_RATE_LIMIT_ENABLED
+        value: true
+      - key: EDON_CORS_ORIGINS
+        value: http://localhost:5173,http://localhost:3000,https://edoncore.com
+      # Stripe - Set these in Render dashboard
+      # - key: STRIPE_SECRET_KEY
+      #   value: sk_live_...
+      # - key: STRIPE_WEBHOOK_SECRET
+      #   value: whsec_...
+      # - key: STRIPE_PAYMENT_LINK_STARTER
+      #   value: https://buy.stripe.com/00w7sK5a0b5077YgXSfIs02

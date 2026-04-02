@@ -1,0 +1,10 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Top Segment: Hexagonal with jagged bottom -->
+  <path d="M20 15 L30 10 L70 10 L80 15 L75 25 L70 23 L60 25 L50 23 L40 25 L30 23 L25 25 Z" fill="black"/>
+  
+  <!-- Middle Segment: Arrow pointing right -->
+  <path d="M20 50 L20 60 L70 60 L85 55 L95 50 L85 55 L70 50 Z" fill="black"/>
+  
+  <!-- Bottom Segment: Hexagonal with jagged top (mirror) -->
+  <path d="M20 95 L25 93 L30 95 L40 93 L50 95 L60 93 L70 95 L75 93 L80 95 L80 105 L70 110 L30 110 L20 105 Z" fill="black"/>
+</svg>

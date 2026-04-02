@@ -1,0 +1,22 @@
+# Render Blueprint: EDON Agent UI (static site)
+# Deploy to https://agent.edoncore.com via Dashboard: New > Blueprint > Connect repo
+# Then add custom domain agent.edoncore.com in the static site's Settings.
+
+services:
+  - type: web
+    name: edon-agent-ui
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    domains:
+      - agent.edoncore.com
+    envVars:
+      - key: VITE_EDON_GATEWAY_URL
+        value: https://edon-gateway.fly.dev
+      - key: VITE_EDON_MOCK_MODE
+        value: "false"
+    routes:
+      # SPA: serve index.html for client-side routes
+      - type: rewrite
+        source: /*
+        destination: /index.html
