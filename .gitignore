@@ -1,0 +1,19 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# Backend
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/.env
+backend/audit.log.jsonl
+
+# Demos
+demos/**/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
