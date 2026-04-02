@@ -1,134 +1,79 @@
-# EDON Gateway
+# EDON Gateway (Backend)
 
-**Purpose**: Backend API gateway that connects to clawdbots/agents and enforces security policies.
-
-This is the **core backend component** that:
-- Connects to user's clawdbots/AI agents
-- Enforces security policies and governance
-- Processes all agent actions through a security layer
-- Provides audit logging and metrics
-- Manages subscriptions and billing (Stripe webhooks)
-
-## Architecture
+FastAPI service that sits between AI agents and their tools, enforcing governance policies on every action.
 
 ```
-Clawdbot/Agent → EDON Gateway → Tools/Connectors
+AI Agent → POST /v1/action → EDON Gateway → verdict (ALLOW / BLOCK / ESCALATE)
 ```
-
-Clawdbot/agents never call tools directly. All tool execution goes through `/execute` endpoint, which enforces security policies before allowing actions.
-
-## Full Stack Context
-
-This gateway is part of a three-component system:
-
-1. **edon-sentinel-core** (`D:\dev\edon-sentinel-core`): Public website where users sign up and pay
-2. **edon-agent-ui** (`C:\Users\cjbig\Desktop\edon-agent-ui`): Agent Console where users monitor their agents
-3. **edon_gateway** (this): Backend API that processes agent actions
-
-See `../STARTUP_GUIDE.md` for full stack startup instructions.
-
-## UI
-
-The EDON Gateway ships **API only**; it does not ship a user interface.
-
-User-facing UI lives in a separate project:
-- **edon-agent-ui**
-
-The gateway exposes a JSON/HTTP API consumed by external UIs. The UI (edon-agent-ui) communicates with the gateway over HTTP using the same auth header (`X-EDON-TOKEN`).
 
 ## Quick Start
 
-### Install Dependencies
+See the [root README](../README.md) for full setup. Short version:
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.gateway.txt
+cp .env.example .env   # set EDON_API_TOKEN
+python -m uvicorn edon_gateway.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Run Gateway
+## Structure
+
+```
+backend/
+├── edon_gateway/        # Main application package
+│   ├── main.py          # FastAPI app + route registration
+│   ├── governor.py      # Core governance decision engine
+│   ├── routes/          # API route handlers
+│   ├── middleware/      # Auth, rate limiting, RBAC, validation
+│   ├── policy/          # Policy engine (rules, storage, evaluation)
+│   ├── security/        # Anti-bypass, encryption, anomaly detection
+│   ├── connectors/      # External tool integrations (email, github, etc.)
+│   ├── persistence/     # SQLite / PostgreSQL database layer
+│   ├── billing/         # Stripe integration
+│   └── ai/              # AI-powered advisory features
+├── tests/               # pytest test suite
+├── scripts/             # Utility and ops scripts
+├── docs/                # Reference docs
+├── Dockerfile           # Production image (used by Fly.io)
+├── fly.toml             # Fly.io deploy config
+├── requirements.gateway.txt  # Production dependencies (used by Docker)
+└── requirements.txt          # Development dependencies (includes pytest)
+```
+
+## Key Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/action` | Evaluate an agent action — returns verdict |
+| `GET` | `/health` | Health check |
+| `GET` | `/stats` | Decision counts and latency |
+| `GET` | `/audit/query` | Decision history with filters |
+| `GET` | `/agents` | Registered agent fleet |
+| `GET` | `/policy-packs` | Available policy packs |
+| `POST` | `/policy-packs/{name}/apply` | Activate a policy pack |
+
+All requests require header: `X-EDON-TOKEN: <your-token>`
+
+## Environment Variables
+
+See `docs/CONFIGURATION.md` for the full list. Minimum required:
+
+```env
+EDON_API_TOKEN=your-secret-token
+EDON_AUTH_ENABLED=true
+```
+
+## Running Tests
 
 ```bash
-python -m edon_gateway.main
+EDON_API_TOKEN=test-token EDON_AUTH_ENABLED=false pytest tests/ -v
 ```
 
-Gateway will start on `http://localhost:8000`
-
-### API Endpoints
-
-**Core Endpoints:**
-- `POST /execute` - Execute action through governance
-- `POST /edon/invoke` - Drop-in replacement for Clawdbot's /tools/invoke (adoption milestone)
-- `POST /intent/set` - Set intent contract
-- `GET /intent/get` - Get intent contract
-- `GET /audit/query` - Query audit logs
-- `GET /health` - Health check (shows active policy preset)
-
-**Policy Presets:**
-- `GET /policies/presets` - List all available policy presets
-- `POST /policies/apply` - Apply a policy preset (personal_safe, work_safe, ops_admin)
-
-**Metrics:**
-- `GET /metrics` - Prometheus metrics (for ops teams and standard tooling)
-- `GET /stats` - JSON stats (for UI, demos, and quick debugging)
-
-See `../edon_demo/CLAWDBOT_INTEGRATION.md` for full API specification.
-
-## Real Connectors (Sandboxed)
-
-### Email Connector
-
-- **Location:** `edon_gateway/connectors/email_connector.py`
-- **Sandbox:** `sandbox/emails/`
-- **Operations:** `draft`, `send`
-- **Proof:** Writes to files instead of actually sending (proves execution path)
-
-### Filesystem Connector
-
-- **Location:** `edon_gateway/connectors/filesystem_connector.py`
-- **Sandbox:** `sandbox/filesystem/`
-- **Operations:** `read_file`, `write_file`, `delete_file`
-- **Security:** Path traversal prevented, only sandbox writable
-
-## Bypass Prevention
-
-See `BYPASS_PREVENTION.md` for architecture details.
-
-**Key Point:** Agent cannot execute tools directly. Only EDON Gateway can execute through connectors.
-
-## Testing
-
-### Test Gateway
+## Deployment
 
 ```bash
-python edon_gateway/test_gateway.py
+fly deploy   # must run from backend/ directory
 ```
 
-### Test Bypass Prevention
-
-```bash
-pytest tests/test_bypass_attempt.py -v
-```
-
-## Development Status
-
-**Phase A (Current):** 
-- ✅ Basic API structure
-- ✅ Real email connector (sandboxed)
-- ✅ Real filesystem connector (sandboxed)
-- ✅ Bypass prevention tests
-
-**Phase B (Next):** Persistence, authentication, security  
-**Phase C (Future):** Observability, performance optimization
-
-## Sandbox Directory Structure
-
-```
-sandbox/
-  emails/
-    draft_*.json       # Email drafts
-    sent/
-      msg_*.json      # Sent emails
-  filesystem/
-    *.txt             # Written files
-```
-
-All operations are sandboxed - no real side effects in Phase A.
+See `docs/FLY_DEPLOY.md` for full instructions.
