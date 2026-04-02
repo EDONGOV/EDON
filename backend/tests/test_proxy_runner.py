@@ -3,11 +3,17 @@
 Test script for EDON Proxy Runner endpoint.
 
 Tests the drop-in replacement for Clawdbot Gateway /tools/invoke.
+
+Requires a live gateway. Run with:
+  EDON_RUN_LIVE_TESTS=true pytest tests/test_proxy_runner.py
 """
 
 import requests
 import os
 import json
+import pytest
+
+pytestmark = pytest.mark.live_server
 import sys
 import pytest
 

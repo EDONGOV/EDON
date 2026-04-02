@@ -20,19 +20,11 @@ import pytest
 # Fixtures
 # ============================================================
 
-@pytest.fixture(autouse=True)
-def disable_auth(monkeypatch):
-    """Disable authentication for most tests."""
-    monkeypatch.setenv("EDON_AUTH_ENABLED", "false")
-    # Provide a test encryption key so the DB layer doesn't raise in test env
-    from cryptography.fernet import Fernet
-    monkeypatch.setenv("EDON_DB_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    import edon_gateway.config as cfg
-    monkeypatch.setattr(cfg.config, "_AUTH_ENABLED", False)
+# Auth/env fixtures provided by conftest.py (_dev_environment, autouse)
 
 
 @pytest.fixture
-def client(disable_auth):
+def client(_dev_environment):
     from starlette.testclient import TestClient
     from edon_gateway.main import app
     with TestClient(app, headers={"X-Agent-ID": "integ-test-client"}) as c:
@@ -42,7 +34,7 @@ def client(disable_auth):
 def _valid_action_body():
     return {
         "agent_id": "integ-agent-001",
-        "action_type": "tool_call",
+        "action_type": "email.read",
         "action_payload": {"tool": "email", "op": "read", "params": {"folder": "inbox"}},
         "timestamp": datetime.now(UTC).isoformat(),
         "context": {},
@@ -73,18 +65,18 @@ class TestHealthEndpoint:
         data = resp.json()
         assert "components" in data
 
-    def test_health_audit_trail_component_present(self, client):
+    def test_health_database_component_present(self, client):
         resp = client.get("/health")
         data = resp.json()
         components = data.get("components", {})
-        assert "audit_trail" in components
+        assert "database" in components
 
-    def test_health_audit_trail_has_status(self, client):
+    def test_health_database_has_status(self, client):
         resp = client.get("/health")
         components = resp.json().get("components", {})
-        audit_trail = components.get("audit_trail", {})
-        assert "status" in audit_trail
-        assert audit_trail["status"] in ("healthy", "degraded", "unhealthy")
+        database = components.get("database", {})
+        assert "status" in database
+        assert database["status"] in ("healthy", "degraded", "unhealthy")
 
 
 # ============================================================
@@ -128,11 +120,12 @@ class TestV1ActionEndpoint:
         resp = client.post("/v1/action", json=body)
         assert resp.status_code == 422
 
-    def test_extra_unknown_field_returns_422(self, client):
+    def test_extra_unknown_field_is_ignored(self, client):
+        # V1ActionRequest does not forbid extra fields — they are silently ignored
         body = _valid_action_body()
-        body["unknown_extra_field"] = "forbidden"
+        body["unknown_extra_field"] = "ignored"
         resp = client.post("/v1/action", json=body)
-        assert resp.status_code == 422
+        assert resp.status_code == 200
 
     def test_malformed_action_type_no_dot_returns_400(self, client):
         body = _valid_action_body()

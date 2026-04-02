@@ -10,20 +10,13 @@ Covers:
 """
 import pytest
 from datetime import datetime, UTC
-from cryptography.fernet import Fernet
-
-import edon_gateway.config as cfg
 
 
-@pytest.fixture(autouse=True)
-def disable_auth(monkeypatch):
-    monkeypatch.setenv("EDON_AUTH_ENABLED", "false")
-    monkeypatch.setenv("EDON_DB_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    monkeypatch.setattr(cfg.config, "_AUTH_ENABLED", False)
+# Auth/env fixtures provided by conftest.py (_dev_environment, autouse)
 
 
 @pytest.fixture
-def client(disable_auth):
+def client(_dev_environment):
     from starlette.testclient import TestClient
     from edon_gateway.main import app
     with TestClient(app, headers={"X-Agent-ID": "swarm-test-agent"}) as c:

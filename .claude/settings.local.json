@@ -12,7 +12,26 @@
       "Bash(mv CONFIGURATION.md docs/)",
       "Bash(mv DEMO_MODE_GUIDE.md docs/)",
       "Bash(mv PROXY_RUNNER_GUIDE.md docs/)",
-      "Bash(mv NETWORK_ISOLATION_GUIDE.md docs/)"
+      "Bash(mv NETWORK_ISOLATION_GUIDE.md docs/)",
+      "Bash(python -c \"from edon_gateway.main import app; print\\('✓ Backend imports OK'\\)\")",
+      "Bash(python3)",
+      "Bash(python3 -c \"from edon_gateway import main\")",
+      "Bash(python -c \"from edon_gateway import main; print\\('OK'\\)\")",
+      "Bash(grep -r \"requires_supervisor\\\\|requires_supervision\" /c/Users/cjbig/Desktop/edongov/backend/edon_gateway/*.py)",
+      "Bash(grep -n \"def test_\\\\|class Test\" /c/Users/cjbig/Desktop/edongov/backend/tests/*.py)",
+      "Bash(grep -v \"^$\")",
+      "Bash(python -m pytest tests/ edon_gateway/test/ -x -q --tb=short --ignore=.venv)",
+      "Bash(python -m pytest tests/test_fixes.py::test_governor_imports -v --tb=long)",
+      "Bash(python -m pytest tests/ edon_gateway/test/ -q --tb=short --ignore=.venv -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest tests/ edon_gateway/test/ -q --tb=line --ignore=.venv -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_integration_endpoints.py -q --tb=short -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_integration_endpoints.py -q --tb=line -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_swarm_coordination.py -q --tb=short -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest tests/test_production_mode.py -q --tb=short -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest tests/ edon_gateway/test/ -q --ignore=.venv -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_edge_operations.py -q --tb=short -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_swarm_coordination.py edon_gateway/test/test_edge_operations.py -q --tb=short -W ignore::DeprecationWarning)",
+      "Bash(python -m pytest edon_gateway/test/test_integration_endpoints.py::TestHealthEndpoint::test_health_returns_200 -q --tb=long -W ignore::DeprecationWarning)"
     ]
   }
 }

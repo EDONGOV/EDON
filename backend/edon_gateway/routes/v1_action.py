@@ -362,6 +362,11 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             else:
                 tenant_rules = db.get_policy_rules(tenant_id, enabled_only=True)
                 _policy_rules_cache[tenant_id] = (tenant_rules, time.time() + _POLICY_RULES_TTL_SEC)
+                # Evict expired entries to prevent unbounded growth with many tenants
+                now = time.time()
+                expired = [k for k, v in _policy_rules_cache.items() if v[1] <= now]
+                for k in expired:
+                    del _policy_rules_cache[k]
         except Exception as e:
             logger.warning(f"Failed to load tenant policy rules for {tenant_id}: {e}")
 

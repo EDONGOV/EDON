@@ -1,6 +1,9 @@
 """
 Regression tests for production safety invariants.
 
+Requires a live gateway. Run with:
+  EDON_RUN_LIVE_TESTS=true EDON_GATEWAY_URL=http://localhost:8000 pytest tests/test_regression.py
+
 These tests ensure critical production safety features never regress:
 - No traceback leakage
 - HTTPException status codes preserved (especially 503)
@@ -20,6 +23,8 @@ import os
 import json
 import requests
 import pytest
+
+pytestmark = pytest.mark.live_server
 
 # Load .env so gateway token/auth are used when running locally.
 # Gateway loads from edon_gateway/edon_gateway/.env; also try edon_gateway/.env.
