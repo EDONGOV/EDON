@@ -4,6 +4,9 @@ These tests validate that production security features work correctly:
 A) Strict credentials fail closed
 B) Validation rejects dangerous payloads
 C) Auth truly blocks protected endpoints
+
+Requires a live gateway. Run with:
+  EDON_RUN_LIVE_TESTS=true EDON_GATEWAY_URL=http://localhost:8000 pytest tests/test_production_mode.py
 """
 
 import os
@@ -13,6 +16,8 @@ import pytest
 from pathlib import Path
 import tempfile
 import shutil
+
+pytestmark = pytest.mark.live_server
 
 BASE_URL = os.getenv("EDON_GATEWAY_URL", "http://localhost:8000")
 

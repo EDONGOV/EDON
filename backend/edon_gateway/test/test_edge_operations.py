@@ -23,7 +23,7 @@ def disable_auth(monkeypatch):
 
 
 @pytest.fixture
-def client(disable_auth):
+def client(_dev_environment):
     from starlette.testclient import TestClient
     from edon_gateway.main import app
     with TestClient(app, headers={"X-Agent-ID": "edge-test-agent"}) as c:

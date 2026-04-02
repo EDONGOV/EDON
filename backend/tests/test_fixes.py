@@ -6,7 +6,7 @@ import inspect
 
 def test_governor_imports(monkeypatch):
     from edon_gateway.schemas import Verdict
-    assert Verdict.ERROR.value == "error"
+    assert Verdict.ERROR.value == "ERROR"
 
     from edon_gateway.governor import EDONGovernor
     assert hasattr(EDONGovernor, "get_intent")
