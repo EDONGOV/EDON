@@ -1,5 +1,0 @@
-{
-  "base_url": "http://127.0.0.1:18789",
-  "auth_mode": "token",
-  "secret": "dev_password_123"
-}
