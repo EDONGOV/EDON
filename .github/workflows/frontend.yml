@@ -1,0 +1,41 @@
+name: Frontend
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "frontend/**"
+      - "shared/**"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "frontend/**"
+      - "shared/**"
+      - ".github/workflows/frontend.yml"
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test

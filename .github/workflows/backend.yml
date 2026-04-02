@@ -1,0 +1,58 @@
+name: Backend
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.gateway.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.gateway.txt pytest pytest-asyncio httpx anyio
+
+      - name: Run tests
+        run: pytest -q -W ignore::DeprecationWarning
+        env:
+          EDON_ENV: development
+          EDON_AUTH_ENABLED: "false"
+          EDON_CREDENTIALS_STRICT: "false"
+          EDON_STRICT_FAIL_CLOSED: "false"
+
+  deploy:
+    name: Deploy to Fly.io
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        working-directory: backend
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
