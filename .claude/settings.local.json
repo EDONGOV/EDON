@@ -31,7 +31,29 @@
       "Bash(python -m pytest tests/ edon_gateway/test/ -q --ignore=.venv -W ignore::DeprecationWarning)",
       "Bash(python -m pytest edon_gateway/test/test_edge_operations.py -q --tb=short -W ignore::DeprecationWarning)",
       "Bash(python -m pytest edon_gateway/test/test_swarm_coordination.py edon_gateway/test/test_edge_operations.py -q --tb=short -W ignore::DeprecationWarning)",
-      "Bash(python -m pytest edon_gateway/test/test_integration_endpoints.py::TestHealthEndpoint::test_health_returns_200 -q --tb=long -W ignore::DeprecationWarning)"
+      "Bash(python -m pytest edon_gateway/test/test_integration_endpoints.py::TestHealthEndpoint::test_health_returns_200 -q --tb=long -W ignore::DeprecationWarning)",
+      "Bash(gh run:*)",
+      "Bash(xargs ls:*)",
+      "Bash(ls -1 /c/Users/cjbig/Desktop/edongov/backend/edon_gateway/connectors/*.py)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(xargs wc:*)",
+      "Bash(python -m pytest --collect-only)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edongov\\\\.claude\\\\worktrees\\\\agent-a6e1cc48\\\\backend\\\\alembic\\\\versions\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\cjbig\\\\Desktop\\\\edongov\\\\.claude\\\\worktrees\\\\agent-a6e1cc48\\\\docs\")",
+      "Bash(npm outdated:*)",
+      "Bash(npm audit:*)",
+      "Bash(pip list:*)",
+      "Bash(pip-audit -r requirements.txt)",
+      "Bash(pip install:*)",
+      "Bash(du:*)",
+      "Bash(node:*)",
+      "Bash(fly secrets:*)",
+      "Bash(fly postgres:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh api:*)",
+      "Bash(gh repo:*)",
+      "Bash(git fetch:*)"
     ]
   }
 }
