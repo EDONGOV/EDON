@@ -117,20 +117,15 @@ Primary production domain for the console:
 
 **Production URL**: https://agent.edoncore.com
 
-### Render (recommended)
+### Vercel (production)
 
-Use the `render.yaml` in this repo or create a Static Site manually:
+Deploy as a static Vite app:
 
 - **Build command:** `npm ci && npm run build`
-- **Publish directory:** `dist`
-- **Env vars:** `VITE_EDON_GATEWAY_URL=https://edon-gateway.onrender.com`, `VITE_EDON_MOCK_MODE=false`
+- **Output directory:** `dist`
+- **Env vars:** `VITE_EDON_GATEWAY_URL=https://edon-gateway.fly.dev`, `VITE_EDON_MOCK_MODE=false`
 - **Custom domain:** `agent.edoncore.com`
-- **SPA rewrite:** `/*` → `/index.html` (rewrite)
-
-### Vercel / Netlify
-
-Deploy as a static Vite app with output `dist`, then map the custom domain to
-`agent.edoncore.com`.
+- **SPA rewrite:** `/*` → `/index.html`
 
 ## Related Components
 
