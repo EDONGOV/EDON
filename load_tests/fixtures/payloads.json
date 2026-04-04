@@ -1,0 +1,92 @@
+[
+  {
+    "name": "low_risk_email",
+    "agent_id": "load-test-agent-1",
+    "action_type": "email.send",
+    "action_payload": {"recipients": ["user@example.com"], "subject": "Report", "body": "Weekly summary."},
+    "estimated_risk": "low",
+    "timestamp": "2026-04-02T12:00:00Z",
+    "context": {}
+  },
+  {
+    "name": "medium_risk_http",
+    "agent_id": "load-test-agent-2",
+    "action_type": "http.request",
+    "action_payload": {"url": "https://api.example.com/data", "method": "POST", "body": {"query": "SELECT *"}},
+    "estimated_risk": "medium",
+    "timestamp": "2026-04-02T12:00:01Z",
+    "context": {"session_id": "sess-abc123"}
+  },
+  {
+    "name": "high_risk_filesystem",
+    "agent_id": "load-test-agent-3",
+    "action_type": "filesystem.write",
+    "action_payload": {"path": "output/report.txt", "content": "Generated output"},
+    "estimated_risk": "high",
+    "timestamp": "2026-04-02T12:00:02Z",
+    "context": {}
+  },
+  {
+    "name": "low_risk_memory_read",
+    "agent_id": "load-test-agent-1",
+    "action_type": "memory.read_preferences",
+    "action_payload": {"keys": ["user_pref_1"]},
+    "estimated_risk": "low",
+    "timestamp": "2026-04-02T12:00:03Z",
+    "context": {}
+  },
+  {
+    "name": "medium_risk_search",
+    "agent_id": "load-test-agent-4",
+    "action_type": "brave_search.search",
+    "action_payload": {"query": "latest AI safety research", "count": 5},
+    "estimated_risk": "low",
+    "timestamp": "2026-04-02T12:00:04Z",
+    "context": {}
+  },
+  {
+    "name": "critical_risk_delete",
+    "agent_id": "load-test-agent-5",
+    "action_type": "filesystem.delete_file",
+    "action_payload": {"path": "important/data.csv"},
+    "estimated_risk": "critical",
+    "timestamp": "2026-04-02T12:00:05Z",
+    "context": {"requires_confirmation": true}
+  },
+  {
+    "name": "agent_invoke",
+    "agent_id": "load-test-agent-2",
+    "action_type": "agent.invoke",
+    "action_payload": {"target_agent": "research-agent", "task": "summarize_document", "args": {}},
+    "estimated_risk": "medium",
+    "timestamp": "2026-04-02T12:00:06Z",
+    "context": {}
+  },
+  {
+    "name": "low_risk_audit_read",
+    "agent_id": "load-test-agent-3",
+    "action_type": "http.request",
+    "action_payload": {"url": "https://internal.api/status", "method": "GET"},
+    "estimated_risk": "low",
+    "timestamp": "2026-04-02T12:00:07Z",
+    "context": {"intent_id": "intent-baseline-001"}
+  },
+  {
+    "name": "high_risk_external_api",
+    "agent_id": "load-test-agent-4",
+    "action_type": "http.request",
+    "action_payload": {"url": "https://payment-api.example.com/charge", "method": "POST", "body": {"amount": 500}},
+    "estimated_risk": "high",
+    "timestamp": "2026-04-02T12:00:08Z",
+    "context": {}
+  },
+  {
+    "name": "low_risk_memory_write",
+    "agent_id": "load-test-agent-1",
+    "action_type": "memory.write_preference",
+    "action_payload": {"key": "last_run", "value": "2026-04-02T12:00:09Z"},
+    "estimated_risk": "low",
+    "timestamp": "2026-04-02T12:00:09Z",
+    "context": {}
+  }
+]

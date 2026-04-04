@@ -120,3 +120,16 @@ async def get_audit_mining_report(request: Request):
         return report
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Audit miner unavailable: {exc}")
+
+
+@router.get("/stats")
+async def get_advisory_stats():
+    """Return advisory layer metrics: call counts, cache hits, rate-limited calls, avg latency.
+
+    Useful for monitoring Claude API usage and costs.
+    """
+    try:
+        from ..ai.advisory_limiter import get_advisory_metrics
+        return {"advisory_metrics": get_advisory_metrics()}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Advisory stats unavailable: {exc}")

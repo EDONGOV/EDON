@@ -594,7 +594,7 @@ const GATE_FEATURES = [
 ]
 
 // SHA-256 hash of the demo passcode (computed offline — not the passcode itself)
-const PASSCODE_HASH = '1ee8baaaa5e66d5624b72e6fe737927bb47eef4315c6d7880571657163dd9976'
+const PASSCODE_HASH = '6df06e04a6f94d20a8a7f82b078e95ee68d2b0566c40a53cae98a80fdd0dfd1c'
 
 async function sha256hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))

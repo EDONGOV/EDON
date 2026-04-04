@@ -42,6 +42,11 @@ def call_advisory(
     max_tokens: int = _MAX_TOKENS,
     timeout: float = _TIMEOUT,
     expect_json: bool = True,
+    # Limiter integration (optional — pass these to enable caching + rate limiting)
+    _function_name: str = "",
+    _action_type: str = "",
+    _risk_level: str = "",
+    _tenant_id: str = "",
 ) -> Optional[Any]:
     """Call Claude with a bounded advisory prompt. Returns parsed JSON or plain text.
 
@@ -61,6 +66,32 @@ def call_advisory(
     if not _AI_ENABLED:
         return None
 
+    # Use limiter when caller supplies context keys
+    if _function_name and _tenant_id:
+        from .advisory_limiter import advisory_call as _advisory_call
+        return _advisory_call(
+            _function_name, _action_type, _risk_level, _tenant_id,
+            lambda: _call_advisory_direct(
+                system_prompt, user_message,
+                max_tokens=max_tokens, timeout=timeout, expect_json=expect_json,
+            ),
+        )
+
+    return _call_advisory_direct(
+        system_prompt, user_message,
+        max_tokens=max_tokens, timeout=timeout, expect_json=expect_json,
+    )
+
+
+def _call_advisory_direct(
+    system_prompt: str,
+    user_message: str,
+    *,
+    max_tokens: int = _MAX_TOKENS,
+    timeout: float = _TIMEOUT,
+    expect_json: bool = True,
+) -> Optional[Any]:
+    """Internal: make the actual Claude API call without cache/rate-limiting."""
     client = _get_client()
     if client is None:
         return None
