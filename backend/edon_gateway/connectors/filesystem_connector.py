@@ -134,6 +134,35 @@ class FilesystemConnector:
                 "error": str(e)
             }
     
+    def list_directory(self, path: str = "") -> Dict[str, Any]:
+        """List files in a sandbox directory.
+
+        Args:
+            path: Directory path (relative to sandbox, empty = sandbox root)
+
+        Returns:
+            Result dictionary with list of entries
+        """
+        dir_path = self.sandbox_dir / path.lstrip("/") if path else self.sandbox_dir
+
+        if not str(dir_path.resolve()).startswith(str(self.sandbox_dir.resolve())):
+            raise ValueError(f"Path outside sandbox: {path}")
+
+        if not dir_path.exists():
+            return {"success": False, "error": f"Directory not found: {path}"}
+
+        try:
+            entries = []
+            for entry in sorted(dir_path.iterdir()):
+                entries.append({
+                    "name": entry.name,
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size": entry.stat().st_size if entry.is_file() else None,
+                })
+            return {"success": True, "path": str(dir_path), "entries": entries, "count": len(entries)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def delete_file(self, path: str) -> Dict[str, Any]:
         """Delete a file (sandboxed - only from sandbox directory).
         

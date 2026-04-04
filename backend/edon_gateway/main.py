@@ -357,10 +357,20 @@ else:
     prometheus_uptime_seconds = None
     prometheus_policy_eval_time_ms = None
     prometheus_anomalies_detected_total = None
-# Startup event - validate schema version and network gating
-# TODO: migrate to lifespan (on_event is deprecated in FastAPI)
-@app.on_event("startup")  # type: ignore[attr-defined]
-async def startup_event():
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: F811
+    """FastAPI lifespan context — runs startup before yield, shutdown after."""
+    # ── STARTUP ──────────────────────────────────────────────────────────────
+    await _startup()
+    yield
+    # ── SHUTDOWN ─────────────────────────────────────────────────────────────
+    await _shutdown()
+
+
+async def _startup():
     logger.info("=" * 60)
     logger.info("Starting EDON Gateway...")
     logger.info(f"Gateway version: {app.version}")
@@ -471,8 +481,7 @@ async def startup_event():
     _asyncio.create_task(_daily_audit_cleanup())
 
 
-@app.on_event("shutdown")  # type: ignore[attr-defined]
-async def shutdown_event():
+async def _shutdown():
     """Graceful shutdown: drain async audit queue before process exits.
 
     Gives in-flight audit writes up to 10s to flush, ensuring no
@@ -485,6 +494,10 @@ async def shutdown_event():
     except Exception as _err:
         logger.warning("Audit queue shutdown error (some events may be lost): %s", _err)
     logger.info("EDON Gateway shutdown complete")
+
+
+# Register lifespan with the app (replaces deprecated @app.on_event)
+app.router.lifespan_context = lifespan
 
 
 # =========================

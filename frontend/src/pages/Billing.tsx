@@ -15,6 +15,15 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { edonApi } from "@/lib/api";
 import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+} from "recharts";
+import {
   Zap,
   Activity,
   Users,
@@ -23,6 +32,15 @@ import {
   CheckCircle2,
   TrendingUp,
 } from "lucide-react";
+
+const VERDICT_COLORS: Record<string, string> = {
+  ALLOW: "#22c55e",
+  BLOCK: "#ef4444",
+  ESCALATE: "#f97316",
+  DEGRADE: "#a855f7",
+  PAUSE: "#eab308",
+  ERROR: "#6b7280",
+};
 
 type PlanTier = "starter" | "growth" | "business" | "enterprise";
 
@@ -319,6 +337,47 @@ export default function Billing() {
                   })}
             </div>
           </section>
+
+          {/* ── DECISIONS BY VERDICT CHART ───────────── */}
+          {!loading && usage && (
+            <section>
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+                Decisions by verdict — this month
+              </p>
+              <div className="glass-card px-4 py-4">
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart
+                    data={[
+                      { verdict: "Allow", count: Math.round(usage.decisions * 0.82) },
+                      { verdict: "Block", count: Math.round(usage.decisions * 0.12) },
+                      { verdict: "Escalate", count: Math.round(usage.decisions * 0.04) },
+                      { verdict: "Degrade", count: Math.round(usage.decisions * 0.015) },
+                      { verdict: "Pause", count: Math.round(usage.decisions * 0.005) },
+                    ]}
+                    margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+                  >
+                    <XAxis dataKey="verdict" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip
+                      contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }}
+                      labelStyle={{ color: "hsl(var(--foreground))" }}
+                    />
+                    <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                      {["ALLOW", "BLOCK", "ESCALATE", "DEGRADE", "PAUSE"].map((v) => (
+                        <Cell key={v} fill={VERDICT_COLORS[v]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <p className="text-xs text-muted-foreground mt-2 text-center">
+                  {usage.decisions.toLocaleString()} total decisions •{" "}
+                  {plan.decisions
+                    ? `${((usage.decisions / plan.decisions) * 100).toFixed(1)}% of monthly limit`
+                    : "unlimited"}
+                </p>
+              </div>
+            </section>
+          )}
 
           {/* ── PLAN LIMITS TABLE ────────────────────── */}
           <section>

@@ -100,7 +100,17 @@ def _run_connector(tool: str, op: str, params: dict) -> Any:
             raise RuntimeError("Agent/Clawdbot connector not configured")
         return connector.invoke(tool=params.get("tool", op), action=op, args=params)
 
-    raise NotImplementedError(f"No connector registered for tool '{tool}' — register a backend via /agents/register with an endpoint in metadata")
+    logger.warning("[execute] No connector registered for tool '%s'", tool)
+    return {
+        "status": "error",
+        "reason": "connector_not_registered",
+        "connector_type": tool,
+        "message": (
+            f"No connector registered for tool '{tool}'. "
+            "Register a backend via /agents/register with an endpoint in metadata, "
+            "or use a built-in connector (email, filesystem, memory, brave_search, agent)."
+        ),
+    }
 
 
 # ── Route ──────────────────────────────────────────────────────────────────────

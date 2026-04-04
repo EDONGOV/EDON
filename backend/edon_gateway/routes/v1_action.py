@@ -614,6 +614,18 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _alert_err:
             logger.warning("Alert evaluation dispatch failed (non-blocking): %s", _alert_err)
 
+    # Record decision for billing metering (fire-and-forget)
+    try:
+        import asyncio as _asyncio
+        from ..billing.metering import record_decision_async
+        _asyncio.create_task(record_decision_async(
+            customer_id=tenant_id or "",
+            verdict=decision.verdict.value,
+            action_type=req.action_type,
+        ))
+    except Exception as _meter_err:
+        logger.debug("Metering record dispatch failed (non-blocking): %s", _meter_err)
+
     # Build response
     response_decision = _map_verdict_to_decision(verdict_str)
 
