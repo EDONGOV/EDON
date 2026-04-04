@@ -352,14 +352,14 @@ export function buildSystemPrompt(ctx: DashboardContext): string {
   }
 
   // Top block reasons
-  if (ctx.block_reasons.length > 0) {
+  if (ctx.block_reasons?.length > 0) {
     lines.push("### Top block reasons");
     ctx.block_reasons.slice(0, 8).forEach((r) => lines.push(`- ${r.reason}: ${r.count} times`));
     lines.push("");
   }
 
   // Recent decisions sample
-  if (ctx.recent_decisions.length > 0) {
+  if (ctx.recent_decisions?.length > 0) {
     lines.push("### Recent decisions (latest 20)");
     ctx.recent_decisions.slice(0, 20).forEach((d) => {
       const tool = d.tool && d.op ? `${d.tool}.${d.op}` : d.tool || "—";
@@ -450,7 +450,7 @@ export function dashboardContextToPromptText(ctx: DashboardContext): string {
     lines.push("");
   }
 
-  if (ctx.recent_decisions.length > 0) {
+  if (ctx.recent_decisions?.length > 0) {
     lines.push("### Recent decisions (sample)", "");
     ctx.recent_decisions.slice(0, 15).forEach((d) => {
       const toolOp = d.tool && d.op ? `${d.tool}.${d.op}` : "—";
