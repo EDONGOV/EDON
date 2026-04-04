@@ -100,7 +100,7 @@ npm run test
 | Service | Platform | Config |
 |---------|----------|--------|
 | Backend | Fly.io | `backend/fly.toml` |
-| Frontend | Render | `frontend/render.yaml` |
+| Frontend | Vercel | `agent.edoncore.com` |
 
 Deploy backend:
 ```bash

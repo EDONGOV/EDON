@@ -121,7 +121,7 @@ Tokens can also be passed at runtime via URL: `http://localhost:8080/#token=...&
 
 ## Deployment
 
-- Production: `https://agent.edoncore.com` (Render.com)
+- Production: `https://agent.edoncore.com` (Vercel)
 - Build command: `npm ci && npm run build`
 - Publish directory: `dist`
 - Requires SPA rewrite rule: `/*` → `/index.html`
