@@ -271,7 +271,7 @@ export function buildGreeting(ctx: DashboardContext): string {
     const blockPct = total > 0 ? Math.round((b / total) * 100) : 0;
     if (b > 0) {
       lines.push(`In the last 24h, **${b}** actions were blocked (${blockPct}% of ${total} total).`);
-      if (ctx.block_reasons.length > 0) {
+      if (ctx.block_reasons?.length > 0) {
         lines.push(`Top reason: **${friendlyName(ctx.block_reasons[0].reason)}** — flagged ${ctx.block_reasons[0].count}× today.`);
       }
     } else {
@@ -369,7 +369,7 @@ export function buildSystemPrompt(ctx: DashboardContext): string {
   }
 
   // Recent audit sample
-  if (ctx.recent_audit.length > 0) {
+  if (ctx.recent_audit?.length > 0) {
     lines.push("### Recent audit events (latest 20)");
     ctx.recent_audit.slice(0, 20).forEach((d) => {
       const tool = d.tool && d.op ? `${d.tool}.${d.op}` : d.tool || "—";
@@ -379,7 +379,7 @@ export function buildSystemPrompt(ctx: DashboardContext): string {
   }
 
   // Policy packs
-  if (ctx.policy_packs.length > 0) {
+  if (ctx.policy_packs?.length > 0) {
     lines.push("### Available policy packs");
     ctx.policy_packs.forEach((p) => lines.push(`- ${p.name} (${p.risk_level}): ${p.description}`));
     lines.push("");
@@ -444,7 +444,7 @@ export function dashboardContextToPromptText(ctx: DashboardContext): string {
     );
   }
 
-  if (ctx.block_reasons.length > 0) {
+  if (ctx.block_reasons?.length > 0) {
     lines.push("### Top block reasons", "");
     ctx.block_reasons.slice(0, 10).forEach((r) => lines.push(`- ${r.reason}: ${r.count}`));
     lines.push("");
@@ -459,7 +459,7 @@ export function dashboardContextToPromptText(ctx: DashboardContext): string {
     lines.push("");
   }
 
-  if (ctx.recent_audit.length > 0) {
+  if (ctx.recent_audit?.length > 0) {
     lines.push("### Recent audit events (sample)", "");
     ctx.recent_audit.slice(0, 15).forEach((d) => {
       const toolOp = d.tool && d.op ? `${d.tool}.${d.op}` : "—";
@@ -468,7 +468,7 @@ export function dashboardContextToPromptText(ctx: DashboardContext): string {
     lines.push("");
   }
 
-  if (ctx.policy_packs.length > 0) {
+  if (ctx.policy_packs?.length > 0) {
     lines.push("### Policy packs", "");
     ctx.policy_packs.forEach((p) => lines.push(`- ${p.name}: ${p.description} (${p.risk_level})`));
   }
@@ -548,7 +548,7 @@ export function getDashboardAwareReply(query: string, ctx: DashboardContext): st
     : friendlyName(v);
 
   const whyBlock = (): string => {
-    if (ctx.block_reasons.length > 0) {
+    if (ctx.block_reasons?.length > 0) {
       const lines = ctx.block_reasons.slice(0, 6).map((r) => `- **${friendlyName(r.reason)}**: ${r.count}×`);
       return "**Why actions were blocked**\n" + lines.join("\n");
     }
@@ -584,7 +584,7 @@ export function getDashboardAwareReply(query: string, ctx: DashboardContext): st
 
   const policyBlock = (): string => {
     const preset = friendlyName(ctx.health?.active_preset);
-    const n = ctx.policy_packs.length;
+    const n = ctx.policy_packs?.length;
     const lines = [`**Active mode:** ${preset}`, `**Policy packs (${n}):**`];
     if (n > 0) {
       ctx.policy_packs.forEach((p) => lines.push(`- **${friendlyName(p.name)}** (${p.risk_level})${p.description ? `: ${p.description}` : ""}`));
@@ -595,7 +595,7 @@ export function getDashboardAwareReply(query: string, ctx: DashboardContext): st
   };
 
   const auditBlock = (): string => {
-    const n = ctx.recent_audit.length;
+    const n = ctx.recent_audit?.length;
     if (n === 0) return "No audit events in this snapshot. Open the Audit page for full history.";
     const lines = ctx.recent_audit.slice(0, 6).map((d) => {
       const op = d.tool && d.op ? `${d.tool}.${d.op}` : d.tool ?? "—";
@@ -678,7 +678,7 @@ export function getDashboardAwareReply(query: string, ctx: DashboardContext): st
 
     // Nothing matched — say so and list governance modes + API packs
     const modeList = GOVERNANCE_MODES.map((m) => `- **${m.title}**: ${m.what}`).join("\n");
-    const apiPacks = ctx.policy_packs.length > 0
+    const apiPacks = ctx.policy_packs?.length > 0
       ? ctx.policy_packs.map((p) => `- **${friendlyName(p.name)}** (${p.risk_level}): ${p.description}`).join("\n")
       : "";
 
@@ -699,7 +699,7 @@ export function getDashboardAwareReply(query: string, ctx: DashboardContext): st
 
   if (totalSignals === 0) {
     // Completely ambiguous — full dashboard summary
-    return [statusBlock(), "", metricsBlock(), "", ctx.block_reasons.length > 0 ? whyBlock() : ""].filter(Boolean).join("\n");
+    return [statusBlock(), "", metricsBlock(), "", ctx.block_reasons?.length > 0 ? whyBlock() : ""].filter(Boolean).join("\n");
   }
 
   // Ordered by likely relevance; never include a section unless its intent scored
