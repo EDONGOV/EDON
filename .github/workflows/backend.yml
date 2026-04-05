@@ -45,15 +45,18 @@ jobs:
     name: Deploy to Fly.io
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && secrets.FLY_API_TOKEN != ''
+
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Install flyctl
+        run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
 
       - name: Deploy
-        if: env.FLY_API_TOKEN != ''
         run: flyctl deploy --remote-only
         working-directory: backend
         env:
