@@ -45,7 +45,7 @@ jobs:
     name: Deploy to Fly.io
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && secrets.FLY_API_TOKEN != ''
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
 
     permissions:
       contents: read
