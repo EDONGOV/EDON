@@ -1,0 +1,125 @@
+"""EDON Docs Agent — keeps docs/api-reference.md in sync with the codebase.
+
+Reads the git diff of changed backend files, compares against the current
+API reference, and rewrites any sections that are stale or missing.
+
+Usage (local):
+    git diff HEAD~1 HEAD -- 'backend/edon_gateway/**' | \\
+    ANTHROPIC_API_KEY=xxx python -m agents.docs_agent
+
+GitHub Actions: see .github/workflows/docs_agent.yml
+The workflow writes the diff to EDON_GIT_DIFF env var and runs this script.
+If docs changed, the workflow opens a PR automatically.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import anthropic
+
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+API_REF_PATH = REPO_ROOT / "docs" / "api-reference.md"
+GOVERNANCE_MODEL_PATH = REPO_ROOT / "docs" / "governance-model.md"
+CLINICAL_SAFETY_PATH = REPO_ROOT / "backend" / "edon_gateway" / "clinical_safety.py"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return f"[file not found: {path}]"
+
+
+def _get_diff() -> str:
+    """Read diff from EDON_GIT_DIFF env var or stdin."""
+    diff = os.environ.get("EDON_GIT_DIFF", "").strip()
+    if diff:
+        return diff
+    if not sys.stdin.isatty():
+        return sys.stdin.read().strip()
+    return ""
+
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+
+def run() -> int:
+    diff = _get_diff()
+    if not diff:
+        print("[docs] No diff provided — nothing to do.")
+        return 0
+
+    # Only care about meaningful backend changes
+    relevant_markers = [
+        "@router.", "def ", "class ", "rule_code", "condition_tool",
+        "CLINICAL_SAFETY_RULES", "POLICY_PACKS", "REQUIRED_RULES",
+    ]
+    if not any(m in diff for m in relevant_markers):
+        print("[docs] Diff contains no API/rule changes — skipping.")
+        return 0
+
+    print("[docs] Relevant changes detected. Reading current docs...")
+
+    current_api_ref = _read(API_REF_PATH)
+    clinical_safety_src = _read(CLINICAL_SAFETY_PATH)
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    print("[docs] Sending to Claude for doc update...")
+
+    prompt = f"""You are the docs agent for EDON, an AI governance platform.
+Your job is to keep `docs/api-reference.md` accurate and complete.
+
+A developer just pushed code changes. Here is the git diff:
+
+<diff>
+{diff[:8000]}
+</diff>
+
+Here is the current `docs/api-reference.md`:
+
+<current_docs>
+{current_api_ref}
+</current_docs>
+
+Here is the current `clinical_safety.py` (regulation rule definitions):
+
+<clinical_safety>
+{clinical_safety_src[:4000]}
+</clinical_safety>
+
+Tasks:
+1. Identify what changed: new routes, modified routes, removed routes, new/changed policy rules
+2. Rewrite ONLY the sections of the API reference that are now stale or missing
+3. If new regulation rules were added, update the governance model section if present
+4. Do NOT change sections that are still accurate
+5. Do NOT add marketing fluff — keep the same technical, direct tone
+
+Return the COMPLETE updated `docs/api-reference.md` content.
+Start directly with the markdown — no preamble."""
+
+    msg = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    updated_content = str(getattr(msg.content[0], "text", msg.content[0]))
+
+    if updated_content.strip() == current_api_ref.strip():
+        print("[docs] No changes needed — docs are already accurate.")
+        return 0
+
+    API_REF_PATH.write_text(updated_content, encoding="utf-8")
+    print(f"[docs] Updated {API_REF_PATH}")
+    print("[docs] Done. If running in CI, the workflow will open a PR.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

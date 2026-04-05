@@ -1,0 +1,40 @@
+name: Account Manager (Weekly)
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"   # Monday 8am UTC — read the report with your morning coffee
+  workflow_dispatch:       # manual run anytime
+
+jobs:
+  weekly-review:
+    name: Run AM review for all clients
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.gateway.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.gateway.txt anthropic
+
+      - name: Run account manager for all clients
+        working-directory: backend
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EDON_API_TOKEN: ${{ secrets.EDON_API_TOKEN }}
+          EDON_GATEWAY_URL: ${{ secrets.EDON_GATEWAY_URL }}
+        run: python -m agents.account_manager --all
+
+      - name: Upload weekly AM report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: am-weekly-report-${{ github.run_number }}
+          path: backend/agents/am_weekly_report.json
+          retention-days: 90

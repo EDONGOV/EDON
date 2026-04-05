@@ -1,0 +1,43 @@
+name: Ops Agent (Daily)
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 7am UTC every day — ready when you start work
+  workflow_dispatch:       # run manually anytime
+
+jobs:
+  ops-review:
+    name: Daily ops review
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.gateway.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.gateway.txt anthropic
+
+      - name: Run ops agent
+        working-directory: backend
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EDON_API_TOKEN: ${{ secrets.EDON_API_TOKEN }}
+          EDON_GATEWAY_URL: ${{ secrets.EDON_GATEWAY_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          EDON_ADMIN_TENANT_ID: ${{ secrets.EDON_ADMIN_TENANT_ID || 'tenant_dev' }}
+        run: python -m agents.ops_agent
+
+      - name: Upload ops report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ops-report-${{ github.run_number }}
+          path: backend/agents/ops_report.json
+          retention-days: 30
