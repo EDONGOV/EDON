@@ -113,6 +113,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 "/billing/webhook",
                 "/billing/plans",   # Public: list plans for pricing page / console
                 "/billing/checkout",  # Public: start checkout (session created server-side)
+                "/admin/bootstrap-api-key",  # Protected by X-Bootstrap-Secret, not tenant auth
             }
             path = request.url.path.rstrip("/")
             if path not in public_paths:
