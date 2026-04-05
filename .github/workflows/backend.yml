@@ -56,7 +56,9 @@ jobs:
         run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
 
       - name: Authenticate Fly (Staging)
-        run: flyctl auth token ${{ secrets.FLY_STAGING_DEPLOY_TOKEN }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_STAGING_DEPLOY_TOKEN }}
+        run: flyctl auth login --access-token $FLY_API_TOKEN
 
       - name: Verify Fly auth (Staging)
         run: flyctl status --app edon
@@ -69,7 +71,7 @@ jobs:
     name: Deploy to Fly.io Production
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'  # only master or main triggers production
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'  # deploy prod from master/main
     permissions:
       contents: read
 
@@ -80,7 +82,9 @@ jobs:
         run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
 
       - name: Authenticate Fly (Prod)
-        run: flyctl auth token ${{ secrets.FLY_PROD_DEPLOY_TOKEN }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_PROD_DEPLOY_TOKEN }}
+        run: flyctl auth login --access-token $FLY_API_TOKEN
 
       - name: Verify Fly auth (Prod)
         run: flyctl status --app edon-gateway-prod
