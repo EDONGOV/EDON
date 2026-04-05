@@ -1,4 +1,4 @@
-name: Backend
+name: Backend CI/CD
 
 on:
   push:
@@ -14,7 +14,7 @@ on:
 
 jobs:
   test:
-    name: Test
+    name: Run Tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -41,27 +41,50 @@ jobs:
           EDON_CREDENTIALS_STRICT: "false"
           EDON_STRICT_FAIL_CLOSED: "false"
 
-  deploy:
-    name: Deploy to Fly.io
+  deploy-staging:
+    name: Deploy to Fly.io Staging
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
-
+    if: github.ref == 'refs/heads/main'  # staging deploy only from main
     permissions:
       contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install flyctl
+      - name: Install Fly CLI
         run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
 
-      - name: Authenticate Fly
-        run: flyctl auth token ${{ secrets.FLY_API_TOKEN }}
+      - name: Authenticate Fly (Staging)
+        run: flyctl auth token ${{ secrets.FLY_STAGING_DEPLOY_TOKEN }}
 
-      - name: Verify Fly auth
+      - name: Verify Fly auth (Staging)
+        run: flyctl status --app edon
+
+      - name: Deploy to Staging
+        run: flyctl deploy --remote-only --app edon
+        working-directory: backend
+
+  deploy-prod:
+    name: Deploy to Fly.io Production
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'  # only master or main triggers production
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Fly CLI
+        run: curl -L https://fly.io/install.sh | sh && echo "$HOME/.fly/bin" >> $GITHUB_PATH
+
+      - name: Authenticate Fly (Prod)
+        run: flyctl auth token ${{ secrets.FLY_PROD_DEPLOY_TOKEN }}
+
+      - name: Verify Fly auth (Prod)
         run: flyctl status --app edon-gateway-prod
 
-      - name: Deploy
-        run: flyctl deploy --remote-only
+      - name: Deploy to Production
+        run: flyctl deploy --remote-only --app edon-gateway-prod
         working-directory: backend
