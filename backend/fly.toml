@@ -3,7 +3,7 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'edon-gateway'
+app = 'edon-gateway-prod'
 primary_region = 'iad'
 
 [build]
@@ -20,7 +20,7 @@ primary_region = 'iad'
   EDON_ALLOW_ENV_TOKEN_IN_PROD = 'false'
   EDON_WORKERS = '4'
   # Explicit CORS origins — required when allow_credentials=True (no wildcard allowed in prod)
-  EDON_CORS_ORIGINS = 'https://edoncore.com,https://www.edoncore.com,https://agent.edoncore.com,https://console.edoncore.com,https://edon-gateway.fly.dev'
+  EDON_CORS_ORIGINS = 'https://edoncore.com,https://www.edoncore.com,https://agent.edoncore.com,https://console.edoncore.com,https://edon-gateway-prod.fly.dev'
   # Clerk JWT verification — live production instance JWKS endpoint (public, no auth required)
   # Derived from pk_live_Y2xlcmsuZWRvbmNvcmUuY29tJA → clerk.edoncore.com
   CLERK_JWKS_URL = 'https://clerk.edoncore.com/.well-known/jwks.json'
