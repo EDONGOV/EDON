@@ -395,6 +395,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/billing/webhook",
         "/integrations/telegram/verify-code",
         "/admin/bootstrap-api-key",
+        "/telegram/bot-webhook",
     }
 
     async def dispatch(self, request: Request, call_next):

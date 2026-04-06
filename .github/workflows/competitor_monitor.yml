@@ -1,0 +1,40 @@
+name: Competitor Monitor (Weekly)
+
+on:
+  schedule:
+    - cron: "0 9 * * 3"   # Wednesday 9am UTC
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: Weekly competitor scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.gateway.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.gateway.txt anthropic
+
+      - name: Run competitor monitor
+        working-directory: backend
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m agents.competitor_monitor
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-report-${{ github.run_number }}
+          path: backend/agents/competitor_report_latest.json
+          retention-days: 90

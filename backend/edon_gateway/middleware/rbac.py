@@ -114,6 +114,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 "/billing/plans",   # Public: list plans for pricing page / console
                 "/billing/checkout",  # Public: start checkout (session created server-side)
                 "/admin/bootstrap-api-key",  # Protected by X-Bootstrap-Secret, not tenant auth
+                "/telegram/bot-webhook",     # Protected by X-Telegram-Bot-Api-Secret-Token
             }
             path = request.url.path.rstrip("/")
             if path not in public_paths:
