@@ -1,0 +1,48 @@
+name: Code Agent (Weekly)
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"   # Sunday 6am UTC — after a full week of data
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (show changes without applying)"
+        required: false
+        default: "true"
+
+jobs:
+  improve:
+    name: Auto-improve codebase
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.gateway.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.gateway.txt anthropic pytest pytest-asyncio httpx anyio
+
+      - name: Run Code Agent
+        working-directory: backend
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EDON_API_TOKEN: ${{ secrets.EDON_API_TOKEN }}
+          EDON_GATEWAY_URL: ${{ secrets.EDON_GATEWAY_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
+            python -m agents.code_agent
+          else
+            python -m agents.code_agent --dry-run
+          fi

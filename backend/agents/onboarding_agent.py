@@ -1,27 +1,28 @@
-"""EDON Onboarding Agent — provisions a new tenant end-to-end.
+"""EDON Onboarding Agent — end-to-end client provisioning in one command.
 
-Given a customer's name, email, declared regulations, and use case,
-this agent:
-  1. Provisions the tenant via POST /admin/provision
-  2. Creates an API key
-  3. Activates clinical safety mode with regulation-specific rules
-  4. Runs a compliance health check
-  5. Uses Claude to write a personalised welcome brief
-
-You review the output and send it. Nothing is sent automatically.
+Does everything:
+  1. Generates a secure API token
+  2. Provisions the tenant via /admin/bootstrap-api-key
+  3. Applies the correct policy pack (hospital/clinical_saas/medical_device)
+  4. Activates clinical safety mode (16 regulation-mapped rules)
+  5. Runs compliance health check
+  6. Generates personalised welcome email with Claude
+  7. Sends the email to the client (via SMTP/Gmail)
+  8. Notifies you on Telegram with the client's credentials
 
 Usage:
-    echo '{
-      "name": "Acme Health",
-      "email": "cto@acme.com",
-      "regulations": ["HIPAA", "HITECH"],
-      "use_case": "Clinical AI assistant for EHR workflows",
-      "plan": "enterprise"
-    }' | ANTHROPIC_API_KEY=xxx EDON_API_TOKEN=xxx \\
-        EDON_BOOTSTRAP_SECRET=xxx python -m agents.onboarding_agent
+    python -m agents.onboarding_agent \\
+        --name "Acme Hospital" \\
+        --email cto@acmehospital.com \\
+        --tenant acme-hospital \\
+        --plan hospital \\
+        --use-case "Clinical AI for radiology and pharmacy workflows"
 
-    # Or from file:
-    ANTHROPIC_API_KEY=xxx ... python -m agents.onboarding_agent --input customer.json
+Required env vars:
+    ANTHROPIC_API_KEY, EDON_API_TOKEN, EDON_BOOTSTRAP_SECRET, EDON_GATEWAY_URL
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (for founder notification)
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD (for email delivery)
+    FOUNDER_EMAIL (shown as reply-to in welcome email)
 """
 
 from __future__ import annotations
@@ -29,8 +30,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import smtplib
 import sys
 from datetime import datetime, UTC
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 
@@ -38,205 +43,371 @@ import requests
 import anthropic
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev").rstrip("/")
+GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway-prod.fly.dev").rstrip("/")
 API_TOKEN = os.environ["EDON_API_TOKEN"]
-BOOTSTRAP_SECRET = os.environ.get("EDON_BOOTSTRAP_SECRET", "")
+BOOTSTRAP_SECRET = os.environ.get("EDON_BOOTSTRAP_SECRET", "edon-bootstrap-2026")
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ONBOARDING_DOC = REPO_ROOT / "backend" / "docs" / "ONBOARDING.md"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+FOUNDER_EMAIL = os.environ.get("FOUNDER_EMAIL", "charliebiggins.edon@gmail.com")
+FOUNDER_NAME = os.environ.get("FOUNDER_NAME", "Charlie")
+
+AGENTS_DIR = Path(__file__).parent
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+PLAN_TO_POLICY_PACK = {
+    "hospital":       "hospital",
+    "hipaa":          "hospital",
+    "clinical_saas":  "ops_commander",
+    "medical_device": "autonomy_mode",
+    "pro":            "ops_commander",
+    "scale":          "ops_commander",
+    "free":           "ops_commander",
+    "enterprise":     "hospital",
+}
 
 
 # ── Gateway calls ─────────────────────────────────────────────────────────────
 
-def _admin_headers() -> dict[str, str]:
+def _headers(token: str | None = None) -> dict[str, str]:
     return {
-        "X-EDON-TOKEN": API_TOKEN,
-        "X-Bootstrap-Secret": BOOTSTRAP_SECRET,
+        "X-EDON-TOKEN": token or API_TOKEN,
         "Content-Type": "application/json",
     }
 
 
-def _tenant_headers(tenant_id: str) -> dict[str, str]:
-    return {
-        "X-EDON-TOKEN": API_TOKEN,
-        "X-Tenant-ID": tenant_id,
-        "Content-Type": "application/json",
-    }
-
-
-def provision_tenant(name: str, plan: str) -> dict[str, Any]:
-    """Call POST /admin/provision to create tenant + initial API key."""
-    if not BOOTSTRAP_SECRET:
-        raise RuntimeError("EDON_BOOTSTRAP_SECRET is required to provision tenants")
+def provision_tenant(
+    tenant_id: str,
+    name: str,
+    plan: str,
+    email: str,
+    token: str,
+) -> dict[str, Any]:
     r = requests.post(
-        f"{GATEWAY_URL}/admin/provision",
-        headers=_admin_headers(),
-        json={"tenant_name": name, "plan": plan, "key_name": f"{name} - Initial Key"},
+        f"{GATEWAY_URL}/admin/bootstrap-api-key",
+        headers={"X-Bootstrap-Secret": BOOTSTRAP_SECRET, "Content-Type": "application/json"},
+        json={
+            "token": token,
+            "tenant_id": tenant_id,
+            "name": f"{name} — Admin Key",
+            "role": "admin",
+            "plan": plan,
+            "email": email,
+        },
         timeout=15,
     )
     r.raise_for_status()
     return r.json()
 
 
-def activate_clinical_safety(tenant_id: str, activated_by: str) -> dict[str, Any]:
+def apply_policy_pack(tenant_token: str, pack_name: str, objective: str) -> dict[str, Any]:
+    r = requests.post(
+        f"{GATEWAY_URL}/policy-packs/{pack_name}/apply",
+        headers=_headers(tenant_token),
+        json={"objective": objective},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def activate_clinical_safety(tenant_token: str, email: str) -> dict[str, Any]:
     r = requests.post(
         f"{GATEWAY_URL}/compliance/clinical-safety/activate",
-        headers=_tenant_headers(tenant_id),
-        json={"activated_by": activated_by},
+        headers=_headers(tenant_token),
+        json={"activated_by": f"onboarding:{email}"},
         timeout=15,
     )
     r.raise_for_status()
     return r.json()
 
 
-def compliance_health(tenant_id: str) -> dict[str, Any]:
+def compliance_health(tenant_token: str) -> dict[str, Any]:
     r = requests.get(
         f"{GATEWAY_URL}/compliance/health",
-        headers=_tenant_headers(tenant_id),
+        headers=_headers(tenant_token),
         timeout=15,
     )
     r.raise_for_status()
     return r.json()
 
 
-# ── Welcome brief ──────────────────────────────��──────────────────────────────
+# ── Email generation ──────────────────────────────────────────────────────────
 
-def generate_welcome_brief(
-    customer: dict[str, Any],
+def generate_welcome_email(
+    name: str,
+    contact_email: str,
     tenant_id: str,
-    api_key: str,
-    clinical_safety_result: dict[str, Any],
+    token: str,
+    plan: str,
+    use_case: str,
+    rules_activated: int,
     health: dict[str, Any],
-) -> str:
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+) -> dict[str, str]:
+    """Generate personalised welcome email using Claude."""
 
-    onboarding_doc = ""
-    try:
-        onboarding_doc = ONBOARDING_DOC.read_text(encoding="utf-8")[:3000]
-    except FileNotFoundError:
-        pass
+    passing = [k for k, v in health.get("regulations", {}).items() if v.get("status") == "pass"]
+    failing = [k for k, v in health.get("regulations", {}).items() if v.get("status") != "pass"]
 
-    activated_rules = clinical_safety_result.get("total_rules", 0)
-    regs = customer.get("regulations", [])
-    use_case = customer.get("use_case", "")
+    prompt = f"""You are writing a welcome email on behalf of {FOUNDER_NAME} at EDON (edoncore.com).
+EDON is an AI governance platform built for healthtech — it governs every AI agent action in real time.
 
-    prompt = f"""You are writing a technical welcome brief for a new EDON customer.
-Customer: {customer['name']}
-Contact: {customer['email']}
-Use case: {use_case}
-Declared regulations: {', '.join(regs)}
-
-Their EDON account is now live:
+New client details:
+- Organisation: {name}
+- Contact: {contact_email}
+- Plan: {plan}
+- Use case: {use_case}
 - Tenant ID: {tenant_id}
-- API Key: {api_key}  (this is shown once — they must store it securely)
-- Clinical safety rules activated: {activated_rules} rules seeded and protected
-- Compliance health: {json.dumps(health, indent=2)[:500]}
+- API Token: {token}
+- Clinical safety rules activated: {rules_activated}
+- Compliant regulations: {', '.join(passing) if passing else 'none yet'}
+- Regulations needing attention: {', '.join(failing) if failing else 'none'}
+- Console URL: https://console.edoncore.com
+- Gateway URL: {GATEWAY_URL}
 
-Here is the standard onboarding guide for reference:
-{onboarding_doc}
+Write a professional, warm but direct welcome email. Sections:
+1. Brief welcome (1-2 sentences, specific to their use case)
+2. What's been set up (tenant ID, rules, compliance status)
+3. Credentials block (clearly formatted — token, gateway URL, console URL)
+4. First 3 steps to get their first AI agent governed
+5. Direct contact info ({FOUNDER_EMAIL})
 
-Write a concise, technical welcome brief (plain markdown) that:
-1. Confirms their account is live and what was configured
-2. Lists their API key and tenant ID (they need these)
-3. Explains the 2-3 most important first steps tailored to their use case and regulations
-4. Points to the right docs for their specific situation (e.g. if HIPAA is declared, point to clinical safety docs)
-5. Tells them how to reach you if they hit an issue
+Rules:
+- Keep it under 350 words
+- The credentials must be clearly visible, not buried
+- Tone: confident, technical, founder-to-founder
+- No generic filler like "We're thrilled to have you"
+- Sign off as {FOUNDER_NAME}, EDON
 
-Tone: direct, technical, confident. No fluff. Under 400 words."""
+Return JSON:
+{{
+  "subject": "Your EDON account is live — credentials inside",
+  "plain_text": "full plain text email",
+  "html": "full HTML email with basic styling (inline CSS, clean font, credential box highlighted)"
+}}"""
 
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=800,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}],
     )
-    return str(getattr(msg.content[0], "text", msg.content[0]))
+    raw = str(getattr(msg.content[0], "text", msg.content[0]))
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start == -1:
+        return {
+            "subject": f"Your EDON account is live — {name}",
+            "plain_text": raw,
+            "html": f"<pre>{raw}</pre>",
+        }
+    try:
+        return json.loads(raw[start:end])
+    except json.JSONDecodeError:
+        return {"subject": f"Your EDON account is live — {name}", "plain_text": raw, "html": f"<pre>{raw}</pre>"}
+
+
+# ── Email delivery ────────────────────────────────────────────────────────────
+
+def send_email(to_email: str, subject: str, plain_text: str, html: str) -> bool:
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print("No SMTP credentials — email not sent. Set SMTP_USER and SMTP_PASSWORD.")
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{FOUNDER_NAME} at EDON <{SMTP_USER}>"
+        msg["To"] = to_email
+        msg["Reply-To"] = FOUNDER_EMAIL
+        msg.attach(MIMEText(plain_text, "plain"))
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, to_email, msg.as_string())
+
+        print(f"✓ Welcome email sent to {to_email}")
+        return True
+    except Exception as exc:
+        print(f"Email delivery failed: {exc}")
+        return False
+
+
+# ── Telegram notification ─────────────────────────────────────────────────────
+
+def notify_telegram(
+    name: str,
+    tenant_id: str,
+    token: str,
+    email: str,
+    plan: str,
+    rules: int,
+    email_sent: bool,
+) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    msg = (
+        f"🎉 *New client onboarded!*\n\n"
+        f"*{name}*\n"
+        f"📧 {email}\n"
+        f"📋 Plan: `{plan}`\n"
+        f"🏥 Rules activated: {rules}\n\n"
+        f"*Credentials:*\n"
+        f"Tenant: `{tenant_id}`\n"
+        f"Token: `{token[:16]}...` _(truncated)_\n\n"
+        f"{'✅ Welcome email sent' if email_sent else '⚠️ Email not sent — check SMTP config'}\n"
+        f"Console: https://console.edoncore.com"
+    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as exc:
+        print(f"Telegram notification failed: {exc}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def onboard(customer: dict[str, Any]) -> int:
-    name = customer["name"]
-    email = customer.get("email", "")
-    plan = customer.get("plan", "starter")
+def onboard(
+    name: str,
+    email: str,
+    tenant_id: str,
+    plan: str,
+    use_case: str,
+) -> int:
+    print(f"\n{'='*60}")
+    print(f"EDON Onboarding — {name}")
+    print(f"{'='*60}\n")
 
-    print(f"[onboarding] Starting onboarding for: {name}")
+    # Generate secure token
+    token = secrets.token_hex(32)
+    print(f"Generated token: {token[:16]}...")
 
-    # Step 1 — Provision tenant
-    print("[onboarding] Provisioning tenant...")
+    # Step 1 — Provision
+    print("1. Provisioning tenant…")
     try:
-        prov = provision_tenant(name, plan)
+        prov = provision_tenant(tenant_id, name, plan, email, token)
+        print(f"   ✓ Tenant '{tenant_id}' created — key_id: {prov.get('key_id', '?')}")
     except Exception as exc:
-        print(f"[onboarding] Provision failed: {exc}")
-        print("[onboarding] Tip: set EDON_BOOTSTRAP_SECRET and ensure the gateway supports /admin/provision")
+        print(f"   ✗ Provisioning failed: {exc}")
         return 1
 
-    tenant_id = prov.get("tenant_id", "")
-    api_key = prov.get("api_key", "")
-    print(f"[onboarding] Tenant created: {tenant_id}")
-    print(f"[onboarding] API key: {api_key}")
-
-    # Step 2 — Activate clinical safety
-    print("[onboarding] Activating clinical safety mode...")
+    # Step 2 — Policy pack
+    pack = PLAN_TO_POLICY_PACK.get(plan.lower(), "ops_commander")
+    print(f"2. Applying policy pack '{pack}'…")
     try:
-        cs_result = activate_clinical_safety(tenant_id, activated_by=f"onboarding-agent:{email}")
-        print(f"[onboarding] {cs_result.get('message', 'clinical safety activated')}")
+        apply_policy_pack(token, pack, f"AI governance for {name} — {use_case}")
+        print(f"   ✓ Policy pack applied")
     except Exception as exc:
-        print(f"[onboarding] Clinical safety activation failed: {exc}")
-        cs_result = {}
+        print(f"   ⚠ Policy pack failed (non-fatal): {exc}")
 
-    # Step 3 — Compliance health check
-    print("[onboarding] Running compliance health check...")
+    # Step 3 — Clinical safety
+    print("3. Activating clinical safety mode…")
     try:
-        health = compliance_health(tenant_id)
-        status = health.get("status", "unknown")
-        print(f"[onboarding] Compliance health: {status}")
+        cs = activate_clinical_safety(token, email)
+        rules_count = cs.get("total_rules", 0)
+        print(f"   ✓ {rules_count} clinical safety rules activated")
     except Exception as exc:
-        print(f"[onboarding] Health check failed: {exc}")
+        print(f"   ⚠ Clinical safety failed (non-fatal): {exc}")
+        cs = {}
+        rules_count = 0
+
+    # Step 4 — Compliance check
+    print("4. Running compliance health check…")
+    try:
+        health = compliance_health(token)
+        overall = health.get("overall", "unknown")
+        print(f"   ✓ Compliance: {overall}")
+    except Exception as exc:
+        print(f"   ⚠ Health check failed (non-fatal): {exc}")
         health = {}
 
-    # Step 4 — Generate welcome brief
-    print("[onboarding] Generating welcome brief with Claude...")
-    brief = generate_welcome_brief(customer, tenant_id, api_key, cs_result, health)
+    # Step 5 — Generate welcome email
+    print("5. Generating welcome email…")
+    email_content = generate_welcome_email(
+        name=name,
+        contact_email=email,
+        tenant_id=tenant_id,
+        token=token,
+        plan=plan,
+        use_case=use_case,
+        rules_activated=rules_count,
+        health=health,
+    )
+    print("   ✓ Email generated")
 
-    output = {
-        "run_at": datetime.now(UTC).isoformat(),
+    # Step 6 — Send email
+    print(f"6. Sending welcome email to {email}…")
+    email_sent = send_email(
+        to_email=email,
+        subject=email_content.get("subject", f"Your EDON account is live — {name}"),
+        plain_text=email_content.get("plain_text", ""),
+        html=email_content.get("html", ""),
+    )
+
+    # Step 7 — Telegram notification
+    notify_telegram(name, tenant_id, token, email, plan, rules_count, email_sent)
+
+    # Save full record
+    record = {
+        "onboarded_at": datetime.now(UTC).isoformat(),
+        "name": name,
+        "email": email,
         "tenant_id": tenant_id,
-        "api_key": api_key,
-        "clinical_safety": cs_result,
+        "token": token,
+        "plan": plan,
+        "policy_pack": pack,
+        "rules_activated": rules_count,
         "compliance_health": health,
-        "welcome_brief": brief,
+        "email_sent": email_sent,
+        "welcome_email_subject": email_content.get("subject", ""),
+        "welcome_email_plain": email_content.get("plain_text", ""),
     }
+    out_path = AGENTS_DIR / f"onboarding_{tenant_id}.json"
+    out_path.write_text(json.dumps(record, indent=2))
 
-    print("\n" + "=" * 60)
-    print("WELCOME BRIEF (review and send to customer)")
-    print("=" * 60)
-    print(brief)
-    print("=" * 60 + "\n")
+    print(f"\n{'='*60}")
+    print("WELCOME EMAIL PREVIEW")
+    print(f"{'='*60}")
+    print(f"To: {email}")
+    print(f"Subject: {email_content.get('subject', '')}")
+    print(f"\n{email_content.get('plain_text', '')}")
+    print(f"{'='*60}")
+    print(f"\n✓ Onboarding complete — saved to {out_path}")
+    print(f"  Tenant: {tenant_id}")
+    print(f"  Token:  {token}")
+    print(f"  Email:  {'sent' if email_sent else 'not sent (configure SMTP)'}")
 
-    # Write full output to file for reference
-    out_path = Path(__file__).parent / f"onboarding_{tenant_id}.json"
-    out_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
-    print(f"[onboarding] Full output saved to {out_path}")
-    print("[onboarding] Done. Review the brief above, then send it to the customer.")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="EDON Onboarding Agent")
-    parser.add_argument("--input", help="Path to JSON file with customer details")
+    parser.add_argument("--name",      required=True, help="Organisation name")
+    parser.add_argument("--email",     required=True, help="Client contact email")
+    parser.add_argument("--tenant",    required=True, help="Tenant ID (slug, e.g. acme-hospital)")
+    parser.add_argument("--plan",      default="hospital", help="Plan: hospital | pro | scale | free")
+    parser.add_argument("--use-case",  default="AI governance for healthcare workflows",
+                        help="Client's use case (used to personalise the welcome email)")
     args = parser.parse_args()
 
-    if args.input:
-        with open(args.input) as f:
-            customer = json.load(f)
-    elif not sys.stdin.isatty():
-        customer = json.load(sys.stdin)
-    else:
-        parser.print_help()
-        print("\nExpected JSON fields: name, email, regulations (list), use_case, plan")
-        return 1
-
-    return onboard(customer)
+    return onboard(
+        name=args.name,
+        email=args.email,
+        tenant_id=args.tenant,
+        plan=args.plan,
+        use_case=args.use_case,
+    )
 
 
 if __name__ == "__main__":
