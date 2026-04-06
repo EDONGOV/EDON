@@ -26,6 +26,8 @@ from ..logging_config import get_logger
 from ..tenancy import get_request_tenant_id
 from ..monitoring.metrics import metrics as metrics_collector
 from ..fleet_learning import get_fleet_learning_engine
+from ..security.phi_allowlist import check_params as phi_check_params
+from ..security.audit_reason_formatter import format_reason as fmt_audit_reason
 
 # Simple TTL cache for per-tenant policy rules.
 # Rules are loaded from DB at most once per TTL window per tenant,
@@ -370,6 +372,30 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as e:
             logger.warning(f"Failed to load tenant policy rules for {tenant_id}: {e}")
 
+    # ── PHI endpoint allowlist check ────────────────────────────────────────────
+    # Block any action that tries to send data to an unauthorized URL.
+    # Runs before the governor so it never hits policy evaluation.
+    if tenant_id:
+        try:
+            _phi_allowed, _phi_url, _phi_reason = phi_check_params(
+                tenant_id=tenant_id,
+                params=action_params,
+            )
+            if not _phi_allowed:
+                latency_ms = int((time.time() - start_time) * 1000)
+                logger.warning(
+                    "[/v1/action] PHI allowlist block: agent=%s url=%s tenant=%s",
+                    req.agent_id, _phi_url, tenant_id,
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=_phi_reason or "Action blocked — unauthorized endpoint (PHI-EXFIL-001).",
+                )
+        except HTTPException:
+            raise
+        except Exception as _phi_err:
+            logger.warning("PHI allowlist check failed (non-blocking): %s", _phi_err)
+
     # Evaluate action through governor (use shared module-level instance for loop detection).
     # Fall back to a fresh instance in test environments where startup event hasn't fired.
     governor = getattr(request.app.state, "governor", None)
@@ -580,7 +606,20 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _learning_err:
         logger.warning("auto learning feedback failed (non-blocking): %s", _learning_err)
 
-    # Dispatch governance event webhooks (non-blocking)
+    # ── Audit-ready reason formatting ────────────────────────────────────────
+    # Rewrite the explanation into regulation-mapped, auditor-friendly language.
+    try:
+        decision.explanation = fmt_audit_reason(
+            verdict=verdict_str,
+            reason_code=decision.reason_code.value if decision.reason_code else None,
+            decision_id=decision_id,
+            agent_id=req.agent_id,
+            original_explanation=decision.explanation or "",
+        )
+    except Exception:
+        pass  # Never block on formatter failure
+
+    # ── Dispatch governance event webhooks (non-blocking) ────────────────────
     if tenant_id:
         try:
             from ..webhooks import dispatch_event
@@ -598,6 +637,9 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                     "agent_id": req.agent_id,
                     "verdict": _verdict,
                     "reason": decision.explanation,
+                    "escalation_question": decision.escalation_question or "",
+                    "escalation_options": decision.escalation_options or [],
+                    "review_url": f"https://console.edoncore.com",
                 },
                 tenant_id=tenant_id,
                 db=db,
@@ -605,7 +647,64 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _wh_err:
             logger.warning("Webhook dispatch failed (non-blocking): %s", _wh_err)
 
-    # Evaluate anomaly/threshold alert rules (non-blocking, fire-and-forget)
+    # ── Enqueue HUMAN_REQUIRED escalations for review + Telegram notify ──────
+    if verdict_str in ("ESCALATE", "PAUSE") and tenant_id:
+        try:
+            from .review_queue import enqueue_escalation, notify_escalation_async
+            _record = {
+                "decision_id": decision_id,
+                "tenant_id": tenant_id,
+                "agent_id": req.agent_id,
+                "action_type": req.action_type,
+                "action_payload": dict(req.action_payload or {}),
+                "escalation_question": decision.escalation_question or "Human review required.",
+                "explanation": decision.explanation,
+                "meta": decision.meta or {},
+            }
+            enqueue_escalation(**_record)
+            notify_escalation_async(_record)
+        except Exception as _esq_err:
+            logger.warning("Escalation enqueue failed (non-blocking): %s", _esq_err)
+
+    # ── Anomaly Telegram alert ────────────────────────────────────────────────
+    # If anomaly score is high (>= 75), send Telegram alert immediately.
+    # This is advisory — we alert, we don't claim to detect every threat.
+    _anomaly_meta_v = (decision.meta or {}).get("anomaly", {})
+    _anomaly_score_v = _anomaly_meta_v.get("score", 0.0) if _anomaly_meta_v else 0.0
+    if _anomaly_score_v >= 0.75 and tenant_id:
+        try:
+            import threading as _thr
+            def _send_anomaly_alert() -> None:
+                import os as _os, requests as _rq
+                _bot = _os.getenv("TELEGRAM_BOT_TOKEN", "")
+                _chat = _os.getenv("TELEGRAM_OWNER_CHAT_ID", "") or _os.getenv("TELEGRAM_CHAT_ID", "")
+                if not _bot or not _chat:
+                    return
+                _pattern = _anomaly_meta_v.get("pattern_name", "unknown")
+                _msg = (
+                    f"⚠️ *Anomaly Detected*\n\n"
+                    f"*Agent:* `{req.agent_id}`\n"
+                    f"*Action:* `{req.action_type}`\n"
+                    f"*Pattern:* `{_pattern}`\n"
+                    f"*Score:* `{round(_anomaly_score_v * 100)}/100`\n"
+                    f"*Verdict:* `{verdict_str}`\n"
+                    f"*Tenant:* `{tenant_id}`\n"
+                    f"*Decision:* `{decision_id}`\n\n"
+                    f"_This is an advisory alert — review at console.edoncore.com_"
+                )
+                try:
+                    _rq.post(
+                        f"https://api.telegram.org/bot{_bot}/sendMessage",
+                        json={"chat_id": _chat, "text": _msg, "parse_mode": "Markdown"},
+                        timeout=8,
+                    )
+                except Exception:
+                    pass
+            _thr.Thread(target=_send_anomaly_alert, daemon=True).start()
+        except Exception as _anom_err:
+            logger.warning("Anomaly alert failed (non-blocking): %s", _anom_err)
+
+    # ── Evaluate anomaly/threshold alert rules (non-blocking, fire-and-forget) ─
     if tenant_id:
         try:
             import asyncio as _asyncio
