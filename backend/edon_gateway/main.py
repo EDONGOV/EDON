@@ -60,6 +60,7 @@ from .routes.devices import router as devices_router
 from .routes.swarm import router as swarm_router
 from .routes.edge import router as edge_router
 from .routes.telegram_bot import router as telegram_bot_router
+from .routes.review_queue import router as review_queue_router
 
 
 # Setup logging
@@ -140,6 +141,7 @@ app.include_router(agents_router, prefix="/agents", tags=["agents"])
 app.include_router(swarm_router)
 app.include_router(edge_router)
 app.include_router(telegram_bot_router)
+app.include_router(review_queue_router)
 app.include_router(telemetry_router)
 app.include_router(learning_router)
 app.include_router(sandbox_router)

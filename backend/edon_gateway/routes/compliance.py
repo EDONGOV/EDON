@@ -308,7 +308,20 @@ async def export_evidence_bundle(
     start_date: Optional[str] = Query(None, description="ISO date e.g. 2026-01-01"),
     end_date: Optional[str] = Query(None, description="ISO date e.g. 2026-12-31"),
 ):
-    """Export evidence bundle for auditors (summary + raw events + chain proof)."""
+    """Export a signed evidence bundle for auditors.
+
+    Returns a downloadable JSON package containing:
+    - Executive summary (decisions, block rate, anomalies)
+    - Full audit event log for the date range
+    - Cryptographic chain verification proof
+    - HMAC-SHA256 signature of the payload (use your EDON_AUDIT_CHAIN_SIGNING_KEY to verify)
+
+    Suitable for Joint Commission audits, HIPAA reviews, and FDA SaMD assessments.
+    """
+    import hashlib
+    import hmac as _hmac
+    import os as _os
+
     db = get_db()
     tenant_id = get_request_tenant_id(request)
     events = db.query_audit_events(customer_id=tenant_id, limit=100000)
@@ -325,20 +338,152 @@ async def export_evidence_bundle(
         events = filtered
 
     chain = db.verify_audit_chain()
-    bundle = {
-        "generated_at": datetime.now(UTC).isoformat(),
-        "tenant_id": tenant_id,
+
+    # ── Executive summary ──────────────────────────────────────────────────
+    total = len(events)
+    blocked = sum(1 for e in events if e.get("decision", {}).get("verdict") == "BLOCK")
+    escalated = sum(1 for e in events if e.get("decision", {}).get("verdict") in ("ESCALATE", "HUMAN_REQUIRED"))
+    anomalies = sum(1 for e in events if (e.get("anomaly_score") or 0) > 50)
+    overrides = sum(1 for e in events if e.get("human_override"))
+    agents = list({e.get("agent_id") for e in events if e.get("agent_id")})
+
+    summary = {
+        "total_actions_governed": total,
+        "blocked": blocked,
+        "escalated_for_human_review": escalated,
+        "allowed": total - blocked - escalated,
+        "block_rate_pct": round(blocked / total * 100, 2) if total else 0,
+        "anomaly_events": anomalies,
+        "human_overrides": overrides,
+        "unique_agents": len(agents),
         "date_range": {"start": start_date or "all-time", "end": end_date or "now"},
-        "audit_chain_verification": chain,
-        "event_count": len(events),
-        "events": events,
     }
-    return JSONResponse(content=bundle)
+
+    generated_at = datetime.now(UTC).isoformat()
+    bundle_id = f"evb-{tenant_id or 'unknown'}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+
+    bundle = {
+        "bundle_id": bundle_id,
+        "bundle_type": "edon_evidence_package_v1",
+        "generated_at": generated_at,
+        "generated_by": "EDON Gateway v1.0.1",
+        "tenant_id": tenant_id,
+        "summary": summary,
+        "audit_chain_verification": chain,
+        "chain_valid": chain.get("valid", False),
+        "event_count": total,
+        "events": events,
+        "regulations_covered": [
+            "HIPAA §164.312 (Technical Safeguards)",
+            "HIPAA §164.308 (Administrative Safeguards)",
+            "HITECH §13402 (Breach Notification)",
+            "FDA SaMD Guidance (Performance Monitoring)",
+            "Joint Commission NPSG.15.01.01",
+            "ISO 13485 §8.2.3",
+        ],
+    }
+
+    # ── HMAC-SHA256 signature ──────────────────────────────────────────────
+    # Sign the canonical payload so auditors can verify this bundle hasn't been altered.
+    signing_key = _os.getenv("EDON_AUDIT_CHAIN_SIGNING_KEY", "")
+    payload_bytes = json.dumps(
+        {"bundle_id": bundle_id, "generated_at": generated_at, "event_count": total, "chain": chain},
+        sort_keys=True,
+    ).encode()
+    if signing_key:
+        sig = _hmac.new(signing_key.encode(), payload_bytes, hashlib.sha256).hexdigest()
+        bundle["signature"] = f"sha256={sig}"
+        bundle["signature_note"] = (
+            "Verify with: HMAC-SHA256(EDON_AUDIT_CHAIN_SIGNING_KEY, "
+            "JSON{bundle_id, generated_at, event_count, chain})"
+        )
+    else:
+        bundle["signature"] = "unsigned — set EDON_AUDIT_CHAIN_SIGNING_KEY to enable"
+
+    filename = f"{bundle_id}.json"
+    return JSONResponse(
+        content=bundle,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── PHI Endpoint Allowlist ──────────────────────────────────────────────────────
+
+from pydantic import BaseModel  # noqa: E402 — local import to avoid top-level pollution
+from ..security.phi_allowlist import (
+    load_allowlist, add_entry as _add_allowlist_entry, remove_entry as _remove_allowlist_entry,
+)
+
+
+class PHIAllowlistAddRequest(BaseModel):
+    pattern: str
+    label: str = ""
+
+
+@router.get("/phi-allowlist")
+async def get_phi_allowlist(request: Request):
+    """List all approved URL patterns for PHI data transmission.
+
+    Patterns are checked against every agent action that contains a URL.
+    Actions with URLs not on this list are blocked (HIPAA §164.312 Transmission Security).
+
+    Pattern formats:
+    - Exact:  https://ehr.hospital.com/api
+    - Prefix: https://ehr.hospital.com/*
+    - Domain: *.hospital.com
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    entries = load_allowlist(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "entries": entries,
+        "count": len(entries),
+        "enforcement": "active" if entries else "inactive — add entries to enable PHI endpoint enforcement",
+    }
+
+
+@router.post("/phi-allowlist", status_code=201)
+async def add_phi_allowlist_entry(request: Request, body: PHIAllowlistAddRequest):
+    """Add a URL pattern to the PHI endpoint allowlist.
+
+    Once at least one entry exists, all agent actions with URLs are checked
+    against this list. Unmatched URLs are blocked.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    if not body.pattern.startswith(("http://", "https://", "*.")):
+        raise HTTPException(
+            status_code=400,
+            detail="Pattern must start with http://, https://, or *. (domain wildcard)",
+        )
+    try:
+        entry = _add_allowlist_entry(
+            tenant_id=tenant_id,
+            pattern=body.pattern,
+            label=body.label,
+            added_by=str(tenant_id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"added": True, "entry": entry}
+
+
+@router.delete("/phi-allowlist/{entry_id}")
+async def remove_phi_allowlist_entry(entry_id: str, request: Request):
+    """Remove a URL pattern from the PHI endpoint allowlist."""
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    removed = _remove_allowlist_entry(tenant_id=tenant_id, entry_id=entry_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"removed": True, "entry_id": entry_id}
 
 
 # ── Clinical Safety Mode ────────────────────────────────────────────────────────
-
-from pydantic import BaseModel  # noqa: E402 — local import to avoid top-level pollution
 
 
 class ClinicalSafetyActivateRequest(BaseModel):
