@@ -64,6 +64,7 @@ export interface AuditEvent {
   policy_version?: string
   explanation?: string
   customer_id?: string
+  meta?: Record<string, unknown>
 }
 
 export interface AuditQueryResponse {
@@ -82,6 +83,8 @@ export interface Agent {
   last_seen?: string
   decisions_total?: number
   decisions_blocked?: number
+  block_rate?: number
+  metadata?: Record<string, unknown>
 }
 
 export interface PolicyRule {
@@ -105,6 +108,35 @@ export interface ComplianceHealth {
     rules_active: number
     missing_rules: string[]
   }>
+}
+
+export interface ReviewItem {
+  decision_id: string
+  action_type: string
+  agent_id: string
+  escalation_question?: string
+  explanation?: string
+  action_payload?: Record<string, unknown>
+  created_at: string
+  resolved_at?: string
+  resolution?: 'approved' | 'rejected'
+  resolved_by?: string
+  resolution_note?: string
+  meta?: {
+    urgency?: 'critical' | 'urgent' | 'routine'
+    department?: string
+    patient_id?: string
+    clinical_context?: string
+    vendor_name?: string
+    device_id?: string
+    device_name?: string
+    policy_version?: string
+  }
+}
+
+export interface ReviewQueueResponse {
+  queue: ReviewItem[]
+  count: number
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -144,4 +176,19 @@ export const api = {
 
   disableRule: (ruleId: string) =>
     request(`/policy/rules/${ruleId}/disable`, { method: 'POST' }),
+
+  reviewQueue: (status = 'pending') =>
+    request<ReviewQueueResponse>(`/compliance/review/queue?status=${status}`),
+
+  approveReview: (decisionId: string, reviewer: string, note?: string) =>
+    request(`/compliance/review/${decisionId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewer, note }),
+    }),
+
+  rejectReview: (decisionId: string, reviewer: string, note?: string) =>
+    request(`/compliance/review/${decisionId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewer, note }),
+    }),
 }

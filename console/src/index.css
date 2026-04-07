@@ -28,7 +28,9 @@
     --radius: 1rem;
 
     --page-bg: linear-gradient(180deg, hsl(220 15% 7%) 0%, hsl(220 14% 6%) 100%);
-    --nav-indicator-bg: rgba(255, 255, 255, 0.15);
+    --nav-indicator-bg: hsl(142 70% 45% / 0.12);
+    --nav-indicator-border: hsl(142 70% 45% / 0.25);
+    --nav-indicator-glow: 0 0 12px hsl(142 70% 45% / 0.18);
   }
 
   .light {
@@ -53,7 +55,9 @@
     --ring: 142 70% 38%;
 
     --page-bg: linear-gradient(180deg, hsl(220 20% 97%) 0%, hsl(220 18% 95%) 100%);
-    --nav-indicator-bg: hsl(142 70% 38% / 0.12);
+    --nav-indicator-bg: hsl(142 70% 38% / 0.1);
+    --nav-indicator-border: hsl(142 70% 38% / 0.2);
+    --nav-indicator-glow: none;
   }
 
   * {
@@ -101,19 +105,52 @@
     letter-spacing: 0.08em;
   }
 
+  .dept-select {
+    background-color: hsl(var(--muted) / 0.5);
+    border-color: hsl(var(--border));
+    color: hsl(var(--foreground));
+    color-scheme: dark;
+  }
+  .dept-select:focus {
+    border-color: hsl(var(--primary));
+  }
+  .dept-select option,
+  .dept-select optgroup {
+    background-color: hsl(220 15% 12%);
+    color: hsl(var(--foreground));
+  }
+  .light .dept-select {
+    color-scheme: light;
+  }
+  .light .dept-select option,
+  .light .dept-select optgroup {
+    background-color: hsl(220 20% 97%);
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   .nav-item {
-    @apply relative text-muted-foreground transition-all duration-300 ease-out;
+    @apply relative text-muted-foreground transition-all duration-200 ease-out;
   }
 
   .nav-item:hover {
     @apply text-foreground;
-    background: rgba(128, 128, 128, 0.12);
+    background: rgba(128, 128, 128, 0.08);
   }
 
   .nav-item-active {
-    @apply text-foreground;
+    @apply text-primary font-semibold;
     background: var(--nav-indicator-bg);
+    border: 1px solid var(--nav-indicator-border);
+    box-shadow: var(--nav-indicator-glow);
   }
+
 }
 
 @keyframes slideIn {
