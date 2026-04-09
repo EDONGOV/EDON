@@ -57,6 +57,7 @@ from .routes.sandbox import router as sandbox_router
 from .routes.alerts import router as alerts_router
 from .routes.privacy import router as privacy_router
 from .routes.devices import router as devices_router
+from .routes.settings import router as settings_router
 from .routes.swarm import router as swarm_router
 from .routes.edge import router as edge_router
 from .routes.telegram_bot import router as telegram_bot_router
@@ -149,6 +150,7 @@ app.include_router(auditors_router)
 app.include_router(alerts_router)
 app.include_router(privacy_router)
 app.include_router(devices_router)
+app.include_router(settings_router)
 
 # CORS configuration
 # When allow_credentials=True, cannot use wildcard "*" - must specify origins
