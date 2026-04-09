@@ -204,6 +204,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         "/audit/query",
         "/timeseries",
         "/block-reasons",
+        "/compliance/health",
+        "/compliance/review/queue",
+        "/api-keys/me",
+        "/api-keys",
+        "/agents",
+        "/stats",
+        "/health",
+        "/settings/ip-allowlist",
     }
 
     # Only these count toward tenant usage (one governance decision per request)
