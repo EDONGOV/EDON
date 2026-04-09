@@ -794,7 +794,7 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
 }
 
 function ApiKeyRotationCard() {
-  const [keys, setKeys] = useState<Array<{ id: string; name: string | null; role: string; status: string }>>([])
+  const [keys, setKeys] = useState<Array<{ id: string; name?: string | null; role: string; status: string }>>([])
   const [loading, setLoading] = useState(true)
   const [overlapHours, setOverlapHours] = useState(24)
   const [rotating, setRotating] = useState(false)
