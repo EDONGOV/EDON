@@ -107,6 +107,86 @@ Update agent status: `active` · `paused` · `retired`
 
 ---
 
+## Settings
+
+Tenant self-service configuration. All endpoints are scoped to the authenticated tenant.
+
+### `GET /settings/ip-allowlist`
+Return the tenant's current IP allowlist.
+
+**Response:**
+```json
+{
+  "cidrs": ["203.0.113.0/24", "198.51.100.5/32"],
+  "enabled": true
+}
+```
+
+`enabled` is `true` when at least one CIDR entry exists. When enabled, requests from IPs outside the allowlist are rejected with `403`.
+
+### `POST /settings/ip-allowlist`
+Add a CIDR block to the tenant's IP allowlist.
+
+> **Warning:** Once any entry is added, ALL requests from IPs outside the allowlist will be rejected with 403. Add your own IP before enabling.
+
+**Request:**
+```json
+{
+  "cidr": "203.0.113.0/24"
+}
+```
+
+`cidr` accepts IPv4/IPv6 CIDR notation (e.g. `203.0.113.0/24`) or a bare IP (e.g. `1.2.3.4`, automatically normalized to `/32` or `/128`).
+
+**Response (`201`):**
+```json
+{
+  "ok": true,
+  "cidr": "203.0.113.0/24",
+  "message": "CIDR added to allowlist"
+}
+```
+
+If the CIDR already exists, returns `200` with `"message": "Already in allowlist"`.
+
+**Errors:**
+
+| Status | Detail |
+|--------|--------|
+| `401` | Tenant context required |
+| `422` | Invalid CIDR |
+| `501` | IP allowlist not supported by this backend |
+
+### `DELETE /settings/ip-allowlist`
+Remove a CIDR block from the tenant's IP allowlist.
+
+**Request:**
+```json
+{
+  "cidr": "203.0.113.0/24"
+}
+```
+
+**Response (`200`):**
+```json
+{
+  "ok": true,
+  "cidr": "203.0.113.0/24"
+}
+```
+
+`ok` is `false` if the CIDR was not found in the allowlist.
+
+**Errors:**
+
+| Status | Detail |
+|--------|--------|
+| `401` | Tenant context required |
+| `422` | Invalid CIDR |
+| `501` | IP allowlist not supported by this backend |
+
+---
+
 ## Admin
 
 ### `POST /admin/provision`
