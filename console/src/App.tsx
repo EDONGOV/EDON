@@ -9,9 +9,9 @@ import {
   ThumbsUp, ThumbsDown, Power, KeyRound, Eye, EyeOff,
   TimerOff, Filter, TrendingUp, Minus, ShieldAlert,
   ListChecks, FileDown, Bell, Settings, Menu, User,
-  BarChart2, Wifi, WifiOff,
+  BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link,
 } from 'lucide-react'
-import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason } from './api'
+import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse } from './api'
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 
@@ -583,8 +583,9 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
 
 // ── Login Screen ──────────────────────────────────────────────────────────────
 
+const DEFAULT_GATEWAY = 'https://edon-gateway-prod.fly.dev'
+
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [url, setUrl] = useState('https://edon-gateway-prod.fly.dev')
   const [token, setToken] = useState('')
   const [name, setName] = useState('')
   const [dept, setDept] = useState('')
@@ -593,7 +594,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault(); setError(''); setLoading(true)
-    saveAuth(url.replace(/\/$/, ''), token.trim())
+    saveAuth(DEFAULT_GATEWAY, token.trim())
     try {
       await api.health()
       if (name.trim()) setReviewerName(name.trim())
@@ -619,16 +620,10 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
         </div>
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Gateway URL</label>
-            <input type="url" value={url} onChange={e => setUrl(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="https://edon-gateway-prod.fly.dev" required />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">API Token</label>
+            <label className="text-xs text-muted-foreground mb-1 block">API Key</label>
             <input type="password" value={token} onChange={e => setToken(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-              placeholder="Your X-EDON-TOKEN" required />
+              placeholder="Paste your API key here" required />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -784,6 +779,178 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
       <div className="glass-card p-5 space-y-2">
         <h3 className="text-sm font-semibold flex items-center gap-2"><Clock size={13} className="text-primary" /> Session</h3>
         <p className="text-xs text-muted-foreground">Sessions auto-expire after <span className="text-foreground">15 minutes</span> of inactivity. A warning appears at 13 minutes.</p>
+      </div>
+
+      {/* API Key Rotation */}
+      <ApiKeyRotationCard />
+
+      {/* Console Access Link */}
+      <ConsoleLinkCard />
+
+      {/* IP Allowlist */}
+      <IpAllowlistCard />
+    </div>
+  )
+}
+
+function ApiKeyRotationCard() {
+  const [keys, setKeys] = useState<Array<{ id: string; name: string | null; role: string; status: string }>>([])
+  const [loading, setLoading] = useState(true)
+  const [overlapHours, setOverlapHours] = useState(24)
+  const [rotating, setRotating] = useState(false)
+  const [newKey, setNewKey] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api.listApiKeys().then(r => setKeys(r.keys)).catch(() => setKeys([])).finally(() => setLoading(false))
+  }, [])
+
+  const rotate = async (keyId: string) => {
+    setRotating(true); setNewKey(null)
+    try {
+      const r = await api.rotateApiKey(keyId, overlapHours)
+      setNewKey(r.new_key)
+      const updated = await api.listApiKeys()
+      setKeys(updated.keys)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Rotation failed')
+    } finally { setRotating(false) }
+  }
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2"><RefreshCw size={13} className="text-primary" /> API Key Rotation</h3>
+      <p className="text-xs text-muted-foreground">Rotate your key with zero downtime. The old key stays valid during the overlap window.</p>
+      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {keys.map(k => (
+        <div key={k.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate">{k.name ?? 'Unnamed key'}</p>
+            <p className="text-[10px] font-mono text-muted-foreground/50 truncate">{k.id}</p>
+          </div>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${k.status === 'active' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>{k.status}</span>
+          <select value={overlapHours} onChange={e => setOverlapHours(Number(e.target.value))}
+            className="text-xs bg-background border border-border rounded px-2 py-1 text-muted-foreground">
+            <option value={1}>1h overlap</option>
+            <option value={4}>4h overlap</option>
+            <option value={24}>24h overlap</option>
+            <option value={72}>3d overlap</option>
+          </select>
+          <button onClick={() => rotate(k.id)} disabled={rotating}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+            <RefreshCw size={13} className={rotating ? 'animate-spin' : ''} /> Rotate
+          </button>
+        </div>
+      ))}
+      {newKey && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+          <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5"><Check size={13} /> New key — copy it now, shown once only</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs font-mono bg-black/30 rounded px-3 py-2 break-all">{newKey}</code>
+            <button onClick={() => copy(newKey)} className="p-2 rounded border border-border hover:bg-muted/50 transition-colors">
+              {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} className="text-muted-foreground" />}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ConsoleLinkCard() {
+  const [copied, setCopied] = useState(false)
+  const auth = (() => { try { return JSON.parse(localStorage.getItem('edon_auth') || '{}') } catch { return {} } })()
+  const url = `${window.location.origin}/#token=${auth.token || ''}&base=${encodeURIComponent(auth.gatewayUrl || '')}`
+
+  const copy = () => {
+    navigator.clipboard.writeText(url)
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-3">
+      <h3 className="text-sm font-semibold flex items-center gap-2"><Link size={13} className="text-primary" /> Console Access Link</h3>
+      <p className="text-xs text-muted-foreground">Share with your team. Token is in the URL hash — never sent to servers or logged.</p>
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2.5">
+        <code className="flex-1 text-xs font-mono text-muted-foreground truncate">{url}</code>
+        <button onClick={copy} className="p-1.5 rounded border border-border hover:bg-muted/50 transition-colors shrink-0">
+          {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} className="text-muted-foreground" />}
+        </button>
+      </div>
+      <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1"><Shield size={11} /> #token= hash fragment — never transmitted to or stored by servers</p>
+    </div>
+  )
+}
+
+function IpAllowlistCard() {
+  const [cidrs, setCidrs] = useState<string[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.getIpAllowlist().then(r => setCidrs(r.cidrs)).catch(() => setCidrs([])).finally(() => setLoading(false))
+  }, [])
+
+  const add = async () => {
+    if (!input.trim()) return
+    setSaving(true)
+    try {
+      await api.addIpAllowlist(input.trim())
+      const r = await api.getIpAllowlist()
+      setCidrs(r.cidrs); setInput('')
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to add CIDR')
+    } finally { setSaving(false) }
+  }
+
+  const remove = async (cidr: string) => {
+    try {
+      await api.removeIpAllowlist(cidr)
+      setCidrs(c => c.filter(x => x !== cidr))
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to remove CIDR')
+    }
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Shield size={13} className="text-primary" /> IP Allowlist
+        {cidrs.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">Active</span>}
+      </h3>
+      <p className="text-xs text-muted-foreground">Restrict API access to specific IPs. Once any entry is added, all other IPs are blocked. <strong className="text-foreground/70">Add your IP first.</strong></p>
+      {cidrs.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-xs text-yellow-400">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Allowlist active — requests from unlisted IPs are rejected.
+        </div>
+      )}
+      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      <div className="space-y-2">
+        {cidrs.map(cidr => (
+          <div key={cidr} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
+            <Shield size={12} className="text-emerald-400 shrink-0" />
+            <code className="flex-1 text-xs font-mono">{cidr}</code>
+            <button onClick={() => remove(cidr)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
+              <Trash2 size={13} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input type="text" value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          placeholder="203.0.113.0/24 or 1.2.3.4"
+          className="flex-1 text-sm bg-muted/50 border border-border rounded-lg px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary" />
+        <button onClick={add} disabled={!input.trim() || saving}
+          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary font-semibold hover:bg-primary/30 transition-colors disabled:opacity-50">
+          <Plus size={14} /> Add
+        </button>
       </div>
     </div>
   )
@@ -1604,6 +1771,8 @@ type Tab = typeof TABS[number]['id']
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getAuth())
+  const [meInfo, setMeInfo] = useState<MeResponse | null>(null)
+  const isAdmin = meInfo?.is_admin ?? false
   const [tab, setTab] = useState<Tab>('dashboard')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('edon_theme') as 'dark' | 'light') || 'dark')
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number } | null>(null)
@@ -1621,11 +1790,12 @@ export default function App() {
   useEffect(() => {
     if (!authed) return
     api.health().then(h => setHealth(h)).catch(() => {})
+    api.me().then(m => setMeInfo(m)).catch(() => {})
     const fetchCount = async () => { try { const r = await api.reviewQueue('pending'); setPendingCount(r?.count ?? 0) } catch { /* silent */ } }
     fetchCount(); const iv = setInterval(fetchCount, 30000); return () => clearInterval(iv)
   }, [authed])
 
-  const handleLogout = useCallback(() => { clearAuth(); setAuthed(false); setHealth(null) }, [])
+  const handleLogout = useCallback(() => { clearAuth(); setAuthed(false); setHealth(null); setMeInfo(null) }, [])
 
   // Session timeout
   const { warning: sessionWarn, secondsLeft, extend } = useSessionTimeout(handleLogout)
@@ -1700,7 +1870,10 @@ export default function App() {
               <div className="hidden sm:flex items-center gap-1.5 px-2.5 h-7 rounded-full border border-border bg-secondary/60 text-xs text-muted-foreground">
                 <User size={11} />
                 <span className="font-medium text-foreground max-w-[100px] truncate">{getReviewerName()}</span>
-                {getReviewerDept() && (
+                {isAdmin && (
+                  <span className="px-1.5 py-0 rounded-full text-[9px] font-bold tracking-wider bg-primary/15 text-primary border border-primary/30">ADMIN</span>
+                )}
+                {!isAdmin && getReviewerDept() && (
                   <>
                     <span className="text-border">·</span>
                     <span className="max-w-[90px] truncate">{getReviewerDept()}</span>
