@@ -776,13 +776,6 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
             )}
           </div>
         </div>
-        <AnimatePresence>
-          {showPinSetup && (
-            <motion.div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-              <PinModal mode="setup" onSuccess={() => { setShowPinSetup(false); setSaved(true); setTimeout(() => setSaved(false), 2000) }} onCancel={() => setShowPinSetup(false)} />
-            </motion.div>
-          )}
-        </AnimatePresence>
         <button onClick={save}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
           {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Name'}
@@ -803,6 +796,15 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
 
       {/* IP Allowlist */}
       <IpAllowlistCard />
+
+      <AnimatePresence>
+        {showPinSetup && (
+          <motion.div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <PinModal mode="setup" onSuccess={() => { setShowPinSetup(false); setSaved(true); setTimeout(() => setSaved(false), 2000) }} onCancel={() => setShowPinSetup(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
