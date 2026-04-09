@@ -139,9 +139,71 @@ export interface ReviewQueueResponse {
   count: number
 }
 
+export interface ApiKey {
+  id: string
+  name?: string
+  role: string
+  status: string
+  created_at?: string
+  last_used_at?: string
+  expires_at?: string
+}
+
+export interface ApiKeyListResponse {
+  keys: ApiKey[]
+  count: number
+}
+
+export interface CreateKeyResponse {
+  key_id: string
+  key: string
+  name?: string
+  role: string
+  message: string
+}
+
+export interface RotateKeyResponse {
+  new_key_id: string
+  new_key: string
+  new_key_name: string
+  old_key_id: string
+  old_key_expires_at: string
+  overlap_hours: number
+  message: string
+}
+
+export interface TenantSummary {
+  tenant_id: string
+  plan: string
+  status: string
+  created_at?: string
+  updated_at?: string
+  active_key_count: number
+  total_key_count: number
+}
+
+export interface BootstrapKeyResponse {
+  tenant_id: string
+  key_id: string
+  key: string
+  role: string
+  message: string
+}
+
+export interface MeResponse {
+  tenant_id: string
+  key_id: string | null
+  key_name: string | null
+  role: string
+  plan: string
+  is_admin: boolean
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
+  me: () => request<MeResponse>('/api-keys/me'),
+
   health: () => request<HealthResponse>('/health'),
 
   timeseries: (days = 7) =>
@@ -190,5 +252,91 @@ export const api = {
     request(`/compliance/review/${decisionId}/reject`, {
       method: 'POST',
       body: JSON.stringify({ reviewer, note }),
+    }),
+
+  // ── API Key management ────────────────────────────────────────────────────
+  listApiKeys: () =>
+    request<ApiKeyListResponse>('/api-keys'),
+
+  createApiKey: (name: string, role: string) =>
+    request<CreateKeyResponse>('/api-keys', {
+      method: 'POST',
+      body: JSON.stringify({ name, role }),
+    }),
+
+  revokeApiKey: (keyId: string) =>
+    request<{ key_id: string; status: string }>(`/api-keys/${keyId}`, { method: 'DELETE' }),
+
+  rotateApiKey: (keyId: string, overlapHours = 24, name?: string) =>
+    request<RotateKeyResponse>(`/api-keys/${keyId}/rotate`, {
+      method: 'POST',
+      body: JSON.stringify({ overlap_hours: overlapHours, name }),
+    }),
+
+  // ── New tenant provisioning (requires bootstrap secret) ───────────────────
+  bootstrapTenant: (bootstrapSecret: string, tenantId: string, token: string, name: string, email: string, role = 'admin', plan = 'enterprise') =>
+    request<BootstrapKeyResponse>('/admin/bootstrap-api-key', {
+      method: 'POST',
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+      body: JSON.stringify({ tenant_id: tenantId, token, name, email, role, plan }),
+    }),
+
+  // ── Support tickets ───────────────────────────────────────────────────────
+  submitSupportTicket: (payload: {
+    summary: string
+    tab: string
+    reviewer_name?: string
+    department?: string
+    chat_history: { role: string; content: string }[]
+    urgency: string
+  }) => request<{ ticket_id: string; status: string; message: string }>('/support/ticket', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
+  // ── API key management ────────────────────────────────────────────────────
+  listApiKeys: () =>
+    request<{ keys: Array<{ id: string; name: string | null; role: string; status: string; created_at: string }>; count: number }>('/api-keys'),
+
+  rotateApiKey: (keyId: string, overlapHours = 24) =>
+    request<{ new_key: string; new_key_id: string; old_key_expires_at: string; overlap_hours: number }>(
+      `/api-keys/${keyId}/rotate`,
+      { method: 'POST', body: JSON.stringify({ overlap_hours: overlapHours }) }
+    ),
+
+  // ── IP allowlist ──────────────────────────────────────────────────────────
+  getIpAllowlist: () =>
+    request<{ cidrs: string[]; enabled: boolean }>('/settings/ip-allowlist'),
+
+  addIpAllowlist: (cidr: string) =>
+    request<{ ok: boolean; cidr: string }>('/settings/ip-allowlist', {
+      method: 'POST',
+      body: JSON.stringify({ cidr }),
+    }),
+
+  removeIpAllowlist: (cidr: string) =>
+    request<{ ok: boolean; cidr: string }>('/settings/ip-allowlist', {
+      method: 'DELETE',
+      body: JSON.stringify({ cidr }),
+    }),
+
+  // ── Admin tenant management ────────────────────────────────────────────────
+  listTenants: (bootstrapSecret: string) =>
+    request<{ tenants: TenantSummary[]; count: number }>('/admin/tenants', {
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+    }),
+
+  updateTenant: (bootstrapSecret: string, tenantId: string, updates: { plan?: string; status?: string }) =>
+    request<{ tenant_id: string; plan: string; status: string }>(`/admin/tenants/${tenantId}`, {
+      method: 'PATCH',
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+      body: JSON.stringify(updates),
+    }),
+
+  createSupportKey: (bootstrapSecret: string, tenantId: string, label?: string) =>
+    request<{ key_id: string; key: string; tenant_id: string; label: string }>(`/admin/tenants/${tenantId}/support-key`, {
+      method: 'POST',
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+      body: JSON.stringify({ label }),
     }),
 }
