@@ -141,7 +141,7 @@ export interface ReviewQueueResponse {
 
 export interface ApiKey {
   id: string
-  name?: string
+  name?: string | null
   role: string
   status: string
   created_at?: string
@@ -293,16 +293,6 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
-
-  // ── API key management ────────────────────────────────────────────────────
-  listApiKeys: () =>
-    request<{ keys: Array<{ id: string; name: string | null; role: string; status: string; created_at: string }>; count: number }>('/api-keys'),
-
-  rotateApiKey: (keyId: string, overlapHours = 24) =>
-    request<{ new_key: string; new_key_id: string; old_key_expires_at: string; overlap_hours: number }>(
-      `/api-keys/${keyId}/rotate`,
-      { method: 'POST', body: JSON.stringify({ overlap_hours: overlapHours }) }
-    ),
 
   // ── IP allowlist ──────────────────────────────────────────────────────────
   getIpAllowlist: () =>
