@@ -674,6 +674,7 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [saved, setSaved] = useState(false)
+  const [showPinSetup, setShowPinSetup] = useState(false)
 
   const testConnection = async () => {
     setTesting(true); setTestResult(null)
@@ -765,10 +766,23 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
             <KeyRound size={11} />
             PIN: {hasPinSet() ? <span className="text-emerald-400">Set</span> : <span className="text-amber-400">Not set</span>}
           </div>
-          {hasPinSet() && (
-            <button onClick={resetPin} className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors">Reset PIN</button>
-          )}
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowPinSetup(true)}
+              className="text-[10px] px-2.5 py-1 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+              {hasPinSet() ? 'Change PIN' : 'Set PIN'}
+            </button>
+            {hasPinSet() && (
+              <button onClick={resetPin} className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors">Reset</button>
+            )}
+          </div>
         </div>
+        <AnimatePresence>
+          {showPinSetup && (
+            <motion.div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+              <PinModal mode="setup" onSuccess={() => { setShowPinSetup(false); setSaved(true); setTimeout(() => setSaved(false), 2000) }} onCancel={() => setShowPinSetup(false)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
         <button onClick={save}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
           {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Name'}
