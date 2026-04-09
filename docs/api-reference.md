@@ -88,6 +88,16 @@ Active intent contract (scope, constraints, risk_level).
 
 ---
 
+## Compliance
+
+### `GET /compliance/health`
+Returns compliance status for each activated regulation. A regulation is considered compliant when all of its required rule codes (as defined in `REQUIRED_RULES_BY_REGULATION`) are present and enabled.
+
+### `GET /compliance/review/queue`
+List actions pending compliance review (e.g., escalated actions under clinical safety rules).
+
+---
+
 ## Agents
 
 ### `GET /agents`
@@ -107,7 +117,32 @@ Update agent status: `active` · `paused` · `retired`
 
 ---
 
+## API Keys
+
+### `GET /api-keys`
+List all API keys for the tenant.
+
+### `GET /api-keys/me`
+Return metadata for the API key used in the current request.
+
+---
+
+## Settings
+
+### `GET /settings/ip-allowlist`
+Manage the tenant's IP allowlist for gateway access.
+
+---
+
 ## Admin
 
 ### `POST /admin/provision`
 Bootstrap a new tenant. Requires `X-Bootstrap-Secret` header.
+
+---
+
+## Rate Limiting
+
+The following endpoints are subject to per-tenant rate limiting:
+
+`/v1/action` · `/decisions/query` · `/policy-packs` · `/intent/get` · `/audit/query` · `/timeseries` · `/block-reasons` · `/compliance/health` · `/compliance/review/queue` · `/api-keys/me` · `/api-keys` · `/agents` · `/stats` · `/health` · `/settings/ip-allowlist`
