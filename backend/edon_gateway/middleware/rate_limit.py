@@ -68,9 +68,9 @@ ANONYMOUS_LIMITS = {
 
 # Higher limits for polling endpoints (dashboard/analytics)
 POLLING_ENDPOINT_LIMITS = {
-    "per_minute": 120 if IS_DEVELOPMENT else 60,      # Allow more frequent polling
-    "per_hour": 20000 if IS_DEVELOPMENT else 2000,     # Higher hourly limit
-    "per_day": 200000 if IS_DEVELOPMENT else 20000,   # Higher daily limit
+    "per_minute": 600,    # 600/min — dashboard fires 8+ requests per load/refresh
+    "per_hour": 10000,
+    "per_day": 100000,
 }
 
 
