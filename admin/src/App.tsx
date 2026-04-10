@@ -1401,6 +1401,7 @@ function AuditLogTab({ secret, toast }: { secret: string; toast: (m: string, t: 
 // ── Command Tab (Chief of Staff voice agent) ──────────────────────────────────
 
 const OPENAI_KEY_STORAGE = 'edon_openai_key'
+const ANTHROPIC_KEY_STORAGE = 'edon_anthropic_key'
 const MULTICA_TOKEN_STORAGE = 'edon_multica_token'
 const GITHUB_TOKEN_STORAGE = 'edon_github_token'
 
@@ -1439,7 +1440,7 @@ async function transcribeAudio(blob: Blob, openaiKey: string): Promise<string> {
   return data.text
 }
 
-async function chiefOfStaffReason(transcript: string, openaiKey: string): Promise<string> {
+async function chiefOfStaffReason(transcript: string, anthropicKey: string): Promise<string> {
   const system = `You are the Chief of Staff AI for EDON, an AI governance startup. The founder is talking to you directly.
 You manage a team of agents through Multica: ${AGENTS.map(a => `${a.name} (id: ${a.id})`).join(', ')}.
 All agent tasks are dispatched through Multica. When the founder asks you to delegate, take action, or assign a task — respond with a clear plan and include a JSON block at the end:
@@ -1447,18 +1448,24 @@ All agent tasks are dispatched through Multica. When the founder asks you to del
 Use "multica_issue" any time an agent should do something. Use "none" only for pure conversation or status questions.
 Keep responses concise and direct. You are the founder's right hand.`
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+    headers: {
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json',
+    },
     body: JSON.stringify({
-      model: 'gpt-4o',
-      messages: [{ role: 'system', content: system }, { role: 'user', content: transcript }],
-      max_tokens: 500,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system,
+      messages: [{ role: 'user', content: transcript }],
     }),
   })
-  if (!res.ok) throw new Error(`GPT-4o ${res.status}`)
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> }
-  return data.choices[0].message.content
+  if (!res.ok) throw new Error(`Claude ${res.status}: ${await res.text()}`)
+  const data = await res.json() as { content: Array<{ type: string; text: string }> }
+  return data.content[0].text
 }
 
 async function speakText(text: string, openaiKey: string) {
@@ -1477,9 +1484,11 @@ async function speakText(text: string, openaiKey: string) {
 }
 
 function CommandTab() {
-  const [openaiKey, setOpenaiKey]     = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
-  const [githubToken] = useState(() => localStorage.getItem(GITHUB_TOKEN_STORAGE) || '') // kept for future use
-  const [multicaToken, setMulticaToken] = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
+  const [openaiKey, setOpenaiKey]         = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
+  const [anthropicKey, setAnthropicKey]   = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
+  // GitHub token kept in storage for future workflow dispatch use
+  void GITHUB_TOKEN_STORAGE
+  const [multicaToken, setMulticaToken]   = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
   const [messages, setMessages]       = useState<Message[]>([
     { id: 'welcome', role: 'assistant', text: "Chief of Staff online. What do you need?", ts: new Date() }
   ])
@@ -1502,7 +1511,7 @@ function CommandTab() {
     addMessage('user', text)
     setProcessing(true)
     try {
-      const reply = await chiefOfStaffReason(text, openaiKey)
+      const reply = await chiefOfStaffReason(text, anthropicKey)
       addMessage('assistant', reply)
 
       // Parse action from JSON block
@@ -1565,12 +1574,12 @@ function CommandTab() {
 
   const saveConfig = () => {
     localStorage.setItem(OPENAI_KEY_STORAGE, openaiKey)
-    localStorage.setItem(GITHUB_TOKEN_STORAGE, githubToken)
+    localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey)
     localStorage.setItem(MULTICA_TOKEN_STORAGE, multicaToken)
     setShowConfig(false)
   }
 
-  const configured = !!openaiKey
+  const configured = !!anthropicKey
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] max-w-3xl mx-auto">
@@ -1605,7 +1614,12 @@ function CommandTab() {
             className="mb-4 rounded-xl border border-border bg-black/30 p-4 space-y-3 overflow-hidden">
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">API Keys</h3>
             <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">OpenAI API Key (Whisper + GPT-4o + TTS)</label>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Anthropic API Key (Claude — Chief of Staff brain)</label>
+              <input type="password" value={anthropicKey} onChange={e => setAnthropicKey(e.target.value)}
+                placeholder="sk-ant-..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
+            </div>
+            <div>
+              <label className="text-[10px] text-muted-foreground mb-1 block">OpenAI API Key (Whisper mic + TTS voice)</label>
               <input type="password" value={openaiKey} onChange={e => setOpenaiKey(e.target.value)}
                 placeholder="sk-..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
             </div>
