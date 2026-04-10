@@ -398,6 +398,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/telegram/bot-webhook",
     }
 
+    # Admin routes are protected by X-Bootstrap-Secret, not EDON tokens
+    ADMIN_PREFIX = "/admin/"
+
     async def dispatch(self, request: Request, call_next):
         # Pass through CORS preflight requests — CORSMiddleware (outermost) handles them,
         # but this ensures auth never blocks a preflight if middleware order shifts.
@@ -409,6 +412,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if config.DEMO_MODE and path == "/integrations/telegram/connect-code":
             return await call_next(request)
         if path in self.PUBLIC_ENDPOINTS or request.url.path in self.PUBLIC_ENDPOINTS:
+            return await call_next(request)
+        if path.startswith(self.ADMIN_PREFIX) or path == "/admin":
             return await call_next(request)
 
         if not config.AUTH_ENABLED:
