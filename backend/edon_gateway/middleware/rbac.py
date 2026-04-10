@@ -117,6 +117,9 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 "/telegram/bot-webhook",     # Protected by X-Telegram-Bot-Api-Secret-Token
             }
             path = request.url.path.rstrip("/")
+            # All /admin/* routes are protected by X-Bootstrap-Secret, not tenant auth
+            if path.startswith("/admin/") or path == "/admin":
+                return await call_next(request)
             if path not in public_paths:
                 return JSONResponse(status_code=403, content={"detail": "Authentication required"})
             return await call_next(request)
