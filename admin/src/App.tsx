@@ -1408,19 +1408,19 @@ const MULTICA_TOKEN_STORAGE = 'edon_multica_token'
 interface Message { id: string; role: 'user' | 'assistant'; text: string; ts: Date }
 
 const AGENTS = [
-  { id: 'chief_of_staff',     name: 'Chief of Staff',       workflow: 'chief_of_staff.yml' },
-  { id: 'follow_up',          name: 'Follow-up Agent',       workflow: 'followup_agent.yml' },
-  { id: 'content',            name: 'Content Agent',         workflow: 'content_agent.yml' },
-  { id: 'competitor_monitor', name: 'Competitor Monitor',    workflow: 'competitor_monitor.yml' },
-  { id: 'ops',                name: 'Ops Agent',             workflow: 'ops_agent.yml' },
-  { id: 'security',           name: 'Security Monitor',      workflow: 'security_monitor.yml' },
-  { id: 'regulatory',         name: 'Regulatory Watcher',    workflow: 'regulatory_watcher.yml' },
-  { id: 'product_intel',      name: 'Product Intelligence',  workflow: 'product_intelligence.yml' },
-  { id: 'account_manager',    name: 'Account Manager',       workflow: 'account_manager.yml' },
-  { id: 'incident',           name: 'Incident Agent',        workflow: 'incident_agent.yml' },
-  { id: 'nightly_qa',         name: 'Nightly QA',            workflow: 'nightly_qa.yml' },
-  { id: 'code_agent',         name: 'Code Agent',            workflow: 'code_agent.yml' },
-  { id: 'integration',        name: 'Integration Agent',     workflow: 'integration_agent.yml' },
+  { id: 'ef9f0db2-a950-4da5-855e-d93ba5bd368e', name: 'Chief of Staff' },
+  { id: '69a47ffe-4946-4d93-9684-a44778e81eb1', name: 'Follow-up Agent' },
+  { id: '1207bbe1-7366-4f50-8696-2b10f37719d8', name: 'Content Agent' },
+  { id: '452cc1a2-25d9-4b38-afb6-c443bd071213', name: 'Competitor Monitor' },
+  { id: 'bb8b01dd-03f1-4941-8835-8a55fc74b4e0', name: 'Ops Agent' },
+  { id: 'e741e622-0fe9-45df-9304-30e27235641f', name: 'Security Monitor' },
+  { id: '3662f54d-f95b-4394-9157-c8f11e03ed24', name: 'Regulatory Watcher' },
+  { id: 'a513778b-c811-485c-8a8e-ded276920838', name: 'Product Intelligence' },
+  { id: '2bb1f44d-df03-4bb2-9438-8b68a6229677', name: 'Account Manager' },
+  { id: 'fca62eac-b056-4ad4-aeda-6e17a3545ec6', name: 'Incident Agent' },
+  { id: 'e5c71521-f2a0-496d-bb33-6b9aff88aa68', name: 'Nightly QA' },
+  { id: '4de2c22c-c6fc-4ef8-b850-f27ae81b76ab', name: 'Code Agent' },
+  { id: 'a9696685-b394-4375-a3c6-6cb3ead19503', name: 'Integration Agent' },
 ]
 
 // GitHub workflow dispatch kept for future use
