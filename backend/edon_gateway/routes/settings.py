@@ -88,3 +88,44 @@ async def remove_ip_allowlist(request: Request, body: CIDRRequest):
 
     logger.info("settings.ip_allowlist_remove: tenant=%s cidr=%s removed=%s", tenant_id, cidr, removed)
     return {"ok": removed, "cidr": cidr}
+
+
+class ShadowModeRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/shadow-mode")
+async def get_shadow_mode(request: Request):
+    """Return the tenant's current shadow mode setting.
+
+    In shadow mode, all decisions are evaluated and logged but NEVER blocked —
+    every verdict is overridden to 'allowed'. Use this for trials and pilots.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+
+    db = get_db()
+    enabled = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
+    return {"enabled": enabled}
+
+
+@router.post("/shadow-mode")
+async def set_shadow_mode(request: Request, body: ShadowModeRequest):
+    """Enable or disable shadow mode for the tenant.
+
+    When enabled, EDON evaluates every action and logs the true verdict, but
+    always responds with 'allowed' — nothing is blocked. Ideal for hospital
+    trials where you want to observe governance decisions without disruption.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+
+    db = get_db()
+    if not hasattr(db, "set_shadow_mode"):
+        raise HTTPException(status_code=501, detail="Shadow mode not supported by this backend")
+
+    db.set_shadow_mode(tenant_id, body.enabled)
+    logger.info("settings.shadow_mode: tenant=%s enabled=%s", tenant_id, body.enabled)
+    return {"enabled": body.enabled, "ok": True}

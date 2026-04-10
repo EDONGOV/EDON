@@ -155,6 +155,12 @@ class V1ActionResponse(BaseModel):
         description="Signal-level weighted contributions used to compute predicted_oob_risk",
         example={"fleet_prior": 0.12, "estimated_risk": 0.08, "novelty": 0.2},
     )
+    shadow_mode: Optional[bool] = Field(
+        None,
+        description="True when the tenant has shadow mode enabled — decision was evaluated "
+                    "but verdict was overridden to ALLOW. The real verdict is in the audit log.",
+        example=True,
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {

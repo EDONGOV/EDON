@@ -86,6 +86,218 @@ async def apply_pack(pack_name: str, request: Request, body: Optional[PolicyPack
         "intent": intent_dict,
     }
 
+# ── HIPAA / Compliance Policy Templates ───────────────────────────────────────
+
+COMPLIANCE_TEMPLATES = [
+    {
+        "id": "hipaa",
+        "name": "HIPAA",
+        "description": "HIPAA-compliant AI governance baseline",
+        "rules": [
+            "phi_access_control",
+            "audit_logging",
+            "minimum_necessary",
+            "breach_detection",
+            "access_timeout",
+        ],
+    },
+    {
+        "id": "hitrust",
+        "name": "HITRUST CSF",
+        "description": "HITRUST Common Security Framework",
+        "rules": [
+            "access_control",
+            "audit_logging",
+            "risk_management",
+            "incident_response",
+            "configuration_management",
+        ],
+    },
+    {
+        "id": "soc2",
+        "name": "SOC 2 Type II",
+        "description": "SOC 2 security and availability controls",
+        "rules": [
+            "access_control",
+            "audit_logging",
+            "change_management",
+            "risk_assessment",
+            "monitoring",
+        ],
+    },
+]
+
+# Map rule names in templates to policy rule definitions
+_TEMPLATE_RULE_DEFS = {
+    "phi_access_control": {
+        "name": "PHI Access Control",
+        "description": "Block access to protected health information by unauthorized agents",
+        "action": "BLOCK",
+        "condition_tags": ["phi", "pii"],
+        "priority": 900,
+    },
+    "audit_logging": {
+        "name": "Audit Logging Required",
+        "description": "Escalate actions that attempt to disable or bypass audit logging",
+        "action": "ESCALATE",
+        "condition_tags": ["audit", "logging"],
+        "priority": 850,
+    },
+    "minimum_necessary": {
+        "name": "Minimum Necessary Access",
+        "description": "Escalate file and data access requests for human review",
+        "action": "ESCALATE",
+        "condition_tool": "file",
+        "priority": 800,
+    },
+    "breach_detection": {
+        "name": "Breach Detection",
+        "description": "Block bulk data export operations that may indicate a breach",
+        "action": "BLOCK",
+        "condition_tags": ["bulk_export", "data_export"],
+        "priority": 950,
+    },
+    "access_timeout": {
+        "name": "Access Timeout Enforcement",
+        "description": "Escalate requests that appear to exceed authorized session duration",
+        "action": "ESCALATE",
+        "condition_tags": ["session", "timeout"],
+        "priority": 700,
+    },
+    "access_control": {
+        "name": "Access Control",
+        "description": "Escalate privileged access requests for human review",
+        "action": "ESCALATE",
+        "condition_tags": ["admin", "privileged"],
+        "priority": 900,
+    },
+    "risk_management": {
+        "name": "Risk Management",
+        "description": "Block high-risk actions without explicit approval",
+        "action": "BLOCK",
+        "condition_risk_level": "critical",
+        "priority": 950,
+    },
+    "incident_response": {
+        "name": "Incident Response",
+        "description": "Escalate actions flagged as potential incidents",
+        "action": "ESCALATE",
+        "condition_tags": ["incident", "alert"],
+        "priority": 920,
+    },
+    "configuration_management": {
+        "name": "Configuration Management",
+        "description": "Escalate configuration changes for human review",
+        "action": "ESCALATE",
+        "condition_tags": ["config", "settings"],
+        "priority": 800,
+    },
+    "change_management": {
+        "name": "Change Management",
+        "description": "Escalate system change operations for human review",
+        "action": "ESCALATE",
+        "condition_tags": ["change", "deploy"],
+        "priority": 800,
+    },
+    "risk_assessment": {
+        "name": "Risk Assessment",
+        "description": "Block critical-risk actions pending assessment",
+        "action": "BLOCK",
+        "condition_risk_level": "critical",
+        "priority": 960,
+    },
+    "monitoring": {
+        "name": "Continuous Monitoring",
+        "description": "Escalate actions that attempt to disable monitoring",
+        "action": "ESCALATE",
+        "condition_tags": ["monitoring", "telemetry"],
+        "priority": 850,
+    },
+}
+
+
+@router.get("/templates")
+async def list_policy_templates():
+    """List all available compliance policy template packs (HIPAA, HITRUST, SOC 2)."""
+    return COMPLIANCE_TEMPLATES
+
+
+@router.post("/templates/{template_id}/apply", status_code=201)
+async def apply_policy_template(template_id: str, request: Request):
+    """Apply a compliance policy template to the current tenant.
+
+    Creates enabled policy rules for every rule in the template pack.
+    Existing rules with the same name are skipped (not duplicated).
+
+    Available templates: hipaa, hitrust, soc2
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+
+    # Find template
+    template = next((t for t in COMPLIANCE_TEMPLATES if t["id"] == template_id), None)
+    if not template:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template '{template_id}' not found. Available: {[t['id'] for t in COMPLIANCE_TEMPLATES]}"
+        )
+
+    db = get_db()
+    existing_rules = db.get_policy_rules(tenant_id, enabled_only=False)
+    existing_names = {r["name"].lower() for r in existing_rules}
+
+    created_rules = []
+    skipped_rules = []
+
+    for rule_name in template["rules"]:
+        rule_def = _TEMPLATE_RULE_DEFS.get(rule_name, {})
+        display_name = rule_def.get("name", rule_name.replace("_", " ").title())
+
+        if display_name.lower() in existing_names:
+            skipped_rules.append(rule_name)
+            continue
+
+        rule_id = db.create_policy_rule(
+            tenant_id=tenant_id,
+            name=display_name,
+            action=rule_def.get("action", "ESCALATE"),
+            priority=rule_def.get("priority", 500),
+            description=rule_def.get("description"),
+            condition_tool=rule_def.get("condition_tool"),
+            condition_op=rule_def.get("condition_op"),
+            condition_risk_level=rule_def.get("condition_risk_level"),
+            condition_tags=rule_def.get("condition_tags"),
+            enabled=True,
+        )
+        created_rules.append({"rule_name": rule_name, "rule_id": rule_id})
+
+    record_policy_change(
+        tenant_id=tenant_id,
+        change_type="apply_pack",
+        entity_type="compliance_template",
+        entity_name=template["name"],
+        diff_json={
+            "template_id": template_id,
+            "created": created_rules,
+            "skipped": skipped_rules,
+        },
+        changed_by=tenant_id,
+    )
+    logger.info("[policy/templates] tenant=%s template=%s created=%d skipped=%d",
+                tenant_id, template_id, len(created_rules), len(skipped_rules))
+
+    return {
+        "template_id": template_id,
+        "template_name": template["name"],
+        "applied": True,
+        "rules_created": len(created_rules),
+        "rules_skipped": len(skipped_rules),
+        "created": created_rules,
+        "skipped": skipped_rules,
+    }
+
+
 VALID_ACTIONS = {"ALLOW", "BLOCK", "ESCALATE"}
 VALID_TOOLS = {
     "email", "shell", "calendar", "file", "clawdbot",
