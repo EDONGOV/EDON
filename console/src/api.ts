@@ -294,6 +294,16 @@ export const api = {
     body: JSON.stringify(payload),
   }),
 
+  // ── Shadow mode ───────────────────────────────────────────────────────────
+  getShadowMode: () =>
+    request<{ enabled: boolean }>('/settings/shadow-mode'),
+
+  setShadowMode: (enabled: boolean) =>
+    request<{ enabled: boolean }>('/settings/shadow-mode', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+
   // ── IP allowlist ──────────────────────────────────────────────────────────
   getIpAllowlist: () =>
     request<{ cidrs: string[]; enabled: boolean }>('/settings/ip-allowlist'),
