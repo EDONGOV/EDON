@@ -788,6 +788,9 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
         <p className="text-xs text-muted-foreground">Sessions auto-expire after <span className="text-foreground">15 minutes</span> of inactivity. A warning appears at 13 minutes.</p>
       </div>
 
+      {/* Shadow Mode */}
+      <ShadowModeCard />
+
       {/* API Key Rotation */}
       <ApiKeyRotationCard />
 
@@ -805,6 +808,45 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+function ShadowModeCard() {
+  const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.getShadowMode().then(r => setEnabled(r.enabled)).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const toggle = async () => {
+    setSaving(true)
+    try {
+      const r = await api.setShadowMode(!enabled)
+      setEnabled(r.enabled)
+    } catch { /* ignore */ } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-sm">Shadow Mode</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Log all decisions without blocking — use during trial periods</p>
+        </div>
+        <button onClick={toggle} disabled={loading || saving}
+          className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${enabled ? 'bg-amber-500' : 'bg-muted/50 border border-border'}`}>
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${enabled ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      {enabled && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+          <span className="text-base">⚠</span>
+          Governance is in observe-only mode. No actions are being blocked.
+        </div>
+      )}
     </div>
   )
 }
