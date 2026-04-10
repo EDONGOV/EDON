@@ -243,6 +243,356 @@ async def get_ip_allowlist(tenant_id: str, request: Request):
     }
 
 
+# ---------------------------------------------------------------------------
+# Tenant management
+# ---------------------------------------------------------------------------
+
+@router.get("/tenants")
+async def list_tenants(request: Request):
+    """List all tenants. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    try:
+        tenants_raw = db.list_tenants() if hasattr(db, "list_tenants") else []
+    except Exception:
+        tenants_raw = []
+    tenants = []
+    for t in tenants_raw:
+        tid = t.get("id") or t.get("tenant_id", "")
+        keys = []
+        try:
+            keys = db.list_api_keys(tid) if hasattr(db, "list_api_keys") else []
+        except Exception:
+            pass
+        active_keys = [k for k in keys if k.get("status") == "active"]
+        tenants.append({
+            "tenant_id": tid,
+            "plan": t.get("plan", "free"),
+            "status": t.get("status", "active"),
+            "created_at": t.get("created_at"),
+            "updated_at": t.get("updated_at"),
+            "active_key_count": len(active_keys),
+            "total_key_count": len(keys),
+        })
+    return {"tenants": tenants, "count": len(tenants)}
+
+
+@router.patch("/tenants/{tenant_id}")
+async def update_tenant(tenant_id: str, request: Request):
+    """Update tenant plan or status. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    updates = []
+    params = []
+    if "plan" in body:
+        updates.append("plan = ?")
+        params.append(body["plan"])
+    if "status" in body:
+        updates.append("status = ?")
+        params.append(body["status"])
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updatable fields provided")
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(tenant_id)
+    try:
+        with db._get_connection() as conn:
+            conn.execute(f"UPDATE tenants SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    tenant = db.get_tenant(tenant_id) or {}
+    return {"tenant_id": tenant_id, "plan": tenant.get("plan"), "status": tenant.get("status")}
+
+
+@router.post("/tenants/{tenant_id}/support-key")
+async def create_support_key(tenant_id: str, request: Request):
+    """Create a temporary support key for a tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    label = body.get("label") or f"support-{uuid.uuid4().hex[:8]}"
+    raw_key = secrets.token_hex(32)
+    key_hash = hash_api_key_fast(raw_key)
+    db = get_db()
+    key_id = db.create_api_key(tenant_id=tenant_id, key_hash=key_hash, name=label, role="operator")
+    logger.info("support_key_created: tenant=%s key_id=%s label=%s", tenant_id, key_id, label)
+    try:
+        now = datetime.now(UTC).isoformat()
+        with db._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO admin_audit_log (id, action_type, tenant_affected, performed_by_ip, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), "support_key_created", tenant_id,
+                 request.client.host if request.client else "unknown",
+                 '{"label":"' + label + '"}', now),
+            )
+            conn.commit()
+    except Exception:
+        pass
+    return {"key": raw_key, "key_id": key_id, "tenant_id": tenant_id, "label": label}
+
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
+
+@router.get("/audit-log")
+async def get_audit_log(request: Request, limit: int = 50, offset: int = 0):
+    """Return admin audit log entries. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    try:
+        with db._get_connection() as conn:
+            # Ensure table exists
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_audit_log (
+                    id TEXT PRIMARY KEY,
+                    action_type TEXT NOT NULL,
+                    tenant_affected TEXT,
+                    performed_by_ip TEXT,
+                    details TEXT DEFAULT '{}',
+                    bootstrap_key_hint TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+            rows = conn.execute(
+                "SELECT * FROM admin_audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM admin_audit_log").fetchone()[0]
+    except Exception as e:
+        return {"entries": [], "total": 0}
+
+    entries = []
+    import json
+    for row in rows:
+        d = dict(row)
+        try:
+            d["details"] = json.loads(d.get("details") or "{}")
+        except Exception:
+            d["details"] = {}
+        entries.append(d)
+    return {"entries": entries, "total": total}
+
+
+# ---------------------------------------------------------------------------
+# Contracts (ARR tracking)
+# ---------------------------------------------------------------------------
+
+@router.get("/contracts")
+async def list_contracts(request: Request):
+    """List all contracts. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    import json
+    try:
+        with db._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS contracts (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT,
+                    client_name TEXT NOT NULL,
+                    arr REAL DEFAULT 0,
+                    status TEXT DEFAULT 'active',
+                    start_date TEXT,
+                    end_date TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+            rows = conn.execute("SELECT * FROM contracts ORDER BY created_at DESC").fetchall()
+    except Exception:
+        return {"contracts": [], "total_arr": 0}
+    contracts = [dict(r) for r in rows]
+    total_arr = sum(c.get("arr", 0) or 0 for c in contracts if c.get("status") == "active")
+    return {"contracts": contracts, "total_arr": total_arr}
+
+
+@router.post("/contracts", status_code=201)
+async def create_contract(request: Request):
+    """Create a contract. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    cid = str(uuid.uuid4())
+    try:
+        with db._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS contracts (
+                    id TEXT PRIMARY KEY, tenant_id TEXT, client_name TEXT NOT NULL,
+                    arr REAL DEFAULT 0, status TEXT DEFAULT 'active',
+                    start_date TEXT, end_date TEXT, notes TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "INSERT INTO contracts (id, tenant_id, client_name, arr, status, start_date, end_date, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (cid, body.get("tenant_id"), body.get("client_name", ""), body.get("arr", 0),
+                 body.get("status", "active"), body.get("start_date"), body.get("end_date"),
+                 body.get("notes"), now, now)
+            )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"id": cid, "status": "created"}
+
+
+@router.patch("/contracts/{contract_id}")
+async def update_contract(contract_id: str, request: Request):
+    """Update a contract. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    allowed = {"tenant_id", "client_name", "arr", "status", "start_date", "end_date", "notes"}
+    updates = [f"{k} = ?" for k in body if k in allowed]
+    params = [body[k] for k in body if k in allowed]
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updatable fields")
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(contract_id)
+    try:
+        with db._get_connection() as conn:
+            conn.execute(f"UPDATE contracts SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"id": contract_id, "status": "updated"}
+
+
+@router.delete("/contracts/{contract_id}")
+async def delete_contract(contract_id: str, request: Request):
+    """Delete a contract. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    try:
+        with db._get_connection() as conn:
+            conn.execute("DELETE FROM contracts WHERE id = ?", (contract_id,))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"id": contract_id, "status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Usage analytics
+# ---------------------------------------------------------------------------
+
+@router.get("/usage")
+async def get_usage(request: Request, period: int = 30):
+    """Return usage stats per tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    try:
+        with db._get_connection() as conn:
+            from_ts = datetime.now(UTC).replace(microsecond=0)
+            import datetime as dt_mod
+            from_ts = (datetime.now(UTC) - dt_mod.timedelta(days=period)).isoformat()
+            rows = conn.execute("""
+                SELECT agent_id, decision_verdict, COUNT(*) as cnt
+                FROM decisions
+                WHERE timestamp >= ?
+                GROUP BY agent_id, decision_verdict
+            """, (from_ts,)).fetchall()
+    except Exception:
+        return {"period_days": period, "totals": {"total_decisions": 0, "unique_agents": 0}, "by_tenant": []}
+
+    # Group by tenant (derive from agent registrations)
+    agent_tenant: dict = {}
+    try:
+        with db._get_connection() as conn:
+            agent_rows = conn.execute("SELECT agent_id, tenant_id FROM agents").fetchall()
+            for r in agent_rows:
+                agent_tenant[r[0]] = r[1]
+    except Exception:
+        pass
+
+    tenant_stats: dict = {}
+    for row in rows:
+        agent_id = row[0]
+        tid = agent_tenant.get(agent_id, "unknown")
+        if tid not in tenant_stats:
+            tenant_stats[tid] = {"tenant_id": tid, "total_decisions": 0, "unique_agents": set()}
+        tenant_stats[tid]["total_decisions"] += row[2]
+        tenant_stats[tid]["unique_agents"].add(agent_id)
+
+    by_tenant = [
+        {"tenant_id": v["tenant_id"], "total_decisions": v["total_decisions"], "unique_agents": len(v["unique_agents"])}
+        for v in tenant_stats.values()
+    ]
+    total = sum(t["total_decisions"] for t in by_tenant)
+    return {
+        "period_days": period,
+        "totals": {"total_decisions": total, "unique_agents": sum(t["unique_agents"] for t in by_tenant)},
+        "by_tenant": by_tenant,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Feature flags per tenant
+# ---------------------------------------------------------------------------
+
+@router.get("/feature-flags/{tenant_id}")
+async def get_feature_flags(tenant_id: str, request: Request):
+    """Get feature flags for a tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    import json
+    try:
+        with db._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feature_flags (
+                    tenant_id TEXT NOT NULL, flag TEXT NOT NULL, enabled INTEGER DEFAULT 0,
+                    updated_at TEXT, PRIMARY KEY (tenant_id, flag)
+                )
+            """)
+            conn.commit()
+            rows = conn.execute("SELECT flag, enabled FROM feature_flags WHERE tenant_id = ?", (tenant_id,)).fetchall()
+    except Exception:
+        return {"tenant_id": tenant_id, "flags": {}}
+    return {"tenant_id": tenant_id, "flags": {r[0]: bool(r[1]) for r in rows}}
+
+
+@router.post("/feature-flags")
+async def set_feature_flag(request: Request):
+    """Set a feature flag for a tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    tenant_id = body.get("tenant_id")
+    flag = body.get("flag")
+    enabled = bool(body.get("enabled", False))
+    if not tenant_id or not flag:
+        raise HTTPException(status_code=400, detail="tenant_id and flag required")
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    try:
+        with db._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feature_flags (
+                    tenant_id TEXT NOT NULL, flag TEXT NOT NULL, enabled INTEGER DEFAULT 0,
+                    updated_at TEXT, PRIMARY KEY (tenant_id, flag)
+                )
+            """)
+            conn.execute(
+                "INSERT INTO feature_flags (tenant_id, flag, enabled, updated_at) VALUES (?,?,?,?) ON CONFLICT(tenant_id, flag) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at",
+                (tenant_id, flag, int(enabled), now)
+            )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"tenant_id": tenant_id, "flag": flag, "enabled": enabled}
+
+
+# ---------------------------------------------------------------------------
+# Unlock IP (existing)
+# ---------------------------------------------------------------------------
+
 @router.post("/unlock-ip")
 async def unlock_ip(request: Request):
     """Clear brute force lockout for an IP address.
