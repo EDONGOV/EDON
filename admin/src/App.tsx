@@ -1422,14 +1422,8 @@ const AGENTS = [
   { id: 'integration',        name: 'Integration Agent',     workflow: 'integration_agent.yml' },
 ]
 
-async function triggerGitHubWorkflow(workflow: string, githubToken: string, inputs: Record<string, string> = {}) {
-  const res = await fetch(`https://api.github.com/repos/EDONGOV/EDON/actions/workflows/${workflow}/dispatches`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${githubToken}`, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
-    body: JSON.stringify({ ref: 'master', inputs }),
-  })
-  if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`)
-}
+// GitHub workflow dispatch kept for future use
+// async function triggerGitHubWorkflow(workflow: string, githubToken: string, inputs: Record<string, string> = {}) { ... }
 
 async function transcribeAudio(blob: Blob, openaiKey: string): Promise<string> {
   const form = new FormData()
@@ -1447,9 +1441,10 @@ async function transcribeAudio(blob: Blob, openaiKey: string): Promise<string> {
 
 async function chiefOfStaffReason(transcript: string, openaiKey: string): Promise<string> {
   const system = `You are the Chief of Staff AI for EDON, an AI governance startup. The founder is talking to you directly.
-You have a team of agents: ${AGENTS.map(a => a.name).join(', ')}.
-When asked to delegate, trigger a workflow, get a status update, or take action — respond with a clear action plan and include a JSON block at the end with:
-{"action": "trigger_workflow" | "multica_issue" | "status" | "none", "agent": "<agent_id>", "task": "<brief task description>"}
+You manage a team of agents through Multica: ${AGENTS.map(a => `${a.name} (id: ${a.id})`).join(', ')}.
+All agent tasks are dispatched through Multica. When the founder asks you to delegate, take action, or assign a task — respond with a clear plan and include a JSON block at the end:
+{"action": "multica_issue" | "none", "agent": "<agent_id>", "task": "<brief task description>"}
+Use "multica_issue" any time an agent should do something. Use "none" only for pure conversation or status questions.
 Keep responses concise and direct. You are the founder's right hand.`
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -1483,7 +1478,7 @@ async function speakText(text: string, openaiKey: string) {
 
 function CommandTab() {
   const [openaiKey, setOpenaiKey]     = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
-  const [githubToken, setGithubToken] = useState(() => localStorage.getItem(GITHUB_TOKEN_STORAGE) || '')
+  const [githubToken] = useState(() => localStorage.getItem(GITHUB_TOKEN_STORAGE) || '') // kept for future use
   const [multicaToken, setMulticaToken] = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
   const [messages, setMessages]       = useState<Message[]>([
     { id: 'welcome', role: 'assistant', text: "Chief of Staff online. What do you need?", ts: new Date() }
@@ -1517,17 +1512,17 @@ function CommandTab() {
           const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
           const agent = AGENTS.find(a => a.id === action.agent)
 
-          if (action.action === 'trigger_workflow' && agent && githubToken) {
-            await triggerGitHubWorkflow(agent.workflow, githubToken, { task: action.task })
-            addMessage('assistant', `✓ Triggered ${agent.name} workflow on GitHub.`)
-          } else if (action.action === 'multica_issue' && agent && multicaToken) {
-            // POST to Multica API
-            await fetch('https://edon-multica-api.fly.dev/api/issues', {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${multicaToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: action.task, assignee: action.agent }),
-            })
-            addMessage('assistant', `✓ Created Multica issue for ${agent.name}.`)
+          if (action.action === 'multica_issue' && agent) {
+            if (!multicaToken) {
+              addMessage('assistant', `⚠ Multica token not set — open Config to add it.`)
+            } else {
+              await fetch('https://edon-multica-api.fly.dev/api/issues', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${multicaToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: action.task, assignee: action.agent }),
+              })
+              addMessage('assistant', `✓ Assigned to ${agent.name} via Multica.`)
+            }
           }
         } catch { /* action parse failed — just show reply */ }
       }
@@ -1615,12 +1610,7 @@ function CommandTab() {
                 placeholder="sk-..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
             </div>
             <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">GitHub Token (to trigger workflows)</label>
-              <input type="password" value={githubToken} onChange={e => setGithubToken(e.target.value)}
-                placeholder="ghp_..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
-            </div>
-            <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">Multica Token (optional — for on-demand issues)</label>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Multica Token (agent dispatch)</label>
               <input type="password" value={multicaToken} onChange={e => setMulticaToken(e.target.value)}
                 placeholder="multica_..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
             </div>
