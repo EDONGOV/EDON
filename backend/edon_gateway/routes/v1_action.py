@@ -622,28 +622,44 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     # ── Dispatch governance event webhooks (non-blocking) ────────────────────
     if tenant_id:
         try:
+            import asyncio as _asyncio
             from ..webhooks import dispatch_event
+            from ..services.webhook_delivery import deliver_webhook as _deliver_webhook
             _verdict = decision.verdict.value
-            _event_type = (
+            _legacy_event = (
                 "action.blocked" if _verdict in ("BLOCK", "ERROR")
                 else "action.escalated" if _verdict in ("ESCALATE", "PAUSE")
                 else "action.allowed"
             )
+            _decision_data = {
+                "action_id": decision_id,
+                "action_type": req.action_type,
+                "agent_id": req.agent_id,
+                "verdict": _verdict,
+                "reason": decision.explanation,
+                "escalation_question": decision.escalation_question or "",
+                "escalation_options": decision.escalation_options or [],
+                "review_url": "https://console.edoncore.com",
+            }
+            # Legacy synchronous dispatcher (keeps existing alert rules working)
             dispatch_event(
-                event_type=_event_type,
-                payload={
-                    "action_id": decision_id,
-                    "action_type": req.action_type,
-                    "agent_id": req.agent_id,
-                    "verdict": _verdict,
-                    "reason": decision.explanation,
-                    "escalation_question": decision.escalation_question or "",
-                    "escalation_options": decision.escalation_options or [],
-                    "review_url": f"https://console.edoncore.com",
-                },
+                event_type=_legacy_event,
+                payload=_decision_data,
                 tenant_id=tenant_id,
                 db=db,
             )
+            # New async deliver_webhook — fires per the new /webhooks route events
+            if _verdict in ("BLOCK", "ERROR"):
+                _asyncio.create_task(_deliver_webhook(tenant_id, "decision.blocked", _decision_data, db))
+            elif _verdict in ("ESCALATE", "PAUSE"):
+                _asyncio.create_task(_deliver_webhook(tenant_id, "decision.escalated", _decision_data, db))
+            # risk.high — fire whenever risk_score > 0.7 (from prediction or anomaly)
+            _risk_score = (decision.meta or {}).get("predictive_oob_risk") or 0.0
+            if not _risk_score:
+                _anomaly = (decision.meta or {}).get("anomaly", {})
+                _risk_score = (_anomaly.get("score") or 0.0) if _anomaly else 0.0
+            if _risk_score > 0.7:
+                _asyncio.create_task(_deliver_webhook(tenant_id, "risk.high", _decision_data, db))
         except Exception as _wh_err:
             logger.warning("Webhook dispatch failed (non-blocking): %s", _wh_err)
 
@@ -725,6 +741,24 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _meter_err:
         logger.debug("Metering record dispatch failed (non-blocking): %s", _meter_err)
 
+    # ── Shadow Mode override ─────────────────────────────────────────────────
+    # If shadow mode is enabled, always respond "allowed" but keep the real
+    # verdict in the audit log (already persisted above). This lets hospital
+    # trials observe governance decisions without blocking any traffic.
+    _shadow_mode_active = False
+    if tenant_id:
+        try:
+            _shadow_mode_active = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
+        except Exception as _sm_err:
+            logger.warning("Shadow mode check failed (non-blocking): %s", _sm_err)
+
+    if _shadow_mode_active and verdict_str not in ("ALLOW",):
+        logger.info(
+            "[/v1/action] shadow_mode override: agent=%s action=%s original_verdict=%s -> ALLOW",
+            req.agent_id, req.action_type, verdict_str,
+        )
+        verdict_str = "ALLOW"
+
     # Build response
     response_decision = _map_verdict_to_decision(verdict_str)
 
@@ -749,6 +783,9 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     if decision.escalation_options:
         response.escalation_options = decision.escalation_options
+
+    if _shadow_mode_active:
+        response.shadow_mode = True
 
     predictive_meta = decision.meta or {}
     predictive_risk = predictive_meta.get("predictive_oob_risk")
