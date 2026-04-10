@@ -1403,7 +1403,7 @@ function AuditLogTab({ secret, toast }: { secret: string; toast: (m: string, t: 
 const OPENAI_KEY_STORAGE = 'edon_openai_key'
 const ANTHROPIC_KEY_STORAGE = 'edon_anthropic_key'
 const MULTICA_TOKEN_STORAGE = 'edon_multica_token'
-const GITHUB_TOKEN_STORAGE = 'edon_github_token'
+// const GITHUB_TOKEN_STORAGE = 'edon_github_token' // kept for future workflow dispatch
 
 interface Message { id: string; role: 'user' | 'assistant'; text: string; ts: Date }
 
@@ -1484,19 +1484,18 @@ async function speakText(text: string, openaiKey: string) {
 }
 
 function CommandTab() {
-  const [openaiKey, setOpenaiKey]         = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
-  const [anthropicKey, setAnthropicKey]   = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
-  // GitHub token kept in storage for future workflow dispatch use
-  void GITHUB_TOKEN_STORAGE
-  const [multicaToken, setMulticaToken]   = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
-  const [messages, setMessages]       = useState<Message[]>([
-    { id: 'welcome', role: 'assistant', text: "Chief of Staff online. What do you need?", ts: new Date() }
+  const [openaiKey, setOpenaiKey]       = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
+  const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
+  const [multicaToken, setMulticaToken] = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
+  const [messages, setMessages]         = useState<Message[]>([
+    { id: 'welcome', role: 'assistant', text: "Chief of Staff online. Type a task and pick an agent — I'll dispatch it immediately.", ts: new Date() }
   ])
-  const [recording, setRecording]     = useState(false)
-  const [processing, setProcessing]   = useState(false)
+  const [recording, setRecording]       = useState(false)
+  const [processing, setProcessing]     = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
-  const [textInput, setTextInput]     = useState('')
-  const [showConfig, setShowConfig]   = useState(false)
+  const [textInput, setTextInput]       = useState('')
+  const [selectedAgent, setSelectedAgent] = useState(AGENTS[0].id)
+  const [showConfig, setShowConfig]     = useState(false)
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -1506,44 +1505,53 @@ function CommandTab() {
   const addMessage = (role: 'user' | 'assistant', text: string) =>
     setMessages(prev => [...prev, { id: Date.now().toString(), role, text, ts: new Date() }])
 
+  const dispatchToMultica = async (task: string, agentId: string) => {
+    if (!multicaToken) {
+      addMessage('assistant', '⚠ Multica token not set — open Config to add it.')
+      return
+    }
+    const agent = AGENTS.find(a => a.id === agentId)
+    await fetch('https://edon-multica-api.fly.dev/api/issues', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${multicaToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: task, assignee: agentId }),
+    })
+    addMessage('assistant', `✓ Task sent to ${agent?.name ?? agentId}. The agent will handle it now.`)
+  }
+
   const processInput = async (text: string) => {
     if (!text.trim()) return
     addMessage('user', text)
     setProcessing(true)
     try {
-      const reply = await chiefOfStaffReason(text, anthropicKey)
-      addMessage('assistant', reply)
-
-      // Parse action from JSON block
-      const match = reply.match(/\{[\s\S]*?\}/)
-      if (match) {
-        try {
-          const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
-          const agent = AGENTS.find(a => a.id === action.agent)
-
-          if (action.action === 'multica_issue' && agent) {
-            if (!multicaToken) {
-              addMessage('assistant', `⚠ Multica token not set — open Config to add it.`)
-            } else {
-              await fetch('https://edon-multica-api.fly.dev/api/issues', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${multicaToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: action.task, assignee: action.agent }),
-              })
-              addMessage('assistant', `✓ Assigned to ${agent.name} via Multica.`)
+      // If Anthropic key available, use Claude to reason first (enhanced mode)
+      if (anthropicKey) {
+        const reply = await chiefOfStaffReason(text, anthropicKey)
+        addMessage('assistant', reply)
+        const match = reply.match(/\{[\s\S]*?\}/)
+        if (match) {
+          try {
+            const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
+            if (action.action === 'multica_issue' && action.agent) {
+              await dispatchToMultica(action.task || text, action.agent)
             }
-          }
-        } catch { /* action parse failed — just show reply */ }
+          } catch { /* parse failed — just show reply */ }
+        }
+        if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
+      } else {
+        // Direct mode — no API key needed, go straight to Multica
+        await dispatchToMultica(text, selectedAgent)
       }
-
-      if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
     } catch (e) {
       addMessage('assistant', `Error: ${e instanceof Error ? e.message : 'Something went wrong'}`)
     } finally { setProcessing(false) }
   }
 
   const startRecording = async () => {
-    if (!openaiKey) { setShowConfig(true); return }
+    if (!openaiKey) {
+      addMessage('assistant', '⚠ OpenAI key needed for mic — add it in Config, or type your command instead.')
+      return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const mr = new MediaRecorder(stream)
@@ -1579,7 +1587,7 @@ function CommandTab() {
     setShowConfig(false)
   }
 
-  const configured = !!anthropicKey
+  const configured = !!multicaToken
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] max-w-3xl mx-auto">
@@ -1591,7 +1599,7 @@ function CommandTab() {
           </div>
           <div>
             <h2 className="font-semibold text-sm">Chief of Staff</h2>
-            <p className="text-[10px] text-muted-foreground">Voice · GPT-4o · Controls all agents</p>
+            <p className="text-[10px] text-muted-foreground">{anthropicKey ? 'Claude · Enhanced mode' : 'Direct mode'} · Multica dispatch</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1612,21 +1620,22 @@ function CommandTab() {
         {showConfig && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="mb-4 rounded-xl border border-border bg-black/30 p-4 space-y-3 overflow-hidden">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">API Keys</h3>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Config</h3>
             <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">Anthropic API Key (Claude — Chief of Staff brain)</label>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Multica Token <span className="text-primary font-semibold">required</span></label>
+              <input type="password" value={multicaToken} onChange={e => setMulticaToken(e.target.value)}
+                placeholder="multica_..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
+            </div>
+            <p className="text-[10px] text-muted-foreground/50">Optional — unlock Claude reasoning + voice:</p>
+            <div>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Anthropic API Key (Claude enhanced mode)</label>
               <input type="password" value={anthropicKey} onChange={e => setAnthropicKey(e.target.value)}
                 placeholder="sk-ant-..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
             </div>
             <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">OpenAI API Key (Whisper mic + TTS voice)</label>
+              <label className="text-[10px] text-muted-foreground mb-1 block">OpenAI API Key (mic + voice)</label>
               <input type="password" value={openaiKey} onChange={e => setOpenaiKey(e.target.value)}
                 placeholder="sk-..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
-            </div>
-            <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">Multica Token (agent dispatch)</label>
-              <input type="password" value={multicaToken} onChange={e => setMulticaToken(e.target.value)}
-                placeholder="multica_..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
             </div>
             <button onClick={saveConfig} className="text-xs px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary font-semibold hover:bg-primary/30 transition-colors">
               Save
@@ -1635,12 +1644,16 @@ function CommandTab() {
         )}
       </AnimatePresence>
 
-      {/* Agent roster */}
-      <div className="flex gap-1.5 flex-wrap mb-4">
-        {AGENTS.map(a => (
-          <span key={a.id} className="text-[10px] px-2 py-0.5 rounded-full border border-border bg-muted/20 text-muted-foreground">{a.name}</span>
-        ))}
-      </div>
+      {/* Agent selector — only shown in direct mode (no Anthropic key) */}
+      {!anthropicKey && (
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-[10px] text-muted-foreground shrink-0">Assign to:</span>
+          <select value={selectedAgent} onChange={e => setSelectedAgent(e.target.value)}
+            className="flex-1 text-xs bg-muted/30 border border-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/40 text-foreground">
+            {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-1">
