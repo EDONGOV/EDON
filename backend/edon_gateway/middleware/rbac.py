@@ -87,6 +87,8 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 required = "admin"
             elif path in ("/audit/export", "/audit/evidence-package") and method == "GET":
                 required = "export"
+            elif path == "/settings/shadow-mode" and method == "POST":
+                required = "admin"
 
         # Default: unspecified endpoints require 'read' for GET, 'write' for mutations
         if required is None:

@@ -14,7 +14,7 @@ import secrets
 import time
 import ipaddress
 from collections import defaultdict
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
@@ -132,13 +132,14 @@ async def bootstrap_api_key(request: Request, body: BootstrapKeyRequest):
             "message": "Token was already provisioned. No changes made.",
         }
 
-    # --- Create API key ---
-    key_name = body.name or f"{tenant_id}-bootstrap-key"
+    # --- Create API key (always sandbox for new tenants) ---
+    key_name = body.name or f"{tenant_id}-sandbox-key"
     key_id = db.create_api_key(
         tenant_id=tenant_id,
         key_hash=key_hash,
         name=key_name,
         role=body.role,
+        is_sandbox=True,
     )
 
     logger.info(
@@ -153,7 +154,8 @@ async def bootstrap_api_key(request: Request, body: BootstrapKeyRequest):
         "role": body.role,
         "plan": body.plan,
         "status": "created",
-        "message": "API key provisioned. The token you supplied is now active.",
+        "sandbox": True,
+        "message": "API key provisioned. Tenant starts in sandbox (shadow) mode — no actions will be blocked until you go live.",
     }
 
 
@@ -331,6 +333,87 @@ async def create_support_key(tenant_id: str, request: Request):
     except Exception:
         pass
     return {"key": raw_key, "key_id": key_id, "tenant_id": tenant_id, "label": label}
+
+
+# ---------------------------------------------------------------------------
+# Per-tenant shadow mode (sandbox) control
+# ---------------------------------------------------------------------------
+
+@router.get("/tenants/{tenant_id}/shadow-mode")
+async def get_tenant_shadow_mode(tenant_id: str, request: Request):
+    """Get sandbox/shadow mode status for a tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    db = get_db()
+    enabled = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
+    return {"tenant_id": tenant_id, "sandbox": enabled, "enabled": enabled}
+
+
+@router.post("/tenants/{tenant_id}/go-live")
+async def tenant_go_live(tenant_id: str, request: Request):
+    """Provision a live (non-sandbox) key for a tenant and mark them as live.
+
+    Returns the new live key once — store it securely.
+    Protected by X-Bootstrap-Secret.
+    """
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    label = body.get("label") or f"{tenant_id}-live-key"
+    db = get_db()
+
+    raw_key = secrets.token_hex(32)
+    key_hash = hash_api_key_fast(raw_key)
+    key_id = db.create_api_key(
+        tenant_id=tenant_id,
+        key_hash=key_hash,
+        name=label,
+        role="admin",
+        is_sandbox=False,
+    )
+    logger.info("admin.go_live: tenant=%s key_id=%s", tenant_id, key_id)
+
+    # Store raw key for in-console claim (expires in 48h)
+    now = datetime.now(UTC)
+    expires_at = (now + timedelta(hours=48)).isoformat()
+    try:
+        with db._get_connection() as conn:
+            # Clear any previous unclaimed record for this tenant
+            conn.execute("DELETE FROM pending_live_keys WHERE tenant_id = ?", (tenant_id,))
+            conn.execute(
+                "INSERT INTO pending_live_keys (id, tenant_id, raw_key, key_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), tenant_id, raw_key, key_id, now.isoformat(), expires_at),
+            )
+            conn.execute(
+                "INSERT INTO admin_audit_log (id, action_type, tenant_affected, performed_by_ip, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), "gone_live", tenant_id,
+                 request.client.host if request.client else "unknown",
+                 '{"key_id":"' + key_id + '"}', now.isoformat()),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("go_live: could not store pending key: %s", e)
+
+    return {
+        "tenant_id": tenant_id,
+        "key_id": key_id,
+        "label": label,
+        "sandbox": False,
+        "pending_claim": True,
+        "message": "Live key created and waiting for client to claim in their console (48h window).",
+    }
+
+
+@router.post("/tenants/{tenant_id}/shadow-mode")
+async def set_tenant_shadow_mode(tenant_id: str, request: Request):
+    """Enable or disable tenant-level shadow mode. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    enabled = bool(body.get("enabled", False))
+    db = get_db()
+    if hasattr(db, "set_shadow_mode"):
+        db.set_shadow_mode(tenant_id, enabled)
+    action = "sandbox_enabled" if enabled else "shadow_mode_disabled"
+    logger.info("admin.%s: tenant=%s", action, tenant_id)
+    return {"tenant_id": tenant_id, "sandbox": enabled, "enabled": enabled, "ok": True}
 
 
 # ---------------------------------------------------------------------------

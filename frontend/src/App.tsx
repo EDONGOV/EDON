@@ -2,8 +2,10 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
+import { SessionGuard } from "@/components/SessionGuard";
+import { hasRole, setUserRole, type UserRole } from "@/lib/auth";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ChatShell } from "@/components/ChatShell";
@@ -26,8 +28,15 @@ import AdminPanel from "./pages/AdminPanel";
 import DemoMode from "./pages/DemoMode";
 import PilotKit from "./pages/PilotKit";
 import HGIPanel from "./pages/HGIPanel";
+import ReviewQueue from "./pages/ReviewQueue";
 
 const queryClient = new QueryClient();
+
+// ─── Role-protected route ────────────────────────────────────────────────────
+function ProtectedRoute({ children, min }: { children: ReactNode; min: UserRole }) {
+  if (!hasRole(min)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
 
 const AppRoutes = () => {
   const location = useLocation();
@@ -74,20 +83,21 @@ const AppRoutes = () => {
     <Routes>
       <Route path="/" element={<Dashboard />} />
       <Route path="/decisions" element={<Decisions />} />
-      <Route path="/audit" element={<Audit />} />
+      <Route path="/audit" element={<ProtectedRoute min="operator"><Audit /></ProtectedRoute>} />
       <Route path="/agents" element={<Agents />} />
-      <Route path="/policies" element={<Policies />} />
+      <Route path="/policies" element={<ProtectedRoute min="operator"><Policies /></ProtectedRoute>} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/quickstart" element={<Quickstart />} />
       <Route path="/profile" element={<Profile />} />
-      <Route path="/api-keys" element={<ApiKeys />} />
-      <Route path="/billing" element={<Billing />} />
-      <Route path="/team" element={<Team />} />
+      <Route path="/api-keys" element={<ProtectedRoute min="admin"><ApiKeys /></ProtectedRoute>} />
+      <Route path="/billing" element={<ProtectedRoute min="admin"><Billing /></ProtectedRoute>} />
+      <Route path="/team" element={<ProtectedRoute min="admin"><Team /></ProtectedRoute>} />
       <Route path="/capabilities" element={<Capabilities />} />
-      <Route path="/admin" element={<AdminPanel />} />
+      <Route path="/admin" element={<ProtectedRoute min="admin"><AdminPanel /></ProtectedRoute>} />
       <Route path="/demo" element={<DemoMode />} />
       <Route path="/pilot" element={<PilotKit />} />
-      <Route path="/hgi" element={<HGIPanel />} />
+      <Route path="/hgi" element={<ProtectedRoute min="operator"><HGIPanel /></ProtectedRoute>} />
+      <Route path="/review" element={<ProtectedRoute min="operator"><ReviewQueue /></ProtectedRoute>} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
@@ -200,6 +210,11 @@ const App = () => {
         .then((session) => {
           if (session?.email) localStorage.setItem("edon_user_email", session.email);
           if (session?.plan) localStorage.setItem("edon_plan", session.plan);
+          // Store role from backend — determines what the user can access
+          if (session?.role) {
+            const r = session.role as UserRole;
+            if (['admin', 'operator', 'viewer'].includes(r)) setUserRole(r);
+          }
           window.dispatchEvent(new Event("edon-auth-updated"));
         })
         .catch(() => {});
@@ -230,8 +245,10 @@ const App = () => {
           }}
         >
           <ErrorBoundary>
-            <AppRoutes />
-            <ChatShell />
+            <SessionGuard>
+              <AppRoutes />
+              <ChatShell />
+            </SessionGuard>
           </ErrorBoundary>
         </BrowserRouter>
       </TooltipProvider>

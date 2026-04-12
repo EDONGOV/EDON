@@ -29,6 +29,21 @@ class RotateKeyRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100, description="Optional name for the new key")
 
 
+@router.get("/me", status_code=200)
+async def get_me(request: Request):
+    """Return identity info for the current API key."""
+    tenant_info = getattr(request.state, 'tenant_info', None) or {}
+    return {
+        "tenant_id": tenant_info.get("tenant_id", ""),
+        "key_id": tenant_info.get("api_key_id", None),
+        "key_name": tenant_info.get("key_name", None),
+        "role": tenant_info.get("role", "user"),
+        "plan": tenant_info.get("plan", ""),
+        "is_admin": tenant_info.get("role") == "admin",
+        "is_sandbox": tenant_info.get("is_sandbox", False),
+    }
+
+
 @router.post("/{key_id}/rotate", status_code=201)
 async def rotate_api_key(key_id: str, request: Request, body: RotateKeyRequest):
     """Rotate an API key with zero-downtime overlap.

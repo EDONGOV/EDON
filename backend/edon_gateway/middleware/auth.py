@@ -242,7 +242,9 @@ def verify_token(token: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
                     "status": tenant["status"],
                     "plan": tenant["plan"],
                     "api_key_id": api_key["id"],
+                    "key_name": api_key.get("name"),
                     "role": api_key.get("role", "user"),
+                    "is_sandbox": api_key.get("is_sandbox", False),
                 }
             # Orphaned key (no tenant): fall through to env token / Clerk
 

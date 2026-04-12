@@ -7,7 +7,7 @@ import {
   ScrollText, Building2, RotateCcw, Search, X,
   DollarSign, BarChart2, Globe, ToggleLeft, ToggleRight,
   UserCheck, CalendarClock, TrendingUp, FileText, Clock,
-  Trophy, Server, FlaskConical, Lock, Power,
+  Trophy, Server, FlaskConical, Lock, Power, Zap,
   Mic, MicOff, Volume2, VolumeX, Send, Bot, Loader2,
 } from 'lucide-react'
 
@@ -596,6 +596,37 @@ function ClientsTab({ secret, toast }: { secret: string; toast: (m: string, t: '
     finally { setProvisioning(false) }
   }
 
+  const [sandboxMap, setSandboxMap] = useState<Record<string, boolean>>({})
+  const [sandboxLoading, setSandboxLoading] = useState<string | null>(null)
+
+  const fetchSandbox = async (tenantId: string) => {
+    try {
+      const r = await adminRequest<{ sandbox: boolean }>(`/admin/tenants/${tenantId}/shadow-mode`, secret)
+      setSandboxMap(m => ({ ...m, [tenantId]: r.sandbox }))
+    } catch { /* ignore */ }
+  }
+
+  const goLive = async (tenantId: string) => {
+    if (!confirm(`Take ${tenantId} live?\n\nA new production key will be created. All future AI actions will be governed — nothing is blocked retroactively.\n\nThe live key is shown once — copy it immediately.`)) return
+    setSandboxLoading(tenantId)
+    try {
+      await adminRequest(`/admin/tenants/${tenantId}/go-live`, secret, { method: 'POST', body: JSON.stringify({ label: `${tenantId}-live-key` }) })
+      setSandboxMap(m => ({ ...m, [tenantId]: false }))
+      toast(`${tenantId} is live — client will see a claim banner in their console`, 'ok')
+    } catch (err) { toast(err instanceof Error ? err.message : 'Failed', 'err') }
+    finally { setSandboxLoading(null) }
+  }
+
+  const putInSandbox = async (tenantId: string) => {
+    setSandboxLoading(tenantId)
+    try {
+      await adminRequest(`/admin/tenants/${tenantId}/shadow-mode`, secret, { method: 'POST', body: JSON.stringify({ enabled: true }) })
+      setSandboxMap(m => ({ ...m, [tenantId]: true }))
+      toast(`${tenantId} moved back to sandbox`, 'ok')
+    } catch (err) { toast(err instanceof Error ? err.message : 'Failed', 'err') }
+    finally { setSandboxLoading(null) }
+  }
+
   const createSupportKey = async (tenantId: string) => {
     try {
       const r = await adminRequest<{ key: string; label: string }>(`/admin/tenants/${tenantId}/support-key`, secret, { method: 'POST', body: JSON.stringify({}) })
@@ -773,13 +804,18 @@ function ClientsTab({ secret, toast }: { secret: string; toast: (m: string, t: '
             return (
               <div key={t.tenant_id} className={`glass-card overflow-hidden ${renewSoon ? 'border-amber-500/20' : ''}`}>
                 <button className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-white/[0.02] transition"
-                  onClick={() => setExpanded(isOpen ? null : t.tenant_id)}>
+                  onClick={() => { setExpanded(isOpen ? null : t.tenant_id); if (!isOpen) fetchSandbox(t.tenant_id) }}>
                   <Building2 size={15} className="text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm font-medium">{t.tenant_id}</span>
                       {status === 'pilot' && <FlaskConical size={11} className="text-teal-400" />}
                       {renewSoon && <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 rounded">renews {renewDays}d</span>}
+                      {sandboxMap[t.tenant_id] === true && (
+                        <span className="text-[10px] font-semibold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1.5 rounded flex items-center gap-1">
+                          <FlaskConical size={9} /> Sandbox
+                        </span>
+                      )}
                     </div>
                   </div>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${STATUS_COLOR[status] || STATUS_COLOR['active']}`}>{status}</span>
@@ -794,6 +830,18 @@ function ClientsTab({ secret, toast }: { secret: string; toast: (m: string, t: '
                       className="overflow-hidden border-t border-border/50">
                       <div className="px-5 py-4 space-y-4">
                         <div className="flex flex-wrap gap-2">
+                          {/* Sandbox / Go Live */}
+                          {sandboxMap[t.tenant_id] === true ? (
+                            <button onClick={() => goLive(t.tenant_id)} disabled={sandboxLoading === t.tenant_id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition disabled:opacity-50">
+                              {sandboxLoading === t.tenant_id ? '…' : <><Zap size={12} /> Go Live</>}
+                            </button>
+                          ) : sandboxMap[t.tenant_id] === false ? (
+                            <button onClick={() => putInSandbox(t.tenant_id)} disabled={sandboxLoading === t.tenant_id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs font-medium hover:bg-purple-500/20 transition disabled:opacity-50">
+                              {sandboxLoading === t.tenant_id ? '…' : <><FlaskConical size={12} /> Back to Sandbox</>}
+                            </button>
+                          ) : null}
                           <button onClick={() => { setAddKeyTarget(t.tenant_id); setExpanded(null) }}
                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs font-medium hover:bg-primary/20 transition">
                             <Plus size={12} /> Add Key
@@ -1717,6 +1765,322 @@ function CommandTab() {
   )
 }
 
+// ── Shadow Tab ────────────────────────────────────────────────────────────────
+
+interface ShadowSummary { stable: number; advisory: number; critical: number; non_determinism_count: number; confirmed_bypasses: number }
+interface ShadowFinding {
+  id?: number; trace_id: string; perturbation_name: string; perturbation_type: string
+  perturbed_field?: string; shadow_verdict: string; shadow_reason: string
+  shadow_latency_ms: number; verdict_changed: number; severity: 'stable' | 'advisory' | 'critical'
+  findings: string[]; created_at: string; agent_id?: string; action_type?: string
+  trace_original_verdict?: string; policy_recommendation?: string
+}
+interface ConfirmedBypass {
+  id: number; action_id: string; trace_id: string; agent_id: string; tenant_id?: string
+  action_type: string; perturbation_name: string; perturbation_type: string
+  original_verdict: string; shadow_verdict: string; real_outcome: string; confirmed_at: string
+}
+
+const SEV_COLOR: Record<string, string> = {
+  critical: 'text-red-400 bg-red-500/10 border-red-500/30',
+  advisory: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
+  stable:   'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+}
+
+const PTYPE_LABEL: Record<string, string> = {
+  prompt_injection:    'Prompt Injection',
+  malformed_payload:   'Malformed Payload',
+  boundary_input:      'Boundary Input',
+  privilege_escalation:'Privilege Escalation',
+  context_poisoning:   'Context Poisoning',
+}
+
+async function shadowRequest<T>(path: string, secret: string): Promise<T> {
+  const res = await fetch(`${GATEWAY}${path}`, {
+    headers: { 'Content-Type': 'application/json', 'X-EDON-TOKEN': secret },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || `${res.status}`)
+  }
+  return res.json()
+}
+
+function ShadowTab({ secret, toast }: { secret: string; toast: (m: string, t: 'ok' | 'err') => void }) {
+  const [summary, setSummary]   = useState<ShadowSummary | null>(null)
+  const [findings, setFindings] = useState<ShadowFinding[]>([])
+  const [bypasses, setBypasses] = useState<ConfirmedBypass[]>([])
+  const [sevFilter, setSevFilter] = useState<'all' | 'critical' | 'advisory'>('all')
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [loading, setLoading]   = useState(true)
+  const [chainSessionId, setChainSessionId] = useState('')
+  const [chainResult, setChainResult] = useState<null | { summary?: { total_tests: number; critical: number; advisory: number; stable: number; max_cascade: number }; results: { injection_step: number; perturbation_name: string; severity: string; cascade_count: number; cascade_verdicts: { step: number; action_type: string; original: string; shadow: string }[] }[] }>(null)
+  const [chainRunning, setChainRunning] = useState(false)
+  const [chainOpen, setChainOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [sum, fnd, byp] = await Promise.all([
+        shadowRequest<ShadowSummary>('/v1/shadow/summary', secret),
+        shadowRequest<{ findings: ShadowFinding[]; count: number }>('/v1/shadow/findings?limit=200', secret),
+        shadowRequest<{ confirmed_bypasses: ConfirmedBypass[]; count: number }>('/v1/shadow/confirmed-bypasses?limit=50', secret),
+      ])
+      setSummary(sum)
+      setFindings(fnd.findings || [])
+      setBypasses(byp.confirmed_bypasses || [])
+    } catch (e) { toast(e instanceof Error ? e.message : 'Failed to load shadow data', 'err') }
+    finally { setLoading(false) }
+  }, [secret, toast])
+
+  useEffect(() => { load() }, [load])
+
+  const handleExport = async (fmt: 'json' | 'csv') => {
+    setExporting(true)
+    try {
+      const res = await fetch(`${GATEWAY}/v1/shadow/export?format=${fmt}`, {
+        headers: { 'X-EDON-TOKEN': secret },
+      })
+      if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `shadow-findings.${fmt}`; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { toast(e instanceof Error ? e.message : 'Export failed', 'err') }
+    finally { setExporting(false) }
+  }
+
+  const handleChainStress = async () => {
+    if (!chainSessionId.trim()) return
+    setChainRunning(true)
+    setChainResult(null)
+    try {
+      const res = await fetch(`${GATEWAY}/v1/shadow/chain-stress?session_id=${encodeURIComponent(chainSessionId)}&max_perturbations=3`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-EDON-TOKEN': secret },
+      })
+      if (!res.ok) throw new Error(`Chain stress failed: ${res.status}`)
+      const data = await res.json()
+      setChainResult(data)
+      toast('Chain stress complete', 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : 'Chain stress failed', 'err') }
+    finally { setChainRunning(false) }
+  }
+
+  const toggle = (key: string) => setExpanded(prev => {
+    const next = new Set(prev)
+    next.has(key) ? next.delete(key) : next.add(key)
+    return next
+  })
+
+  const visibleFindings = sevFilter === 'all' ? findings : findings.filter(f => f.severity === sevFilter)
+
+  if (loading) return <div className="flex justify-center py-20"><Spinner size={24} /></div>
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <FlaskConical size={14} className="text-primary" /> Shadow Execution
+          </h2>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Continuous adversarial replay across all tenants</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => handleExport('csv')} disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition disabled:opacity-50">
+            <FileText size={11} /> Export CSV
+          </button>
+          <button onClick={() => handleExport('json')} disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition disabled:opacity-50">
+            <FileText size={11} /> Export JSON
+          </button>
+          <button onClick={load} className="p-2 rounded-lg border border-border bg-muted/40 text-muted-foreground hover:text-foreground transition">
+            <RefreshCcw size={12} />
+          </button>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      {summary && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {[
+            { label: 'Critical',          value: summary.critical,             color: 'text-red-400'     },
+            { label: 'Advisory',          value: summary.advisory,             color: 'text-amber-400'   },
+            { label: 'Stable',            value: summary.stable,               color: 'text-emerald-400' },
+            { label: 'Gov. Drift',        value: summary.non_determinism_count, color: 'text-purple-400' },
+            { label: 'Confirmed Bypasses',value: summary.confirmed_bypasses,   color: 'text-red-500'     },
+          ].map(c => (
+            <div key={c.label} className="glass-card p-4 space-y-1">
+              <span className="text-[11px] text-muted-foreground">{c.label}</span>
+              <p className={`text-2xl font-bold ${c.color}`}>{c.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Confirmed bypasses — only when present */}
+      {bypasses.length > 0 && (
+        <div className="glass-card p-4 space-y-3 border border-red-500/30">
+          <h3 className="text-sm font-semibold text-red-400 flex items-center gap-2">
+            <AlertCircle size={13} /> Confirmed Policy Bypasses
+            <span className="ml-auto px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[11px] font-bold border border-red-500/30">{bypasses.length}</span>
+          </h3>
+          <div className="space-y-2">
+            {bypasses.map(b => (
+              <div key={b.id} className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-xs space-y-1">
+                <div className="flex items-center gap-2 font-mono">
+                  <span className="text-muted-foreground">Tenant:</span> <span className="text-foreground">{b.tenant_id || '—'}</span>
+                  <span className="text-border">·</span>
+                  <span className="text-muted-foreground">Agent:</span> <span className="text-foreground">{b.agent_id}</span>
+                  <span className="text-border">·</span>
+                  <span className="text-muted-foreground">Action:</span> <span className="text-foreground">{b.action_type}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">Perturbation:</span>
+                  <span className="font-medium">{PTYPE_LABEL[b.perturbation_type] || b.perturbation_type}</span>
+                  <span className="text-border">·</span>
+                  <span className="text-muted-foreground">Verdict flip:</span>
+                  <span className="text-red-400 font-semibold">{b.original_verdict} → {b.shadow_verdict}</span>
+                  <span className="text-border">·</span>
+                  <span className="text-muted-foreground">Outcome:</span>
+                  <span className="font-medium">{b.real_outcome}</span>
+                </div>
+                <p className="text-muted-foreground/60">{new Date(b.confirmed_at).toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Chain stress tester */}
+      <div className="glass-card overflow-hidden">
+        <button onClick={() => setChainOpen(v => !v)}
+          className="w-full flex items-center gap-2 px-4 py-3 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">
+          {chainOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          Session Chain Stress Test
+        </button>
+        {chainOpen && (
+          <div className="border-t border-border px-4 pb-4 pt-3 space-y-3">
+            <p className="text-[11px] text-muted-foreground">Inject adversarial perturbation at step N of a session and measure cascade impact on downstream steps.</p>
+            <div className="flex gap-2">
+              <input value={chainSessionId} onChange={e => setChainSessionId(e.target.value)}
+                placeholder="session_id (e.g. sess-abc123)"
+                className="flex-1 h-8 px-3 text-xs bg-muted/30 border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-primary/40 font-mono" />
+              <button onClick={handleChainStress} disabled={chainRunning || !chainSessionId.trim()}
+                className="px-4 h-8 rounded-lg text-xs font-semibold bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition disabled:opacity-50">
+                {chainRunning ? 'Running…' : 'Run Test'}
+              </button>
+            </div>
+            {chainResult && (
+              <div className="space-y-2">
+                {chainResult.summary && (
+                  <div className="flex gap-4 text-xs py-2 border-b border-border">
+                    <span>Total: <b>{chainResult.summary.total_tests}</b></span>
+                    <span className="text-red-400">Critical: <b>{chainResult.summary.critical}</b></span>
+                    <span className="text-amber-400">Advisory: <b>{chainResult.summary.advisory}</b></span>
+                    <span className="text-emerald-400">Stable: <b>{chainResult.summary.stable}</b></span>
+                    <span className="text-muted-foreground">Max cascade: <b>{chainResult.summary.max_cascade}</b></span>
+                  </div>
+                )}
+                {chainResult.results.map((r, i) => (
+                  <div key={i} className={`rounded-lg border p-3 text-xs space-y-1 ${SEV_COLOR[r.severity] || ''}`}>
+                    <div className="flex items-center gap-2 font-semibold">
+                      <span>Step {r.injection_step}</span>
+                      <span className="text-border">·</span>
+                      <span>{r.perturbation_name}</span>
+                      <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] border font-bold uppercase">{r.severity}</span>
+                    </div>
+                    {r.cascade_count > 0 && (
+                      <div className="space-y-1 pt-1">
+                        {r.cascade_verdicts.map((cv, j) => (
+                          <p key={j} className="font-mono text-[10px]">
+                            Step {cv.step} · {cv.action_type} · {cv.original} → {cv.shadow}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Findings table */}
+      <div className="glass-card p-4 space-y-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h3 className="text-sm font-semibold">Findings</h3>
+          <div className="flex rounded-lg border border-border overflow-hidden text-xs">
+            {(['all', 'critical', 'advisory'] as const).map(s => (
+              <button key={s} onClick={() => setSevFilter(s)}
+                className={`px-3 py-1.5 capitalize transition ${sevFilter === s ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visibleFindings.length === 0 ? (
+          <p className="text-center py-8 text-sm text-muted-foreground">No {sevFilter === 'all' ? '' : sevFilter + ' '}findings yet.</p>
+        ) : (
+          <div className="divide-y divide-border">
+            {visibleFindings.map((f, i) => {
+              const key = f.trace_id + i
+              const isOpen = expanded.has(key)
+              return (
+                <div key={key}>
+                  <button onClick={() => toggle(key)} className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-muted/20 px-1 rounded transition-colors">
+                    <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold border uppercase ${SEV_COLOR[f.severity]}`}>{f.severity}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="text-xs font-mono font-medium truncate block">{f.perturbation_name}</span>
+                      <span className="text-[10px] text-muted-foreground">{PTYPE_LABEL[f.perturbation_type] || f.perturbation_type} · {f.action_type || 'unknown'}</span>
+                    </span>
+                    <span className="hidden sm:block text-[10px] text-muted-foreground shrink-0">
+                      {f.trace_original_verdict} → {f.shadow_verdict}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/60 shrink-0 hidden lg:block">
+                      {new Date(f.created_at).toLocaleString()}
+                    </span>
+                    {isOpen ? <ChevronUp size={13} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={13} className="shrink-0 text-muted-foreground" />}
+                  </button>
+                  {isOpen && (
+                    <div className="pb-3 px-2 space-y-2">
+                      <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground font-mono">
+                        <span>Trace: {f.trace_id}</span>
+                        {f.agent_id && <span>Agent: {f.agent_id}</span>}
+                        {f.perturbed_field && <span>Field: {f.perturbed_field}</span>}
+                        <span>Latency: {f.shadow_latency_ms}ms</span>
+                      </div>
+                      <ul className="space-y-1">
+                        {(Array.isArray(f.findings) ? f.findings : []).map((txt, j) => (
+                          <li key={j} className="flex items-start gap-2 text-xs">
+                            <span className="mt-0.5 shrink-0 w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+                            <span className="text-muted-foreground">{txt}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      {f.policy_recommendation && (
+                        <div className="rounded-lg bg-primary/5 border border-primary/20 px-3 py-2 text-[11px] text-primary/80">
+                          <span className="font-semibold">Policy recommendation: </span>{f.policy_recommendation}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const TABS = [
   { id: 'command',  label: 'Command',   icon: Mic         },
   { id: 'overview', label: 'Overview',  icon: Activity    },
@@ -1729,6 +2093,7 @@ const TABS = [
   { id: 'supkeys',  label: 'Sup. Keys', icon: UserCheck   },
   { id: 'recovery', label: 'Recovery',  icon: KeyRound    },
   { id: 'audit',    label: 'Audit Log', icon: ScrollText  },
+  { id: 'shadow',   label: 'Shadow',    icon: FlaskConical },
 ] as const
 
 type Tab = typeof TABS[number]['id']
@@ -1884,6 +2249,7 @@ export default function App() {
             {tab === 'supkeys'  && <SupportKeysTab  secret={secret} toast={toast} />}
             {tab === 'recovery' && <RecoveryTab  secret={secret} toast={toast} />}
             {tab === 'audit'    && <AuditLogTab  secret={secret} toast={toast} />}
+            {tab === 'shadow'   && <ShadowTab    secret={secret} toast={toast} />}
           </motion.div>
         </AnimatePresence>
       </main>

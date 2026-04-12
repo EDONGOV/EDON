@@ -376,6 +376,27 @@ def onboard(
     out_path = AGENTS_DIR / f"onboarding_{tenant_id}.json"
     out_path.write_text(json.dumps(record, indent=2))
 
+    # Auto-register in am_memory/ so account_manager picks this client up automatically
+    am_memory_dir = AGENTS_DIR / "am_memory"
+    am_memory_dir.mkdir(exist_ok=True)
+    am_memory_path = am_memory_dir / f"{tenant_id}.json"
+    if not am_memory_path.exists():
+        am_record = {
+            "tenant_id": tenant_id,
+            "company_name": name,
+            "contact_email": email,
+            "plan": plan,
+            "use_case": use_case,
+            "onboarded_at": datetime.now(UTC).isoformat(),
+            "health_score": 100,
+            "open_items": [],
+            "relationship_notes": f"Onboarded via onboarding_agent. Policy pack: {pack}. Clinical safety rules: {rules_count}.",
+            "last_reviewed_at": None,
+            "weeks_reviewed": 0,
+        }
+        am_memory_path.write_text(json.dumps(am_record, indent=2))
+        print(f"   ✓ Registered in am_memory/{tenant_id}.json for account_manager")
+
     print(f"\n{'='*60}")
     print("WELCOME EMAIL PREVIEW")
     print(f"{'='*60}")

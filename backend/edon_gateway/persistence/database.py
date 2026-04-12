@@ -478,6 +478,25 @@ class Database:
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+            # Migration: Add is_sandbox column to api_keys
+            try:
+                cursor.execute("ALTER TABLE api_keys ADD COLUMN is_sandbox INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+            # Pending live keys — temporary store for unclaimed live keys
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_live_keys (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    raw_key TEXT NOT NULL,
+                    key_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
 
             # Migration: Add richer audit explainability fields
             for col, typ in [
@@ -983,6 +1002,44 @@ class Database:
                     conn.commit()
                 except sqlite3.OperationalError:
                     pass
+
+            # ── Webhook Registrations ───────────────────────────────────────────
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS webhooks (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    events TEXT NOT NULL,  -- JSON list of event strings
+                    secret TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_webhooks_tenant
+                ON webhooks(tenant_id, enabled)
+            """)
+
+            # Webhook delivery log
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                    id TEXT PRIMARY KEY,
+                    webhook_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,  -- JSON
+                    status TEXT NOT NULL DEFAULT 'pending',  -- pending, delivered, failed
+                    response_status INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    delivered_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
+                ON webhook_deliveries(webhook_id, delivered_at)
+            """)
+            conn.commit()
 
             # Check and set schema version
             from .schema_version import check_schema_version, set_schema_version, SCHEMA_VERSION
@@ -2443,6 +2500,7 @@ class Database:
         name: Optional[str] = None,
         role: str = 'user',
         expires_at: Optional[str] = None,
+        is_sandbox: bool = False,
     ) -> str:
         """Create a new API key.
 
@@ -2452,6 +2510,7 @@ class Database:
             name: Optional user-friendly name
             role: RBAC role ('admin', 'operator', 'user', 'read_only', 'auditor'). Default 'user'.
             expires_at: Optional ISO-8601 expiry timestamp. None = never expires.
+            is_sandbox: If True, key always observes (never blocks) regardless of shadow mode.
 
         Returns:
             API key ID
@@ -2464,9 +2523,9 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO api_keys
-                (id, tenant_id, key_hash, name, status, role, created_at, expires_at)
-                VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-            """, (api_key_id, tenant_id, key_hash, name, role, now, expires_at))
+                (id, tenant_id, key_hash, name, status, role, created_at, expires_at, is_sandbox)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+            """, (api_key_id, tenant_id, key_hash, name, role, now, expires_at, 1 if is_sandbox else 0))
             conn.commit()
         return api_key_id
 
@@ -2523,6 +2582,7 @@ class Database:
             """, (key_hash, datetime.now(UTC).isoformat()))
             row = cursor.fetchone()
             if row:
+                cols = row.keys()
                 return {
                     "id": row["id"],
                     "tenant_id": row["tenant_id"],
@@ -2530,7 +2590,8 @@ class Database:
                     "key_hash": row["key_hash"],
                     "name": row["name"],
                     "status": row["status"],
-                    "role": row["role"] if "role" in row.keys() else "user",
+                    "role": row["role"] if "role" in cols else "user",
+                    "is_sandbox": bool(row["is_sandbox"]) if "is_sandbox" in cols else False,
                     "created_at": row["created_at"],
                     "last_used_at": row["last_used_at"],
                 }
@@ -4626,6 +4687,125 @@ class Database:
             "permission_level": permission_level,
             "binding": binding,
         }
+
+
+    # ── Webhook Management ─────────────────────────────────────────────────────
+
+    def save_webhook(
+        self,
+        webhook_id: str,
+        tenant_id: str,
+        name: str,
+        url: str,
+        events: List[str],
+        secret: Optional[str] = None,
+        enabled: bool = True,
+        **_kwargs,  # absorb legacy kwargs (retry_count, etc.)
+    ) -> None:
+        """Persist a webhook registration."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO webhooks
+                    (id, tenant_id, name, url, events, secret, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (webhook_id, tenant_id, name, url, json.dumps(events), secret,
+                 1 if enabled else 0, now),
+            )
+            conn.commit()
+
+    def get_webhooks(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Return all enabled webhooks for a tenant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM webhooks WHERE tenant_id = ? AND enabled = 1 ORDER BY created_at ASC",
+                (tenant_id,),
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                try:
+                    d["events"] = json.loads(d["events"])
+                except Exception:
+                    d["events"] = []
+                result.append(d)
+            return result
+
+    def get_webhook(self, webhook_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single webhook by id + tenant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM webhooks WHERE id = ? AND tenant_id = ?",
+                (webhook_id, tenant_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            d = dict(row)
+            try:
+                d["events"] = json.loads(d["events"])
+            except Exception:
+                d["events"] = []
+            return d
+
+    def delete_webhook(self, webhook_id: str, tenant_id: str) -> bool:
+        """Soft-delete (disable) a webhook. Returns True if it existed."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE webhooks SET enabled = 0 WHERE id = ? AND tenant_id = ?",
+                (webhook_id, tenant_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def save_webhook_delivery(
+        self,
+        delivery_id: str,
+        webhook_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        status: str,
+        response_status: Optional[int],
+        attempts: int,
+    ) -> None:
+        """Record the result of a webhook delivery attempt."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO webhook_deliveries
+                    (id, webhook_id, event_type, payload, status, response_status, attempts, delivered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (delivery_id, webhook_id, event_type, json.dumps(payload),
+                 status, response_status, attempts, now),
+            )
+            conn.commit()
+
+    def get_webhook_deliveries(self, webhook_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent deliveries for a webhook."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY delivered_at DESC LIMIT ?",
+                (webhook_id, limit),
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                try:
+                    d["payload"] = json.loads(d["payload"])
+                except Exception:
+                    pass
+                result.append(d)
+            return result
 
 
 # Global database instance

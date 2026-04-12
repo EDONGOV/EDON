@@ -60,7 +60,7 @@ If you accidentally commit a secret, notify the team immediately.
 
 ```
 /backend        FastAPI gateway, AI advisory, billing
-/frontend       React dashboard (edon-sentinel-core)
+/frontend       React dashboard; marketing site in `/frontend/EdonLP` (submodule `edon-sentinel-core`)
 /demos          Standalone demo apps (healthcare, etc.)
 /docs           Architecture docs, runbooks, migration guides
 /sdk            SDK docs and examples

@@ -571,7 +571,7 @@ class EdonApiClient {
   }
 
   getSession() {
-    return this.request<{ id: string | null; email: string | null; tenant_id: string | null; plan: string | null; status: string | null }>(
+    return this.request<{ id: string | null; email: string | null; tenant_id: string | null; plan: string | null; status: string | null; role?: string | null }>(
       '/auth/session'
     );
   }
@@ -991,6 +991,28 @@ class EdonApiClient {
     }
   }
 
+  // ── Human Review Queue ───────────────────────────────────────────────────────
+
+  async getReviewQueue(status: 'pending' | 'approved' | 'rejected' = 'pending') {
+    return this.request<{ queue: ReviewQueueItem[]; count: number }>(
+      `/compliance/review/queue?status=${status}`
+    );
+  }
+
+  async approveReview(decisionId: string, resolvedBy: string, note?: string) {
+    return this.request<{ decision_id: string; resolution: string; resolved_by: string; resolved_at: string; message: string }>(
+      `/compliance/review/${decisionId}/approve`,
+      { method: 'POST', body: JSON.stringify({ resolved_by: resolvedBy, note }) }
+    );
+  }
+
+  async rejectReview(decisionId: string, resolvedBy: string, note?: string) {
+    return this.request<{ decision_id: string; resolution: string; resolved_by: string; resolved_at: string; message: string }>(
+      `/compliance/review/${decisionId}/reject`,
+      { method: 'POST', body: JSON.stringify({ resolved_by: resolvedBy, note }) }
+    );
+  }
+
   // Agent Fleet Management
 
   async listAgents(params?: { status?: string; agent_type?: string }) {
@@ -1142,4 +1164,31 @@ export interface AgentTimelineEvent {
 
 export interface AgentStatsTimeSeries {
   days: Array<{ date: string; allow: number; block: number; confirm: number }>;
+}
+
+export interface ReviewQueueItem {
+  decision_id: string;
+  tenant_id: string;
+  agent_id: string;
+  action_type: string;
+  action_payload: Record<string, unknown>;
+  escalation_question: string;
+  explanation: string;
+  meta: {
+    urgency?: 'routine' | 'urgent' | 'critical';
+    clinical_context?: string;
+    vendor_name?: string;
+    vendor_id?: string;
+    device_id?: string;
+    device_name?: string;
+    patient_id?: string;
+    policy_version?: string;
+    [key: string]: unknown;
+  };
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution: string | null;
+  resolution_note: string | null;
 }

@@ -197,6 +197,67 @@ export interface MeResponse {
   role: string
   plan: string
   is_admin: boolean
+  is_sandbox: boolean
+}
+
+export interface ShadowSummary {
+  stable: number
+  advisory: number
+  critical: number
+  non_determinism_count: number
+  confirmed_bypasses: number
+}
+
+export interface ShadowFinding {
+  id?: number
+  trace_id: string
+  perturbation_name: string
+  perturbation_type: string
+  perturbed_field?: string
+  shadow_verdict: string
+  shadow_reason: string
+  shadow_latency_ms: number
+  verdict_changed: number
+  severity: 'stable' | 'advisory' | 'critical'
+  findings: string[]
+  created_at: string
+  agent_id?: string
+  action_type?: string
+  trace_original_verdict?: string
+  policy_recommendation?: string
+}
+
+export interface ConfirmedBypass {
+  id: number
+  action_id: string
+  trace_id: string
+  agent_id: string
+  tenant_id?: string
+  action_type: string
+  perturbation_name: string
+  perturbation_type: string
+  original_verdict: string
+  shadow_verdict: string
+  real_outcome: string
+  confirmed_at: string
+}
+
+export interface ChainStressResult {
+  injection_step: number
+  injection_trace_id: string
+  perturbation_name: string
+  perturbation_type: string
+  steps_after: number
+  cascade_count: number
+  severity: 'stable' | 'advisory' | 'critical'
+  cascade_verdicts: { step: number; trace_id: string; action_type: string; original: string; shadow: string }[]
+}
+
+export interface ChainStressResponse {
+  session_id: string
+  message?: string
+  summary?: { total_tests: number; critical: number; advisory: number; stable: number; max_cascade: number }
+  results: ChainStressResult[]
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -333,10 +394,80 @@ export const api = {
       body: JSON.stringify(updates),
     }),
 
+  getTenantSandbox: (bootstrapSecret: string, tenantId: string) =>
+    request<{ tenant_id: string; sandbox: boolean; enabled: boolean }>(`/admin/tenants/${tenantId}/shadow-mode`, {
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+    }),
+
+  setTenantSandbox: (bootstrapSecret: string, tenantId: string, enabled: boolean) =>
+    request<{ tenant_id: string; sandbox: boolean; ok: boolean }>(`/admin/tenants/${tenantId}/shadow-mode`, {
+      method: 'POST',
+      headers: { 'X-Bootstrap-Secret': bootstrapSecret },
+      body: JSON.stringify({ enabled }),
+    }),
+
   createSupportKey: (bootstrapSecret: string, tenantId: string, label?: string) =>
     request<{ key_id: string; key: string; tenant_id: string; label: string }>(`/admin/tenants/${tenantId}/support-key`, {
       method: 'POST',
       headers: { 'X-Bootstrap-Secret': bootstrapSecret },
       body: JSON.stringify({ label }),
     }),
+
+  // ── Shadow execution ─────────────────────────────────────────────────────
+  shadowSummary: () =>
+    request<ShadowSummary>('/v1/shadow/summary'),
+
+  shadowFindings: (severity?: string, limit = 100) => {
+    const qs = new URLSearchParams({ limit: String(limit) })
+    if (severity) qs.set('severity', severity)
+    return request<{ findings: ShadowFinding[]; count: number }>(`/v1/shadow/findings?${qs}`)
+  },
+
+  confirmedBypasses: (limit = 50) =>
+    request<{ confirmed_bypasses: ConfirmedBypass[]; count: number }>(`/v1/shadow/confirmed-bypasses?limit=${limit}`),
+
+  shadowExport: async () => {
+    const auth = getAuth()
+    if (!auth) throw new Error('Not authenticated')
+    const res = await fetch(`${auth.gatewayUrl}/v1/shadow/export?format=csv`, {
+      headers: { 'X-EDON-TOKEN': auth.token },
+    })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+    return res.blob()
+  },
+
+  chainStress: (sessionId: string, maxPerturbations = 3) =>
+    request<ChainStressResponse>(`/v1/shadow/chain-stress?session_id=${encodeURIComponent(sessionId)}&max_perturbations=${maxPerturbations}`, {
+      method: 'POST',
+    }),
+
+  // ── Live key claim ────────────────────────────────────────────────────────
+  checkPendingLiveKey: () =>
+    request<{ pending: boolean; created_at?: string }>('/live-key/pending'),
+
+  claimLiveKey: () =>
+    request<{ key: string; key_id: string; message: string }>('/live-key/claim', { method: 'POST' }),
+
+  // ── Policy templates ──────────────────────────────────────────────────────
+  getPolicyTemplates: () =>
+    request<{ templates: Array<{ id: string; name: string; description?: string; regulation?: string; rule_count?: number }> }>('/policy/templates'),
+
+  applyPolicyTemplate: (templateId: string) =>
+    request<{ applied: number; template_id: string }>(`/policy/templates/${templateId}/apply`, { method: 'POST' }),
+
+  // ── Webhooks ──────────────────────────────────────────────────────────────
+  listWebhooks: () =>
+    request<{ webhooks: Array<{ id: string; url: string; events: string[]; enabled: boolean; created_at?: string }> }>('/webhooks'),
+
+  createWebhook: (url: string, events: string[]) =>
+    request<{ id: string; url: string; events: string[]; enabled: boolean }>('/webhooks', {
+      method: 'POST',
+      body: JSON.stringify({ url, events }),
+    }),
+
+  deleteWebhook: (id: string) =>
+    request<{ ok: boolean }>(`/webhooks/${id}`, { method: 'DELETE' }),
+
+  testWebhook: (id: string) =>
+    request<{ ok: boolean; status_code?: number }>(`/webhooks/${id}/test`, { method: 'POST' }),
 }

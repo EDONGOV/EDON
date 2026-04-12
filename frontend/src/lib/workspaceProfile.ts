@@ -321,17 +321,19 @@ export interface NavItem {
   to: string;
   label: string;
   iconName: string;
+  minRole?: 'admin' | 'operator' | 'viewer';
 }
 
 /** Base nav items shown to every customer regardless of profile. */
 export const BASE_NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", iconName: "Gauge" },
-  { to: "/decisions", label: "Decisions", iconName: "ListChecks" },
-  { to: "/audit", label: "Audit", iconName: "FileSearch" },
-  { to: "/agents", label: "Agents", iconName: "Bot" },
-  { to: "/policies", label: "Policies", iconName: "ShieldCheck" },
-  { to: "/hgi", label: "HGI", iconName: "ShieldAlert" },
-  { to: "/settings", label: "Settings", iconName: "Settings2" },
+  { to: "/",          label: "Dashboard",    iconName: "Gauge" },
+  { to: "/decisions", label: "Decisions",    iconName: "ListChecks" },
+  { to: "/agents",    label: "Agents",       iconName: "Bot" },
+  { to: "/audit",     label: "Audit",        iconName: "FileSearch",    minRole: "operator" },
+  { to: "/policies",  label: "Policies",     iconName: "ShieldCheck",   minRole: "operator" },
+  { to: "/review",    label: "Review Queue", iconName: "ClipboardList", minRole: "operator" },
+  { to: "/hgi",       label: "HGI",          iconName: "ShieldAlert",   minRole: "operator" },
+  { to: "/settings",  label: "Settings",     iconName: "Settings2" },
 ];
 
 /** Additional nav items only visible to EDON admins. */
@@ -345,7 +347,19 @@ export const ADMIN_NAV: NavItem[] = [
  * Pass forceCustomer=true to simulate the customer view (used by preview mode).
  */
 export function getNavItems(forceCustomer = false): NavItem[] {
-  if (isAdmin() && !forceCustomer) {
+  // Lazy import to avoid circular deps — auth reads localStorage directly
+  const ROLE_LEVEL: Record<string, number> = { viewer: 0, operator: 1, admin: 2 };
+  const storedRole = localStorage.getItem('edon_user_role') ?? '';
+  const isAdminUser = isAdmin();
+  const userLevel = isAdminUser && !forceCustomer ? 2 : (ROLE_LEVEL[storedRole] ?? 1);
+
+  const filterByRole = (items: NavItem[]) =>
+    items.filter(item => {
+      const required = ROLE_LEVEL[item.minRole ?? 'viewer'] ?? 0;
+      return userLevel >= required;
+    });
+
+  if (isAdminUser && !forceCustomer) {
     const allExtras: NavItem[] = Object.values(DOMAINS).flatMap((d) =>
       d.navExtras.map((e) => ({ to: e.to, label: e.label, iconName: "Circle" }))
     );
@@ -355,27 +369,24 @@ export function getNavItems(forceCustomer = false): NavItem[] {
       seen.add(item.to);
       return true;
     });
-    return deduped;
+    return filterByRole(deduped);
   }
 
   const activeDomains = getActiveDomains();
   const extras: NavItem[] = activeDomains.flatMap((domainId) => {
     const domain = DOMAINS[domainId];
     return domain
-      ? domain.navExtras.map((e) => ({
-          to: e.to,
-          label: e.label,
-          iconName: "Circle",
-        }))
+      ? domain.navExtras.map((e) => ({ to: e.to, label: e.label, iconName: "Circle" }))
       : [];
   });
 
   const seen = new Set<string>();
-  return [...BASE_NAV, ...extras].filter((item) => {
+  const all = [...BASE_NAV, ...extras].filter((item) => {
     if (seen.has(item.to)) return false;
     seen.add(item.to);
     return true;
   });
+  return filterByRole(all);
 }
 
 /**

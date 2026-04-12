@@ -28,7 +28,7 @@ import anthropic
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "GHOSTCODERRRRAHAHA/edongov")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "EDONGOV/EDON")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLINICAL_SAFETY_PATH = REPO_ROOT / "backend" / "edon_gateway" / "clinical_safety.py"
@@ -174,7 +174,7 @@ If there are no gaps, say "No regulatory gaps found — current coverage is suff
 Format as plain markdown. Keep it under 400 words."""
 
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=800,
         messages=[{"role": "user", "content": prompt}],
     )

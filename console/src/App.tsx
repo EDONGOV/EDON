@@ -4,12 +4,12 @@ import {
   Shield, Activity, FileText, Users, ClipboardList,
   CheckCircle2, XCircle, AlertTriangle, RefreshCcw,
   Sun, Moon, LogOut, AlertCircle, ChevronRight,
-  Lock, ToggleLeft, ToggleRight, Search,
+  Lock, Search,
   Heart, Zap, Database, Clock, Bot, X, Send,
   ThumbsUp, ThumbsDown, Power, KeyRound, Eye, EyeOff,
   TimerOff, Filter, TrendingUp, Minus, ShieldAlert,
   ListChecks, FileDown, Bell, Settings, Menu, User,
-  BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link,
+  BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link, Package, FlaskConical,
 } from 'lucide-react'
 import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse } from './api'
 
@@ -665,7 +665,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 
 // ── Settings Tab ──────────────────────────────────────────────────────────────
 
-function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
+function SettingsTab({ onReconnect, isAdmin }: { onReconnect: () => void; isAdmin: boolean }) {
   const auth = getAuth()
   const [url, setUrl] = useState(auth?.gatewayUrl || '')
   const [token, setToken] = useState(auth?.token || '')
@@ -702,103 +702,107 @@ function SettingsTab({ onReconnect }: { onReconnect: () => void }) {
   }
 
   return (
-    <div className="max-w-lg space-y-6">
+    <div className="space-y-4">
       <div>
         <h2 className="text-base font-semibold mb-1 flex items-center gap-2"><Settings size={15} className="text-primary" /> Console Settings</h2>
         <p className="text-xs text-muted-foreground">Change your gateway connection, token, or reviewer identity without logging out.</p>
       </div>
 
-      {/* Gateway connection */}
-      <div className="glass-card p-5 space-y-4">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><Wifi size={13} className="text-primary" /> Gateway Connection</h3>
-        <div>
-          <label className="text-xs text-muted-foreground mb-1 block">Gateway URL</label>
-          <input type="url" value={url} onChange={e => setUrl(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-        </div>
-        <div>
-          <label className="text-xs text-muted-foreground mb-1 block">API Token</label>
-          <div className="relative">
-            <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
-              className="w-full px-3 py-2 pr-10 rounded-lg bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
-            <button type="button" onClick={() => setShowToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-              {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-        </div>
-        {testResult && (
-          <p className={`text-xs flex items-center gap-1.5 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-            {testResult.ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{testResult.msg}
-          </p>
-        )}
-        <div className="flex gap-3">
-          <button onClick={testConnection} disabled={testing}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50">
-            {testing ? <div className="w-3.5 h-3.5 border border-muted/30 border-t-muted-foreground rounded-full animate-spin" /> : <WifiOff size={13} />}
-            Test Connection
-          </button>
-          <button onClick={save}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
-            {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Changes'}
-          </button>
-        </div>
-      </div>
-
-      {/* Reviewer identity */}
-      <div className="glass-card p-5 space-y-4">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><User size={13} className="text-primary" /> Reviewer Identity</h3>
-        <p className="text-xs text-muted-foreground">Your name and department are stamped on every Review Queue decision in the audit trail.</p>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Display Name</label>
-            <input type="text" value={reviewerName} readOnly
-              className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Department</label>
-            <input type="text" value={getReviewerDept()} readOnly
-              className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
-          </div>
-        </div>
-        <p className="text-xs text-muted-foreground">Identity is locked once set. Sign out to reset.</p>
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-            <KeyRound size={11} />
-            PIN: {hasPinSet() ? <span className="text-emerald-400">Set</span> : <span className="text-amber-400">Not set</span>}
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowPinSetup(true)}
-              className="text-[10px] px-2.5 py-1 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-              {hasPinSet() ? 'Change PIN' : 'Set PIN'}
-            </button>
-            {hasPinSet() && (
-              <button onClick={resetPin} className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors">Reset</button>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* ── Left column: core settings ── */}
+        <div className="space-y-5">
+          {/* Gateway connection */}
+          <div className="glass-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Wifi size={13} className="text-primary" /> Gateway Connection</h3>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Gateway URL</label>
+              <input type="url" value={url} onChange={e => setUrl(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">API Token</label>
+              <div className="relative">
+                <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
+                  className="w-full px-3 py-2 pr-10 rounded-lg bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
+                <button type="button" onClick={() => setShowToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+            {testResult && (
+              <p className={`text-xs flex items-center gap-1.5 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {testResult.ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{testResult.msg}
+              </p>
             )}
+            <div className="flex gap-3">
+              <button onClick={testConnection} disabled={testing}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50">
+                {testing ? <div className="w-3.5 h-3.5 border border-muted/30 border-t-muted-foreground rounded-full animate-spin" /> : <WifiOff size={13} />}
+                Test Connection
+              </button>
+              <button onClick={save}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
+                {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Changes'}
+              </button>
+            </div>
           </div>
+
+          {/* Reviewer identity */}
+          <div className="glass-card p-5 space-y-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><User size={13} className="text-primary" /> Reviewer Identity</h3>
+            <p className="text-xs text-muted-foreground">Your name and department are stamped on every Review Queue decision in the audit trail.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Display Name</label>
+                <input type="text" value={reviewerName} readOnly
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Department</label>
+                <input type="text" value={getReviewerDept()} readOnly
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Identity is locked once set. Sign out to reset.</p>
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <KeyRound size={11} />
+                PIN: {hasPinSet() ? <span className="text-emerald-400">Set</span> : <span className="text-amber-400">Not set</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowPinSetup(true)}
+                  className="text-[10px] px-2.5 py-1 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                  {hasPinSet() ? 'Change PIN' : 'Set PIN'}
+                </button>
+                {hasPinSet() && (
+                  <button onClick={resetPin} className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors">Reset</button>
+                )}
+              </div>
+            </div>
+            <button onClick={save}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
+              {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Name'}
+            </button>
+          </div>
+
+          {/* Session info */}
+          <div className="glass-card p-5 space-y-2">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Clock size={13} className="text-primary" /> Session</h3>
+            <p className="text-xs text-muted-foreground">Sessions auto-expire after <span className="text-foreground">15 minutes</span> of inactivity. A warning appears at 13 minutes.</p>
+          </div>
+
+          {isAdmin && <ShadowModeCard />}
         </div>
-        <button onClick={save}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
-          {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Name'}
-        </button>
+
+        {/* ── Right column: security & ops cards ── */}
+        <div className="space-y-5">
+          <ApiKeyRotationCard />
+          <ConsoleLinkCard />
+          <IpAllowlistCard />
+          <WebhookAlertsCard />
+          <SettingsQuickReferenceCard />
+        </div>
       </div>
-
-      {/* Session info */}
-      <div className="glass-card p-5 space-y-2">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><Clock size={13} className="text-primary" /> Session</h3>
-        <p className="text-xs text-muted-foreground">Sessions auto-expire after <span className="text-foreground">15 minutes</span> of inactivity. A warning appears at 13 minutes.</p>
-      </div>
-
-      {/* Shadow Mode */}
-      <ShadowModeCard />
-
-      {/* API Key Rotation */}
-      <ApiKeyRotationCard />
-
-      {/* Console Access Link */}
-      <ConsoleLinkCard />
-
-      {/* IP Allowlist */}
-      <IpAllowlistCard />
 
       <AnimatePresence>
         {showPinSetup && (
@@ -1014,6 +1018,190 @@ function IpAllowlistCard() {
   )
 }
 
+// ── Webhook Alerts Card ───────────────────────────────────────────────────────
+
+function WebhookAlertsCard() {
+  const [webhooks, setWebhooks] = useState<Array<{ id: string; url: string; events: string[]; enabled: boolean }>>([])
+  const [loading, setLoading] = useState(true)
+  const [url, setUrl] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testResult, setTestResult] = useState<Record<string, 'ok' | 'fail'>>({})
+
+  const load = () => api.listWebhooks().then(r => setWebhooks(r.webhooks ?? [])).catch(() => setWebhooks([])).finally(() => setLoading(false))
+
+  useEffect(() => { load() }, [])
+
+  const add = async () => {
+    if (!url.trim()) return
+    setSaving(true)
+    try {
+      await api.createWebhook(url.trim(), ['blocked', 'escalated', 'high_risk'])
+      setUrl(''); await load()
+    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to add webhook') }
+    finally { setSaving(false) }
+  }
+
+  const remove = async (id: string) => {
+    try { await api.deleteWebhook(id); setWebhooks(w => w.filter(x => x.id !== id)) }
+    catch (e) { alert(e instanceof Error ? e.message : 'Failed to remove') }
+  }
+
+  const test = async (id: string) => {
+    setTesting(id)
+    try {
+      await api.testWebhook(id)
+      setTestResult(r => ({ ...r, [id]: 'ok' }))
+    } catch {
+      setTestResult(r => ({ ...r, [id]: 'fail' }))
+    } finally {
+      setTesting(null)
+      setTimeout(() => setTestResult(r => { const n = { ...r }; delete n[id]; return n }), 3000)
+    }
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Bell size={13} className="text-primary" /> Webhook Alerts
+        {webhooks.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">{webhooks.length} active</span>}
+      </h3>
+      <p className="text-xs text-muted-foreground">Get notified when decisions are blocked, escalated, or flagged as high-risk. Signed with HMAC-SHA256.</p>
+      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      <div className="space-y-2">
+        {webhooks.map(w => (
+          <div key={w.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-mono truncate">{w.url}</p>
+              <p className="text-[10px] text-muted-foreground">{w.events.join(', ')}</p>
+            </div>
+            {testResult[w.id] && (
+              <span className={`text-[10px] font-medium ${testResult[w.id] === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>
+                {testResult[w.id] === 'ok' ? '✓ sent' : '✗ fail'}
+              </span>
+            )}
+            <button onClick={() => test(w.id)} disabled={testing === w.id}
+              className="text-xs px-2 py-1 rounded border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+              {testing === w.id ? '…' : 'Test'}
+            </button>
+            <button onClick={() => remove(w.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
+              <Trash2 size={13} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input type="url" value={url} onChange={e => setUrl(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && add()}
+          placeholder="https://your-server.com/webhook"
+          className="flex-1 text-sm bg-muted/50 border border-border rounded-lg px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary" />
+        <button onClick={add} disabled={!url.trim() || saving}
+          className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary font-semibold hover:bg-primary/30 transition-colors disabled:opacity-50">
+          <Plus size={14} /> Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Settings Quick Reference Card ────────────────────────────────────────────
+
+function SettingsQuickReferenceCard() {
+  const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number; components: Record<string, { status: string }> } | null>(null)
+  const [me, setMe] = useState<{ tenant_id: string; role: string; plan: string } | null>(null)
+
+  useEffect(() => {
+    api.health().then(setHealth).catch(() => {})
+    api.me().then(setMe).catch(() => {})
+  }, [])
+
+  const uptimeStr = (s: number) => {
+    if (s < 60) return `${s}s`
+    if (s < 3600) return `${Math.floor(s / 60)}m`
+    if (s < 86400) return `${Math.floor(s / 3600)}h`
+    return `${Math.floor(s / 86400)}d`
+  }
+
+  const components = health ? Object.entries(health.components) : []
+  const allHealthy = components.every(([, v]) => v.status === 'ok' || v.status === 'healthy')
+
+  return (
+    <>
+      {/* Gateway status */}
+      <div className="glass-card p-5 space-y-4">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <Activity size={13} className="text-primary" /> Gateway Status
+          {health && (
+            <span className={`ml-auto text-[10px] px-2 py-0.5 rounded-full border font-medium ${allHealthy ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>
+              {allHealthy ? 'Healthy' : 'Degraded'}
+            </span>
+          )}
+        </h3>
+        {health ? (
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Version</span>
+              <span className="font-mono">{health.version}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Uptime</span>
+              <span className="font-mono">{uptimeStr(health.uptime_seconds)}</span>
+            </div>
+            {components.map(([name, val]) => (
+              <div key={name} className="flex justify-between text-xs">
+                <span className="text-muted-foreground capitalize">{name.replace(/_/g, ' ')}</span>
+                <span className={`font-medium ${val.status === 'ok' || val.status === 'healthy' ? 'text-emerald-400' : 'text-yellow-400'}`}>{val.status}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">Fetching status…</p>
+        )}
+      </div>
+
+      {/* Account details */}
+      {me && (
+        <div className="glass-card p-5 space-y-3">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><User size={13} className="text-primary" /> Account</h3>
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Tenant ID</span>
+              <code className="font-mono text-[11px] text-muted-foreground/80 truncate max-w-[160px]">{me.tenant_id}</code>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Role</span>
+              <span className={`font-medium capitalize ${me.role === 'admin' ? 'text-primary' : 'text-foreground'}`}>{me.role}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Plan</span>
+              <span className="font-medium capitalize text-foreground">{me.plan}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Security checklist */}
+      <div className="glass-card p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2"><ShieldAlert size={13} className="text-primary" /> Security Checklist</h3>
+        <div className="space-y-2">
+          {[
+            { label: 'PIN set for reviews', ok: hasPinSet() },
+            { label: 'Identity configured', ok: !!getReviewerName() },
+            { label: 'Gateway reachable', ok: !!health?.ok },
+          ].map(({ label, ok }) => (
+            <div key={label} className="flex items-center gap-2 text-xs">
+              {ok
+                ? <CheckCircle2 size={13} className="text-emerald-400 shrink-0" />
+                : <AlertCircle size={13} className="text-amber-400 shrink-0" />}
+              <span className={ok ? 'text-foreground' : 'text-amber-400'}>{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 
 function DashboardTab() {
@@ -1166,7 +1354,7 @@ function DecisionsTab() {
     finally { setLoading(false) }
   }, [verdict])
 
-  useEffect(() => { load(); const iv = setInterval(load, 15000); return () => clearInterval(iv) }, [load])
+  useEffect(() => { load(); const iv = setInterval(load, 3000); return () => clearInterval(iv) }, [load])
 
   const filtered = events.filter(e =>
     !search || (e.agent_id + (e.tool_name || '') + (e.decision_reason_code || '')).toLowerCase().includes(search.toLowerCase())
@@ -1195,6 +1383,10 @@ function DecisionsTab() {
             className="pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary w-52" />
         </div>
         <span className="text-xs text-muted-foreground">{filtered.length} decisions</span>
+        <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+          <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"/></span>
+          Live
+        </span>
         <button onClick={load} className={`ml-auto text-muted-foreground hover:text-foreground transition ${loading ? 'animate-spin' : ''}`}><RefreshCcw size={14} /></button>
       </div>
       {loading ? <Spinner /> : error ? <ErrorMsg message={error} onRetry={load} /> : filtered.length === 0 ? <Empty message="No decisions found" /> : (
@@ -1321,6 +1513,7 @@ function AgentsTab() {
                     <p className="text-xs text-muted-foreground font-mono truncate">{a.agent_id}</p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    {(() => { const r = a.block_rate ?? 0; return <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${r > 0.3 ? 'bg-red-500/10 border-red-500/20 text-red-400' : r > 0.1 ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>Risk {r > 0.3 ? 'High' : r > 0.1 ? 'Med' : 'Low'}</span> })()}
                     <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tCfg.bg} ${tCfg.color}`}><TrendIcon size={9} />{tCfg.label}</span>
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.status === 'active' ? 'bg-emerald-500/15 text-emerald-400' : a.status === 'paused' ? 'bg-amber-500/15 text-amber-400' : 'bg-muted text-muted-foreground'}`}>{a.status || 'unknown'}</span>
                   </div>
@@ -1495,69 +1688,224 @@ function AuditTab() {
   )
 }
 
+// ── Policy Template Packs ─────────────────────────────────────────────────────
+
+function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string; description?: string; regulation?: string; rule_count?: number }>>([])
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState<string | null>(null)
+  const [applied, setApplied] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.getPolicyTemplates().then(r => setTemplates(r.templates ?? r as never ?? [])).catch(() => setTemplates([])).finally(() => setLoading(false))
+  }, [])
+
+  const apply = async (id: string) => {
+    setApplying(id)
+    try {
+      await api.applyPolicyTemplate(id)
+      setApplied(id)
+      setTimeout(() => setApplied(null), 3000)
+      onApplied()
+    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to apply template') }
+    finally { setApplying(null) }
+  }
+
+  if (loading || templates.length === 0) return null
+
+  const colors: Record<string, string> = {
+    hipaa: 'text-blue-400 border-blue-500/20 bg-blue-500/5',
+    hitrust: 'text-purple-400 border-purple-500/20 bg-purple-500/5',
+    soc2: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5',
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold flex items-center gap-2"><Package size={13} className="text-primary" /> Compliance Template Packs</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">Apply pre-built rule sets for industry regulations in one click.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {templates.map(t => {
+          const cls = colors[t.id] ?? 'text-muted-foreground border-border bg-muted/20'
+          return (
+            <div key={t.id} className={`rounded-xl border p-4 space-y-2 ${cls}`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider">{t.name}</span>
+                {t.rule_count && <span className="text-[10px] opacity-70">{t.rule_count} rules</span>}
+              </div>
+              {t.description && <p className="text-[11px] opacity-80 leading-relaxed">{t.description}</p>}
+              <button onClick={() => apply(t.id)} disabled={applying === t.id}
+                className="w-full text-xs py-1.5 rounded-lg border border-current/30 hover:bg-current/10 font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
+                {applied === t.id ? <><Check size={12} /> Applied</> : applying === t.id ? 'Applying…' : 'Apply Pack'}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Policies Tab ──────────────────────────────────────────────────────────────
 
 function PoliciesTab() {
   const [rules, setRules] = useState<PolicyRule[]>([])
+  const [health, setHealth] = useState<ComplianceHealth | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [toggling, setToggling] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
-    try { setRules(Array.isArray(await api.policyRules()) ? await api.policyRules() as PolicyRule[] : ((await api.policyRules()) as { rules: PolicyRule[] }).rules || []) }
-    catch (e) { setError(e instanceof Error ? e.message : 'Failed to load policies') }
+    try {
+      const [rRes, hRes] = await Promise.allSettled([api.policyRules(), api.complianceHealth()])
+      if (rRes.status === 'fulfilled') {
+        const raw = rRes.value
+        setRules(Array.isArray(raw) ? raw as PolicyRule[] : (raw as { rules: PolicyRule[] }).rules ?? [])
+      }
+      if (hRes.status === 'fulfilled') setHealth(hRes.value)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load policies') }
     finally { setLoading(false) }
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  async function toggleRule(rule: PolicyRule) {
-    setToggling(rule.rule_id)
-    try {
-      rule.enabled ? await api.disableRule(rule.rule_id) : await api.enableRule(rule.rule_id)
-      setRules(prev => prev.map(r => r.rule_id === rule.rule_id ? { ...r, enabled: !r.enabled } : r))
-    } catch (e) { alert(e instanceof Error ? e.message : 'Failed') }
-    finally { setToggling(null) }
-  }
-
   if (loading) return <Spinner />
   if (error) return <ErrorMsg message={error} onRetry={load} />
 
+  const REGULATION_META: Record<string, { label: string; color: string; border: string; bg: string; desc: string }> = {
+    HIPAA:    { label: 'HIPAA',     color: 'text-blue-400',   border: 'border-blue-500/30',   bg: 'bg-blue-500/5',   desc: 'Health Insurance Portability and Accountability Act' },
+    HITRUST:  { label: 'HITRUST',   color: 'text-purple-400', border: 'border-purple-500/30', bg: 'bg-purple-500/5', desc: 'Health Information Trust Alliance CSF' },
+    'SOC 2':  { label: 'SOC 2',     color: 'text-emerald-400',border: 'border-emerald-500/30',bg: 'bg-emerald-500/5',desc: 'Service Organization Control 2 Type II' },
+    General:  { label: 'Additional Controls', color: 'text-muted-foreground', border: 'border-border', bg: 'bg-muted/10', desc: 'Organization-specific rules added on top of regulatory standards' },
+  }
+
+  const normalizeReg = (reg?: string) => {
+    if (!reg) return 'General'
+    const u = reg.toUpperCase()
+    if (u.includes('HIPAA')) return 'HIPAA'
+    if (u.includes('HITRUST')) return 'HITRUST'
+    if (u.includes('SOC')) return 'SOC 2'
+    return reg
+  }
   const grouped = rules.reduce<Record<string, PolicyRule[]>>((acc, r) => {
-    const key = r.regulation || 'General'; if (!acc[key]) acc[key] = []; acc[key].push(r); return acc
+    const key = normalizeReg(r.regulation); if (!acc[key]) acc[key] = []; acc[key].push(r); return acc
   }, {})
+
+  // Regulation order: known regs first, General only if non-empty
+  const regOrder = ['HIPAA', 'HITRUST', 'SOC 2', 'General']
+  const sortedRegs = [
+    ...regOrder.filter(k => grouped[k] && (k !== 'General' || grouped[k].length > 0)),
+    ...Object.keys(grouped).filter(k => !regOrder.includes(k)),
+  ]
+
+  const knownRegs = sortedRegs.filter(k => k !== 'General')
+  const totalRules = rules.length
+  const activeRules = rules.filter(r => r.enabled).length
+  const overallOk = totalRules === 0 || activeRules === totalRules
 
   return (
     <div className="space-y-6">
-      {Object.keys(grouped).length === 0 ? <Empty message="No policy rules configured" /> :
-        Object.entries(grouped).map(([reg, regRules]) => (
-          <div key={reg} className="glass-card p-4">
-            <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-              <Lock size={14} className="text-primary" /> {reg}
-              <span className="text-xs text-muted-foreground ml-auto">{regRules.filter(r => r.enabled).length}/{regRules.length} active</span>
-            </h3>
-            <div className="space-y-2">
-              {regRules.map(rule => (
-                <div key={rule.rule_id} className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{rule.name}</p>
-                    {rule.description && <p className="text-xs text-muted-foreground truncate">{rule.description}</p>}
-                    <p className="text-xs font-mono text-muted-foreground mt-0.5">{rule.rule_id}</p>
+      {/* Overall posture banner */}
+      <div className={`rounded-xl border p-4 flex items-center gap-4 ${overallOk ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-yellow-500/30 bg-yellow-500/5'}`}>
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${overallOk ? 'bg-emerald-500/15' : 'bg-yellow-500/15'}`}>
+          {overallOk ? <CheckCircle2 size={20} className="text-emerald-400" /> : <AlertTriangle size={20} className="text-yellow-400" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-sm font-semibold ${overallOk ? 'text-emerald-400' : 'text-yellow-400'}`}>
+            {overallOk ? 'Compliance posture: Healthy' : 'Compliance posture: Needs attention'}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {activeRules} of {totalRules} rules enforced across {knownRegs.length} framework{knownRegs.length !== 1 ? 's' : ''} · Rules are locked to regulatory standards
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+          <Lock size={11} /> Standards enforced
+        </div>
+      </div>
+
+      {/* One-click template packs (only shown if no regulation rules loaded yet) */}
+      {sortedRegs.filter(k => k !== 'General').length === 0 && (
+        <PolicyTemplatePacks onApplied={load} />
+      )}
+
+      {/* Regulation cards */}
+      {sortedRegs.length === 0
+        ? <Empty message="No policy rules configured" />
+        : sortedRegs.map(reg => {
+          const regRules = grouped[reg]
+          const meta = REGULATION_META[reg] ?? REGULATION_META['General']
+          const healthEntry = health?.regulations?.[reg.toLowerCase().replace(/ /g, '_')] ?? health?.regulations?.[reg.toLowerCase()]
+          const activeCount = regRules.filter(r => r.enabled).length
+          const isCustom = reg === 'General'
+          const isExpanded = expanded === reg
+
+          const statusColor = isCustom
+            ? 'text-muted-foreground'
+            : activeCount === regRules.length ? 'text-emerald-400' : 'text-yellow-400'
+          const statusLabel = isCustom ? `${activeCount}/${regRules.length} active` : activeCount === regRules.length ? 'Compliant' : `${regRules.length - activeCount} gap${regRules.length - activeCount !== 1 ? 's' : ''}`
+
+          return (
+            <div key={reg} className={`rounded-xl border ${meta.border} ${meta.bg} overflow-hidden`}>
+              {/* Card header */}
+              <button
+                className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-white/[0.02] transition-colors"
+                onClick={() => setExpanded(isExpanded ? null : reg)}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-sm font-bold ${meta.color}`}>{meta.label}</span>
+                    {!isCustom && <span className="text-[10px] px-2 py-0.5 rounded-full border border-current/20 bg-current/10 text-muted-foreground font-medium flex items-center gap-1"><Lock size={9} /> Enforced</span>}
+                    <span className={`text-xs font-semibold ml-auto ${statusColor}`}>{statusLabel}</span>
                   </div>
-                  <button onClick={() => toggleRule(rule)} disabled={toggling === rule.rule_id}
-                    className="flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50">
-                    {toggling === rule.rule_id
-                      ? <div className="w-4 h-4 border border-primary/30 border-t-primary rounded-full animate-spin" />
-                      : rule.enabled ? <ToggleRight size={20} className="text-primary" /> : <ToggleLeft size={20} className="text-muted-foreground" />}
-                    <span className={rule.enabled ? 'text-primary' : 'text-muted-foreground'}>{rule.enabled ? 'On' : 'Off'}</span>
-                  </button>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">{meta.desc}</p>
+                  {healthEntry?.missing_rules && healthEntry.missing_rules.length > 0 && (
+                    <p className="text-[10px] text-yellow-400 mt-1 flex items-center gap-1"><AlertTriangle size={9} /> Missing: {healthEntry.missing_rules.slice(0, 3).join(', ')}{healthEntry.missing_rules.length > 3 ? ` +${healthEntry.missing_rules.length - 3} more` : ''}</p>
+                  )}
                 </div>
-              ))}
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="text-right">
+                    <p className="text-lg font-bold tabular-nums">{activeCount}<span className="text-xs text-muted-foreground font-normal">/{regRules.length}</span></p>
+                    <p className="text-[10px] text-muted-foreground">rules active</p>
+                  </div>
+                  <ChevronRight size={15} className={`text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                </div>
+              </button>
+
+              {/* Expanded rule list */}
+              {isExpanded && (
+                <div className="border-t border-current/10 px-5 py-3 space-y-1">
+                  {regRules.map(rule => (
+                    <div key={rule.rule_id} className="flex items-start gap-3 py-2.5 border-b border-white/5 last:border-0">
+                      <div className={`mt-0.5 shrink-0 ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/40'}`}>
+                        <CheckCircle2 size={13} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium">{rule.name}</p>
+                        {rule.description && <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{rule.description}</p>}
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        {!isCustom && <span className="text-[10px] text-muted-foreground/50 flex items-center gap-0.5"><Lock size={9} /> Required</span>}
+                        <span className={`text-[10px] font-medium ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
+                          {rule.enabled ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        ))
+          )
+        })
       }
+
+      {/* Custom rules note */}
+      {sortedRegs.length > 0 && (
+        <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5 px-1">
+          <Lock size={10} /> Regulatory rules (HIPAA, HITRUST, SOC 2) are enforced as healthcare standards and cannot be disabled.
+        </p>
+      )}
     </div>
   )
 }
@@ -1811,6 +2159,294 @@ function ReviewTab() {
   )
 }
 
+// ── Red Team Tab ─────────────────────────────────────────────────────────
+
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: 'text-red-400 bg-red-500/10 border-red-500/30',
+  advisory: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
+  stable:   'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+}
+const PERTURB_LABEL: Record<string, string> = {
+  prompt_injection:    'Prompt Injection',
+  malformed_payload:   'Malformed Payload',
+  boundary_input:      'Boundary Input',
+  privilege_escalation:'Priv. Escalation',
+  context_poisoning:   'Context Poisoning',
+}
+
+function RedTeamTab() {
+  const [summary, setSummary]   = useState<import('./api').ShadowSummary | null>(null)
+  const [findings, setFindings] = useState<import('./api').ShadowFinding[]>([])
+  const [bypasses, setBypasses] = useState<import('./api').ConfirmedBypass[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState('')
+  const [filter, setFilter]     = useState<'all' | 'critical' | 'advisory'>('all')
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState('')
+  const [chainRunning, setChainRunning] = useState(false)
+  const [chainResult, setChainResult]   = useState<import('./api').ChainStressResponse | null>(null)
+  const [chainError, setChainError]     = useState('')
+  const [exporting, setExporting]       = useState(false)
+  const [chainOpen, setChainOpen]       = useState(false)
+
+  const load = useCallback(async () => {
+    setError('')
+    try {
+      const [s, f, b] = await Promise.all([
+        api.shadowSummary(),
+        api.shadowFindings(undefined, 200),
+        api.confirmedBypasses(),
+      ])
+      setSummary(s)
+      setFindings(f.findings)
+      setBypasses(b.confirmed_bypasses)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load') }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const blob = await api.shadowExport()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `edon_shadow_report_${Date.now()}.csv`
+      a.click(); URL.revokeObjectURL(url)
+    } catch (e) { alert(e instanceof Error ? e.message : 'Export failed') }
+    finally { setExporting(false) }
+  }
+
+  const handleChainStress = async () => {
+    if (!sessionId.trim()) return
+    setChainRunning(true); setChainError(''); setChainResult(null)
+    try {
+      const r = await api.chainStress(sessionId.trim())
+      setChainResult(r)
+    } catch (e) { setChainError(e instanceof Error ? e.message : 'Chain stress failed') }
+    finally { setChainRunning(false) }
+  }
+
+  if (loading) return <Spinner />
+  if (error)   return <ErrorMsg message={error} onRetry={load} />
+
+  const visible = filter === 'all' ? findings : findings.filter(f => f.severity === filter)
+
+  return (
+    <div className="space-y-6">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <FlaskConical size={14} className="text-primary" /> Red Team
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Adversarial shadow execution — continuous governance testing</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={load} className="p-2 rounded-lg border border-border bg-muted/40 text-muted-foreground hover:text-foreground transition">
+            <RefreshCw size={13} />
+          </button>
+          <button onClick={handleExport} disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-muted/40 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition disabled:opacity-50">
+            <FileDown size={13} />{exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'Critical Findings', value: summary?.critical ?? 0,             icon: AlertTriangle, color: 'text-red-400',     highlight: (summary?.critical ?? 0) > 0 },
+          { label: 'Advisory Findings', value: summary?.advisory ?? 0,             icon: AlertCircle,   color: 'text-amber-400',   highlight: false },
+          { label: 'Confirmed Bypasses',value: summary?.confirmed_bypasses ?? 0,   icon: ShieldAlert,   color: 'text-red-400',     highlight: (summary?.confirmed_bypasses ?? 0) > 0 },
+          { label: 'Governor Drift',    value: summary?.non_determinism_count ?? 0,icon: Activity,      color: 'text-blue-400',    highlight: false },
+        ].map(s => (
+          <div key={s.label} className={`glass-card p-4 ${s.highlight ? 'border-red-500/30' : ''}`}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-muted-foreground">{s.label}</span>
+              <s.icon size={15} className={s.color} />
+            </div>
+            <p className={`text-2xl font-semibold ${s.value > 0 && s.highlight ? 'text-red-400' : ''}`}>
+              {s.value}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* Confirmed bypasses — top priority */}
+      {bypasses.length > 0 && (
+        <div className="glass-card border-red-500/30 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={14} className="text-red-400" />
+            <h3 className="text-sm font-semibold text-red-400">Confirmed Bypasses</h3>
+            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-bold">
+              {bypasses.length} REAL
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            These bypasses are not theoretical — the perturbation bypassed the governor AND the agent executed successfully.
+          </p>
+          <div className="space-y-2">
+            {bypasses.map(b => (
+              <div key={b.id} className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-xs space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-muted-foreground">{b.agent_id}</span>
+                  <span className="text-border">·</span>
+                  <span className="font-medium">{b.action_type}</span>
+                  <span className="text-border">·</span>
+                  <span className="text-red-400/80">{PERTURB_LABEL[b.perturbation_type] ?? b.perturbation_type}</span>
+                  <span className="ml-auto text-muted-foreground/60">{b.confirmed_at.slice(0, 10)}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="px-1.5 py-0.5 rounded border border-red-500/30 text-red-400 font-mono">{b.original_verdict}</span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className="px-1.5 py-0.5 rounded border border-emerald-500/30 text-emerald-400 font-mono">{b.shadow_verdict}</span>
+                  <span className="text-muted-foreground mx-1">·</span>
+                  <span className="text-emerald-400">Real execution: {b.real_outcome}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Findings table */}
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold">Findings</h3>
+          <div className="ml-auto flex rounded-lg border border-border overflow-hidden text-xs">
+            {(['all', 'critical', 'advisory'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                className={`px-3 py-1.5 capitalize transition ${filter === f ? 'bg-primary text-primary-foreground font-semibold' : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'}`}>
+                {f === 'all' ? `All (${findings.length})` : f === 'critical' ? `Critical (${summary?.critical ?? 0})` : `Advisory (${summary?.advisory ?? 0})`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visible.length === 0 ? (
+          <div className="flex flex-col items-center py-10 gap-3 text-center">
+            <CheckCircle2 size={28} className="text-emerald-400 opacity-40" />
+            <p className="text-sm text-muted-foreground">
+              {filter === 'all' ? 'No findings yet — traces are being sampled.' : `No ${filter} findings.`}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {visible.slice(0, 50).map(f => {
+              const key = `${f.trace_id}-${f.perturbation_name}`
+              const isOpen = expanded === key
+              return (
+                <div key={key} className={`rounded-lg border text-xs overflow-hidden transition-colors ${SEVERITY_COLOR[f.severity]}`}>
+                  <button className="w-full flex items-center gap-3 p-3 text-left" onClick={() => setExpanded(isOpen ? null : key)}>
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${SEVERITY_COLOR[f.severity]}`}>
+                      {f.severity}
+                    </span>
+                    <span className="font-medium truncate">{f.action_type ?? '—'}</span>
+                    <span className="text-muted-foreground/70 shrink-0">{PERTURB_LABEL[f.perturbation_type] ?? f.perturbation_type}</span>
+                    <span className="text-muted-foreground/50 mx-1 shrink-0">
+                      {f.trace_original_verdict} → {f.shadow_verdict}
+                    </span>
+                    <ChevronRight size={12} className={`ml-auto shrink-0 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-3 space-y-2 border-t border-current/10 pt-2">
+                      {(f.findings ?? []).map((txt, i) => (
+                        <p key={i} className="text-muted-foreground leading-relaxed">{txt}</p>
+                      ))}
+                      {f.policy_recommendation && (
+                        <div className="mt-2 p-2 rounded bg-primary/5 border border-primary/20 text-primary/80">
+                          <span className="font-semibold text-primary">Policy recommendation: </span>
+                          {f.policy_recommendation}
+                        </div>
+                      )}
+                      <p className="text-muted-foreground/40">{f.created_at?.slice(0, 19).replace('T', ' ')} · field: {f.perturbed_field ?? '—'}</p>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {visible.length > 50 && (
+              <p className="text-center text-xs text-muted-foreground py-2">
+                Showing 50 of {visible.length} findings — export CSV for full report
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Chain stress panel */}
+      <div className="glass-card p-4 space-y-3">
+        <button className="w-full flex items-center gap-2 text-sm font-semibold" onClick={() => setChainOpen(v => !v)}>
+          <Zap size={14} className="text-primary" /> Session Chain Stress Test
+          <ChevronRight size={13} className={`ml-auto text-muted-foreground transition-transform ${chainOpen ? 'rotate-90' : ''}`} />
+        </button>
+
+        {chainOpen && (
+          <div className="space-y-3 pt-1">
+            <p className="text-xs text-muted-foreground">
+              Inject adversarial perturbations at each step of a session and observe whether the effect cascades downstream.
+              Use the <code className="bg-muted px-1 rounded">session_id</code> from your agent context (format: <code className="bg-muted px-1 rounded">auto:AGENT_ID:YYYYMMDDH</code>).
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={sessionId} onChange={e => setSessionId(e.target.value)}
+                placeholder="auto:agent_crm:2026041112"
+                className="flex-1 text-xs bg-background border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono"
+              />
+              <button onClick={handleChainStress} disabled={chainRunning || !sessionId.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary/15 border border-primary/30 text-primary text-xs font-semibold hover:bg-primary/25 transition disabled:opacity-40">
+                {chainRunning ? <RefreshCw size={12} className="animate-spin" /> : <Zap size={12} />}
+                {chainRunning ? 'Running…' : 'Run'}
+              </button>
+            </div>
+            {chainError && <p className="text-xs text-red-400">{chainError}</p>}
+            {chainResult && (
+              <div className="space-y-2">
+                {chainResult.message ? (
+                  <p className="text-xs text-muted-foreground">{chainResult.message}</p>
+                ) : chainResult.summary && (
+                  <>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label: 'Tests run', value: chainResult.summary.total_tests },
+                        { label: 'Critical',  value: chainResult.summary.critical,  color: chainResult.summary.critical > 0 ? 'text-red-400' : undefined },
+                        { label: 'Advisory',  value: chainResult.summary.advisory,  color: chainResult.summary.advisory > 0 ? 'text-amber-400' : undefined },
+                        { label: 'Max cascade', value: chainResult.summary.max_cascade },
+                      ].map(s => (
+                        <div key={s.label} className="glass-card p-2 text-center">
+                          <p className={`text-lg font-bold ${s.color ?? ''}`}>{s.value}</p>
+                          <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {chainResult.results.filter(r => r.severity !== 'stable').map((r, i) => (
+                      <div key={i} className={`rounded-lg border p-3 text-xs ${SEVERITY_COLOR[r.severity]}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold uppercase">{r.severity}</span>
+                          <span>Step {r.injection_step} → {r.cascade_count} cascade{r.cascade_count !== 1 ? 's' : ''}</span>
+                          <span className="text-muted-foreground ml-1">{PERTURB_LABEL[r.perturbation_type] ?? r.perturbation_type}</span>
+                        </div>
+                        {r.cascade_verdicts.map((cv, j) => (
+                          <div key={j} className="mt-1.5 pl-2 border-l border-current/20 text-muted-foreground">
+                            Step {cv.step} · {cv.action_type} · {cv.original} → {cv.shadow}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Tabs config ───────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -1820,17 +2456,88 @@ const TABS = [
   { id: 'audit',     label: 'Audit',     icon: FileText },
   { id: 'policies',  label: 'Policies',  icon: Shield },
   { id: 'review',    label: 'Review',    icon: ClipboardList },
+  { id: 'redteam',   label: 'Red Team',  icon: FlaskConical },
   { id: 'settings',  label: 'Settings',  icon: Settings },
 ] as const
 
 type Tab = typeof TABS[number]['id']
+
+// ── Live Key Claim Banner ─────────────────────────────────────────────────────
+
+function LiveKeyClaimBanner() {
+  const [pending, setPending] = useState(false)
+  const [claiming, setClaiming] = useState(false)
+  const [liveKey, setLiveKey] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+
+  useEffect(() => {
+    api.checkPendingLiveKey().then(r => setPending(r.pending)).catch(() => {})
+  }, [])
+
+  const claim = async () => {
+    setClaiming(true)
+    try {
+      const r = await api.claimLiveKey()
+      setLiveKey(r.key)
+      setPending(false)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to claim key')
+    } finally { setClaiming(false) }
+  }
+
+  const copy = () => {
+    if (!liveKey) return
+    navigator.clipboard.writeText(liveKey)
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+
+  if (dismissed || (!pending && !liveKey)) return null
+
+  return (
+    <AnimatePresence>
+      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+        className="border-b border-emerald-500/40 bg-emerald-500/10">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
+          <div className="flex items-center gap-2 shrink-0">
+            <Zap size={15} className="text-emerald-400" />
+            <span className="text-sm font-semibold text-emerald-400">You're ready to go live</span>
+          </div>
+
+          {!liveKey ? (
+            <>
+              <p className="text-xs text-emerald-300/80 flex-1">Your live production key is ready. Claim it now — it will only be shown once.</p>
+              <button onClick={claim} disabled={claiming}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
+                {claiming ? 'Claiming…' : 'Reveal my live key'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex-1 flex items-center gap-2 min-w-0">
+                <code className="flex-1 text-xs font-mono bg-black/30 rounded px-3 py-1.5 truncate text-emerald-300">{liveKey}</code>
+                <button onClick={copy} className="shrink-0 p-1.5 rounded border border-emerald-500/30 hover:bg-emerald-500/10 transition-colors">
+                  {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} className="text-emerald-400" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-emerald-300/60 shrink-0">Switch to this key to enable enforcement</p>
+              <button onClick={() => setDismissed(true)} className="shrink-0 p-1 text-emerald-400/50 hover:text-emerald-400 transition-colors">
+                <X size={14} />
+              </button>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  )
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getAuth())
   const [meInfo, setMeInfo] = useState<MeResponse | null>(null)
-  const isAdmin = meInfo?.is_admin ?? false
+  const isAdmin = meInfo?.is_admin === true || meInfo?.role === 'admin'
   const [tab, setTab] = useState<Tab>('dashboard')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('edon_theme') as 'dark' | 'light') || 'dark')
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number } | null>(null)
@@ -2004,6 +2711,27 @@ export default function App() {
         </AnimatePresence>
       </header>
 
+      {/* Live key claim banner */}
+      {meInfo?.is_sandbox && <LiveKeyClaimBanner />}
+
+      {/* Sandbox banner */}
+      <AnimatePresence>
+        {meInfo?.is_sandbox && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            className="bg-purple-500/10 border-b border-purple-500/30">
+            <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3">
+              <div className="flex items-center gap-2 text-purple-300">
+                <FlaskConical size={14} className="shrink-0" />
+                <span className="text-xs font-semibold">Sandbox Mode</span>
+              </div>
+              <p className="text-xs text-purple-300/80">
+                Your governance rules are active and logging every decision — but nothing is being blocked yet. This is your trial period to observe EDON in action before enforcement goes live.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Page content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         <AnimatePresence mode="wait">
@@ -2015,7 +2743,8 @@ export default function App() {
               {tab === 'audit'     && <AuditTab />}
               {tab === 'policies'  && <PoliciesTab />}
               {tab === 'review'    && <ReviewTab />}
-              {tab === 'settings'  && <SettingsTab onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} />}
+              {tab === 'redteam'   && <RedTeamTab />}
+              {tab === 'settings'  && <SettingsTab onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} isAdmin={isAdmin} />}
             </ErrorBoundary>
           </motion.div>
         </AnimatePresence>

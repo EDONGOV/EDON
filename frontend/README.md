@@ -129,7 +129,7 @@ Deploy as a static Vite app:
 
 ## Related Components
 
-- **edon-sentinel-core** (`D:\dev\edon-sentinel-core`): Public marketing website where users sign up and pay
+- **edon-sentinel-core** (`EdonLP/`): Public marketing website where users sign up and pay (Git submodule: [edon-sentinel-core](https://github.com/GHOSTCODERRRRAHAHA/edon-sentinel-core))
 - **edon_gateway** (`../edon-cav-engine/edon_gateway`): Backend API gateway
 
 See `../edon-cav-engine/STARTUP_GUIDE.md` for full stack startup instructions.
