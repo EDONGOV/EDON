@@ -39,10 +39,9 @@ jobs:
         working-directory: backend
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EDON_GIT_DIFF: ${{ env.EDON_GIT_DIFF }}
-        run: |
-          export EDON_GIT_DIFF="$(cat /tmp/edon_diff.txt)"
-          python -m agents.docs_agent
+          # Large diffs must be read from a file — env vars exceed Linux ARG_MAX
+          EDON_GIT_DIFF_FILE: /tmp/edon_diff.txt
+        run: python -m agents.docs_agent
 
       - name: Check for doc changes
         id: changes
