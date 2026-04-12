@@ -12,7 +12,7 @@ Usage (local):
     ANTHROPIC_API_KEY=xxx python -m agents.docs_agent --dry-run
 
 GitHub Actions: see .github/workflows/docs_agent.yml
-The workflow writes the diff to EDON_GIT_DIFF env var and runs this script.
+The workflow writes the diff to a temp file and sets EDON_GIT_DIFF_FILE (not env).
 If docs changed, the workflow opens a PR automatically.
 """
 
@@ -43,7 +43,17 @@ def _read(path: Path) -> str:
 
 
 def _get_diff() -> str:
-    """Read diff from EDON_GIT_DIFF env var or stdin."""
+    """Read diff from a file path (CI), EDON_GIT_DIFF env, or stdin.
+
+    Prefer EDON_GIT_DIFF_FILE / EDON_GIT_DIFF_PATH in CI — large diffs must not
+    be passed via the environment (Linux ARG_MAX / env size limits).
+    """
+    for key in ("EDON_GIT_DIFF_FILE", "EDON_GIT_DIFF_PATH"):
+        p = os.environ.get(key, "").strip()
+        if p:
+            fp = Path(p)
+            if fp.is_file():
+                return fp.read_text(encoding="utf-8").strip()
     diff = os.environ.get("EDON_GIT_DIFF", "").strip()
     if diff:
         return diff
