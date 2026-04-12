@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 15% 7%;
+    --foreground: 0 0% 98%;
+    --card: 220 14% 10%;
+    --card-foreground: 0 0% 98%;
+    --primary: 38 95% 55%;
+    --primary-foreground: 0 0% 5%;
+    --secondary: 220 14% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 220 12% 18%;
+    --muted-foreground: 220 8% 60%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 12% 20%;
+    --input: 220 12% 20%;
+    --ring: 38 95% 55%;
+    --radius: 0.75rem;
+  }
+
+  * { @apply border-border; }
+
+  html, body, #root {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+    background: hsl(220 15% 7%);
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-card/70 backdrop-blur-xl border rounded-xl relative overflow-hidden;
+    border-color: rgba(255,255,255,0.08);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  .nav-item {
+    @apply relative text-muted-foreground transition-all duration-200 ease-out rounded-lg;
+  }
+  .nav-item:hover { @apply text-foreground bg-white/5; }
+  .nav-item-active {
+    @apply text-primary font-semibold;
+    background: hsl(38 95% 55% / 0.12);
+    border: 1px solid hsl(38 95% 55% / 0.25);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.animate-pulse-dot { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+
+/* ── Modern scrollbar ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(38 95% 55% / 0.25) transparent;
+}
+*::-webkit-scrollbar { width: 4px; height: 3px; }
+*::-webkit-scrollbar-track { background: hsl(220 15% 7%); border-radius: 999px; }
+*::-webkit-scrollbar-thumb { background: hsl(38 95% 55% / 0.3); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: hsl(38 95% 55% / 0.55); }
+*::-webkit-scrollbar-corner { background: hsl(220 15% 7%); }

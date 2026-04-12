@@ -556,6 +556,32 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         # Generate fallback decision_id
         decision_id = f"dec-{action.id}-{datetime.now(UTC).isoformat()}"
 
+    # ── Shadow execution — probabilistic adversarial replay ──────────────────
+    # Capture this trace and, at the configured sample rate, re-run it through
+    # the governor under adversarial perturbation (async, never blocks response).
+    try:
+        import asyncio as _asyncio
+        from ..shadow import capture_trace as _capture_trace, shadow_should_sample, shadow_run_trace
+        _shadow_trace = _capture_trace(
+            agent_id=req.agent_id,
+            tenant_id=tenant_id,
+            action_type=req.action_type,
+            action_payload=dict(req.action_payload or {}),
+            context=req_context,
+            timestamp=req.timestamp,
+            intent_id=effective_intent_id,
+            verdict=verdict_str,
+            reason=decision.explanation or "",
+            latency_ms=latency_ms,
+            meta=decision.meta or {},
+        )
+        if shadow_should_sample():
+            _asyncio.create_task(
+                shadow_run_trace(_shadow_trace, governor=governor, db=db)
+            )
+    except Exception as _shadow_err:
+        logger.debug("[shadow] capture/dispatch failed (non-blocking): %s", _shadow_err)
+
     # Acquire device lock on ALLOW (non-blocking; never raises)
     if _device_id and tenant_id and verdict_str == "ALLOW":
         try:
@@ -741,12 +767,14 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _meter_err:
         logger.debug("Metering record dispatch failed (non-blocking): %s", _meter_err)
 
-    # ── Shadow Mode override ─────────────────────────────────────────────────
-    # If shadow mode is enabled, always respond "allowed" but keep the real
-    # verdict in the audit log (already persisted above). This lets hospital
-    # trials observe governance decisions without blocking any traffic.
-    _shadow_mode_active = False
-    if tenant_id:
+    # ── Sandbox / Shadow Mode override ──────────────────────────────────────
+    # Two ways observe-only mode can be active:
+    #   1. Key-level: key.is_sandbox=True (hardcoded, cannot be bypassed)
+    #   2. Tenant-level: shadow mode setting (admin-controlled)
+    # Either triggers the same behaviour: log real verdict, respond ALLOW.
+    _key_is_sandbox = bool((getattr(request.state, 'tenant_info', None) or {}).get('is_sandbox', False))
+    _shadow_mode_active = _key_is_sandbox
+    if not _shadow_mode_active and tenant_id:
         try:
             _shadow_mode_active = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
         except Exception as _sm_err:

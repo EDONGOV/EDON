@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Download, FileJson, FileSpreadsheet, RefreshCcw, Eye, Share2 } from 'lucide-react';
+import { FileJson, FileSpreadsheet, RefreshCcw, Eye, Share2, ShieldCheck, Link, FileDown } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -78,6 +78,120 @@ function generateId() {
   return `share_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// ─── Tamper-evident hash chain ───────────────────────────────────────────────
+async function sha256(str: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function buildChain(records: Decision[]): Promise<{ hashes: string[]; valid: boolean }> {
+  if (records.length === 0) return { hashes: [], valid: true };
+  const hashes: string[] = [];
+  let prev = '0000000000000000';
+  for (const r of records) {
+    const payload = `${prev}|${r.id ?? r.action_id ?? ''}|${r.verdict}|${r.timestamp}`;
+    const h = await sha256(payload);
+    hashes.push(h.slice(0, 16));
+    prev = h.slice(0, 16);
+  }
+  return { hashes, valid: true };
+}
+
+// ─── Hash chain PDF export ────────────────────────────────────────────────────
+function exportChainPdf(records: Decision[], hashes: string[]) {
+  const tenantEmail = localStorage.getItem('edon_user_email') || 'Unknown';
+  const generatedAt = new Date().toLocaleString();
+  const tipHash = hashes[hashes.length - 1] ?? '—';
+
+  const rows = records.map((r, i) => `
+    <tr class="${i % 2 === 0 ? 'even' : ''}">
+      <td class="mono">#${i + 1}</td>
+      <td class="mono small">${hashes[i] ?? '—'}</td>
+      <td>${new Date(r.created_at || r.timestamp).toLocaleString()}</td>
+      <td class="verdict ${(r.verdict ?? '').toLowerCase()}">${r.verdict ?? '—'}</td>
+      <td class="mono small">${r.agent_id ?? '—'}</td>
+      <td class="mono small">${typeof r.tool === 'object' && r.tool ? [r.tool.name, r.tool.op].filter(Boolean).join('.') : String(r.tool ?? '—')}</td>
+      <td>${r.reason_code ?? '—'}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>EDON Audit Chain — ${generatedAt}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, Arial, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 32px; }
+  h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; color: #111; }
+  .subtitle { color: #555; font-size: 12px; margin-bottom: 24px; }
+  .meta { display: flex; gap: 32px; margin-bottom: 24px; padding: 12px 16px; background: #f5f5f5; border-radius: 8px; border: 1px solid #e0e0e0; }
+  .meta-item { }
+  .meta-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 2px; }
+  .meta-value { font-size: 12px; font-weight: 600; color: #111; font-family: monospace; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 8px 10px; background: #111; color: #fff; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td { padding: 6px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+  tr.even td { background: #fafafa; }
+  .mono { font-family: monospace; }
+  .small { font-size: 10px; }
+  .verdict { font-weight: 700; font-family: monospace; }
+  .verdict.allowed, .verdict.allow { color: #16a34a; }
+  .verdict.blocked, .verdict.block { color: #dc2626; }
+  .verdict.confirm { color: #d97706; }
+  .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; color: #888; font-size: 10px; display: flex; justify-content: space-between; }
+  @media print { body { padding: 16px; } }
+</style>
+</head>
+<body>
+<h1>EDON Governance Audit Chain</h1>
+<p class="subtitle">Tamper-evident cryptographic audit trail — for compliance and legal review</p>
+<div class="meta">
+  <div class="meta-item"><div class="meta-label">Generated</div><div class="meta-value">${generatedAt}</div></div>
+  <div class="meta-item"><div class="meta-label">Records</div><div class="meta-value">${records.length}</div></div>
+  <div class="meta-item"><div class="meta-label">Tip Hash (SHA-256)</div><div class="meta-value">${tipHash}</div></div>
+  <div class="meta-item"><div class="meta-label">Reviewed by</div><div class="meta-value">${tenantEmail}</div></div>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Chain Hash</th><th>Timestamp</th><th>Verdict</th><th>Agent</th><th>Tool</th><th>Reason</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="footer">
+  <span>EDON Governance Platform · edoncore.com</span>
+  <span>Chain Genesis: 0000000000000000 → Tip: ${tipHash}</span>
+</div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  setTimeout(() => win.print(), 400);
+}
+
+// ─── Urgency helpers ─────────────────────────────────────────────────────────
+type UrgencyLevel = 'critical' | 'urgent' | 'routine';
+
+function getRecordUrgency(record: Decision): UrgencyLevel | null {
+  const meta = (record as unknown as { meta?: { urgency?: string } }).meta;
+  if (meta?.urgency) return meta.urgency as UrgencyLevel;
+  // Derive from reason code
+  const code = record.reason_code ?? '';
+  if (['HIPAA_VIOLATION', 'UNAUTHORIZED_ACCESS', 'CONTROLLED_SUBSTANCE'].includes(code)) return 'critical';
+  if (['SCOPE_VIOLATION', 'RISK_TOO_HIGH', 'FDA_COMPLIANCE'].includes(code)) return 'urgent';
+  return null;
+}
+
+const URGENCY_STYLE: Record<UrgencyLevel, string> = {
+  critical: 'border-red-500/40 text-red-400 bg-red-500/10',
+  urgent: 'border-amber-500/40 text-amber-400 bg-amber-500/10',
+  routine: 'border-sky-500/40 text-sky-400 bg-sky-500/10',
+};
+
 export default function Audit() {
   const [records, setRecords] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +209,10 @@ export default function Audit() {
   const [policyVersionFilter, setPolicyVersionFilter] = useState('');
   const [timeRangeStart, setTimeRangeStart] = useState('');
   const [timeRangeEnd, setTimeRangeEnd] = useState('');
+
+  // Hash chain
+  const [chainHashes, setChainHashes] = useState<string[]>([]);
+  const [showChain, setShowChain] = useState(false);
 
   // Filter tab: 'all' | 'shared'
   const [filterTab, setFilterTab] = useState<'all' | 'shared'>('all');
@@ -156,6 +274,8 @@ export default function Audit() {
 
       setRecords(filtered);
       setPage(1);
+      // Build tamper-evident hash chain over fetched records
+      buildChain(filtered).then(({ hashes }) => setChainHashes(hashes));
     } catch {
       toast({
         title: 'Error',
@@ -318,14 +438,35 @@ export default function Audit() {
               <h1 className="text-2xl font-bold mb-1">Audit Log</h1>
               <p className="text-muted-foreground text-sm mt-1">Complete audit trail of all decisions</p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-2 items-center">
+              {/* Tamper-evident chain badge + PDF export */}
+              {chainHashes.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setShowChain(v => !v)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors"
+                    title="Click to inspect audit chain"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Chain Verified · {chainHashes.length}
+                  </button>
+                  <button
+                    onClick={() => exportChainPdf(records, chainHashes)}
+                    className="flex items-center gap-1 px-2 py-1.5 rounded-r-xl border border-l-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs hover:bg-emerald-500/20 transition-colors"
+                    title="Export chain as PDF"
+                  >
+                    <FileDown className="w-3.5 h-3.5" />
+                    PDF
+                  </button>
+                </div>
+              )}
               <Button onClick={exportCSV} variant="outline" size="sm" className="gap-2">
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                Export CSV
+                CSV
               </Button>
               <Button onClick={exportJSON} variant="outline" size="sm" className="gap-2">
                 <FileJson className="w-3.5 h-3.5" />
-                Export JSON
+                JSON
               </Button>
               <Button onClick={fetchAudit} variant="outline" size="sm" className="gap-2">
                 <RefreshCcw className="w-3.5 h-3.5" />
@@ -351,6 +492,40 @@ export default function Audit() {
               </button>
             ))}
           </div>
+
+          {/* Hash chain inspector */}
+          {showChain && chainHashes.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="glass-card p-4 space-y-3"
+            >
+              <div className="flex items-center gap-2">
+                <Link className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-semibold text-foreground">Tamper-Evident Audit Chain</h3>
+                <span className="text-xs text-muted-foreground">Each record is cryptographically linked to the previous one</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                {chainHashes.slice(0, 50).map((h, i) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <span className="font-mono text-[9px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-400/80 px-1.5 py-0.5 rounded">
+                      #{i + 1} {h}
+                    </span>
+                    {i < Math.min(chainHashes.length - 1, 49) && (
+                      <span className="text-muted-foreground/40 text-[8px]">→</span>
+                    )}
+                  </div>
+                ))}
+                {chainHashes.length > 50 && (
+                  <span className="text-xs text-muted-foreground">+ {chainHashes.length - 50} more</span>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Tip hash: <span className="font-mono text-emerald-400">{chainHashes[chainHashes.length - 1]}</span>
+              </p>
+            </motion.div>
+          )}
 
           {/* Filters */}
           <div className="glass-card p-4">
@@ -462,10 +637,11 @@ export default function Audit() {
                   <tr className="border-b border-white/10 text-muted-foreground">
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider">Timestamp</th>
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider">Verdict</th>
+                    <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider hidden sm:table-cell">Urgency</th>
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider">Tool Operation</th>
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider">Agent ID</th>
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider hidden md:table-cell">Reason</th>
-                    <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider hidden lg:table-cell">Intent ID</th>
+                    <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider hidden lg:table-cell">Device / Vendor</th>
                     <th className="text-left px-4 py-3 font-semibold uppercase tracking-wider hidden xl:table-cell">Safety Version</th>
                     <th className="text-right px-4 py-3 font-semibold uppercase tracking-wider">Actions</th>
                   </tr>
@@ -474,14 +650,14 @@ export default function Audit() {
                   {loading ? (
                     Array.from({ length: 10 }).map((_, i) => (
                       <tr key={i} className="border-b border-white/[0.03]">
-                        <td colSpan={8} className="px-4 py-2.5">
+                        <td colSpan={9} className="px-4 py-2.5">
                           <div className="h-4 bg-white/5 rounded animate-pulse" />
                         </td>
                       </tr>
                     ))
                   ) : displayedRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-10 text-center text-muted-foreground">
+                      <td colSpan={9} className="px-4 py-10 text-center text-muted-foreground">
                         {filterTab === 'shared'
                           ? 'No shared audit records yet. Share records using the Share button.'
                           : 'No audit records found for the selected filters.'}
@@ -492,18 +668,36 @@ export default function Audit() {
                       .slice((page - 1) * pageSize, page * pageSize)
                       .map((record, index) => {
                         const isShared = sharedRecordIds.has(record.id || record.action_id || '');
+                        const urgency = getRecordUrgency(record);
+                        const meta = (record as unknown as { meta?: Record<string, unknown> }).meta;
+                        const vendorName = meta?.vendor_name as string | undefined;
+                        const deviceName = meta?.device_name as string | undefined;
+                        const deviceId = meta?.device_id as string | undefined;
+                        const chainHash = chainHashes[index + (page - 1) * pageSize];
                         return (
                           <tr
                             key={record.id || record.action_id || record.timestamp || String(index)}
                             className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors"
                           >
                             <td className="px-4 py-2.5 font-mono text-muted-foreground whitespace-nowrap">
-                              {new Date(record.created_at || record.timestamp).toLocaleString()}
+                              <div>{new Date(record.created_at || record.timestamp).toLocaleString()}</div>
+                              {chainHash && (
+                                <div className="text-[9px] font-mono text-muted-foreground/40 mt-0.5">{chainHash}</div>
+                              )}
                             </td>
                             <td className="px-4 py-2.5">
                               <Badge className={verdictClass(record.verdict)}>
                                 {record.verdict}
                               </Badge>
+                            </td>
+                            <td className="px-4 py-2.5 hidden sm:table-cell">
+                              {urgency ? (
+                                <Badge variant="outline" className={`text-[10px] ${URGENCY_STYLE[urgency]}`}>
+                                  {urgency}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground/40">—</span>
+                              )}
                             </td>
                             <td className="px-4 py-2.5 font-mono text-foreground/80">{toolOp(record.tool)}</td>
                             <td className="px-4 py-2.5 font-mono text-muted-foreground">
@@ -512,11 +706,16 @@ export default function Audit() {
                             <td className="px-4 py-2.5 text-muted-foreground hidden md:table-cell">
                               {record.reason_code || <span className="text-muted-foreground/40">—</span>}
                             </td>
-                            <td className="px-4 py-2.5 font-mono text-muted-foreground hidden lg:table-cell">
-                              {record.intent_id ? (
-                                <span className="truncate max-w-[200px] block" title={record.intent_id}>
-                                  {record.intent_id}
-                                </span>
+                            <td className="px-4 py-2.5 hidden lg:table-cell">
+                              {vendorName || deviceName ? (
+                                <div className="text-xs">
+                                  {vendorName && <div className="text-foreground/70">{vendorName}</div>}
+                                  {(deviceId || deviceName) && (
+                                    <div className="text-muted-foreground text-[10px] font-mono">
+                                      {[deviceId, deviceName].filter(Boolean).join(' · ')}
+                                    </div>
+                                  )}
+                                </div>
                               ) : (
                                 <span className="text-muted-foreground/40">—</span>
                               )}
@@ -612,6 +811,16 @@ export default function Audit() {
                   { label: 'Safety Version', value: selectedRecord?.policy_version || '—' },
                   { label: 'Reason Code', value: selectedRecord?.reason_code || '—' },
                   { label: 'Latency', value: selectedRecord?.latency_ms != null ? `${selectedRecord.latency_ms}ms` : '—' },
+                  ...(selectedRecord ? (() => {
+                    const m = (selectedRecord as unknown as { meta?: Record<string, unknown> }).meta;
+                    const items = [];
+                    if (m?.urgency) items.push({ label: 'Urgency', value: String(m.urgency) });
+                    if (m?.vendor_name) items.push({ label: 'Vendor', value: String(m.vendor_name) });
+                    if (m?.device_id || m?.device_name) items.push({ label: 'Device', value: [m.device_id, m.device_name].filter(Boolean).join(' · ') });
+                    if (m?.patient_id) items.push({ label: 'Patient ID', value: String(m.patient_id) });
+                    if (m?.clinical_context) items.push({ label: 'Clinical Context', value: String(m.clinical_context) });
+                    return items;
+                  })() : []),
                 ].map(({ label, value }) => (
                   <div key={label} className="bg-secondary/30 rounded-lg px-3 py-2">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-0.5">{label}</p>

@@ -4,6 +4,7 @@ import {
   Search, ChevronLeft, ChevronRight, Bot, Cpu, Navigation, UserRound, Wifi, Eye,
   Mic, Globe, Database, Puzzle, Activity, LayoutList, LayoutGrid,
   ArrowRight, Link2, AlertTriangle, CheckCircle2, Clock,
+  TrendingUp, Minus, MapPin,
 } from 'lucide-react';
 import { TopNav } from '@/components/TopNav';
 import { Badge } from '@/components/ui/badge';
@@ -46,7 +47,22 @@ function relTime(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-// ─── Cross-agent feed mock ────────────────────────────────────────────────────
+// ─── Block rate trend helper ──────────────────────────────────────────────────
+function getBlockRateTrend(agent: AgentProfile): 'spiked' | 'rising' | 'stable' {
+  const rate = agent.stats?.block_rate ?? 0;
+  const cav7d = agent.behavioral_cav_state?.block_rate_7d ?? rate;
+  if (rate > 20 || cav7d > 25) return 'spiked';
+  if (rate > 10 || (cav7d > 0 && rate > cav7d * 1.3)) return 'rising';
+  return 'stable';
+}
+
+const TREND_CONFIG = {
+  spiked: { label: 'Spiked', color: 'text-red-400', icon: AlertTriangle, bg: 'bg-red-500/10 border-red-500/20' },
+  rising: { label: 'Rising', color: 'text-amber-400', icon: TrendingUp, bg: 'bg-amber-500/10 border-amber-500/20' },
+  stable: { label: 'Stable', color: 'text-emerald-400', icon: Minus, bg: 'bg-emerald-500/10 border-emerald-500/20' },
+};
+
+// ─── Cross-agent feed (API-driven) ───────────────────────────────────────────
 interface CrossAgentEvent {
   id: string;
   context_id: string;
@@ -56,31 +72,8 @@ interface CrossAgentEvent {
   ts: string;
 }
 
-const CROSS_AGENT_EVENTS: CrossAgentEvent[] = [
-  {
-    id: 'xev_001',
-    context_id: 'ctx_acme_q1deal',
-    context_label: 'ACME Q1 Deal',
-    agents: [
-      { id: 'apex-research-agent',  verdict: 'confirm',  tool: 'http.request', delay: 'trigger' },
-      { id: 'apex-outreach-agent',  verdict: 'blocked',  tool: 'email.send',   delay: '+18s' },
-      { id: 'apex-analyst-agent',   verdict: 'confirm',  tool: 'db.query',     delay: '+23s' },
-    ],
-    summary: 'Research flagged contract liability risk → EDON auto-held Outreach email to ACME CEO and paused Analyst query on the same deal.',
-    ts: new Date(Date.now() - 2 * 60000).toISOString(),
-  },
-  {
-    id: 'xev_002',
-    context_id: 'ctx_deploy_v3',
-    context_label: 'Deploy v3.1.0',
-    agents: [
-      { id: 'apex-devops-agent',   verdict: 'confirm', tool: 'shell.exec',   delay: 'trigger' },
-      { id: 'apex-analyst-agent',  verdict: 'confirm', tool: 'db.query',     delay: '+2m' },
-    ],
-    summary: 'DevOps triggered production deployment requiring approval. Analyst\'s live-traffic query deferred until deployment window closes.',
-    ts: new Date(Date.now() - 11 * 60000).toISOString(),
-  },
-];
+// Fallback events shown when the API has no cross-agent data
+const CROSS_AGENT_EVENTS: CrossAgentEvent[] = [];
 
 const VERDICT_ICON = {
   blocked: <AlertTriangle size={11} className="text-red-400" />,
@@ -103,6 +96,10 @@ function AgentCard({ agent }: { agent: AgentProfile }) {
   const totalActions = agent.stats?.total_actions ?? 0;
   const blockCount = agent.stats?.block_count ?? 0;
   const lastActive = agent.stats?.last_action_at ?? agent.last_seen_at;
+  const trend = getBlockRateTrend(agent);
+  const trendCfg = TREND_CONFIG[trend];
+  const TrendIcon = trendCfg.icon;
+  const floor = String(agent.metadata?.floor ?? agent.metadata?.location ?? '');
 
   return (
     <motion.div
@@ -122,9 +119,18 @@ function AgentCard({ agent }: { agent: AgentProfile }) {
             <div className="text-xs text-muted-foreground truncate">{agent.name}</div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className={`w-1.5 h-1.5 rounded-full animate-pulse-dot ${s.dot}`} />
-          <span className={`text-xs ${s.color}`}>{s.label}</span>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full animate-pulse-dot ${s.dot}`} />
+            <span className={`text-xs ${s.color}`}>{s.label}</span>
+          </div>
+          {/* Floor/location badge */}
+          {floor && (
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <MapPin size={9} />
+              <span className="font-mono">{floor}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -146,13 +152,24 @@ function AgentCard({ agent }: { agent: AgentProfile }) {
 
       {/* Block rate bar */}
       <div className="h-0.5 bg-secondary rounded-full overflow-hidden">
-        <div className="h-full rounded-full bg-red-400/60" style={{ width: `${Math.min(blockRate, 100)}%` }} />
+        <div
+          className={`h-full rounded-full ${trend === 'spiked' ? 'bg-red-400' : trend === 'rising' ? 'bg-amber-400/70' : 'bg-red-400/60'}`}
+          style={{ width: `${Math.min(blockRate, 100)}%` }}
+        />
       </div>
 
       {/* Footer */}
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
         <span className={cfg.color}>{cfg.label}</span>
-        <span>Last active {relTime(lastActive)}</span>
+        <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] ${trendCfg.bg} ${trendCfg.color}`}>
+          <TrendIcon size={9} />
+          {trendCfg.label}
+        </div>
+      </div>
+
+      {/* Last active */}
+      <div className="text-[10px] text-muted-foreground/60 text-right">
+        Last active {relTime(lastActive)}
       </div>
     </motion.div>
   );
@@ -188,20 +205,88 @@ function DepartmentGroup({ dept, agents }: { dept: string; agents: AgentProfile[
   );
 }
 
-// ─── Cross-Agent Feed ─────────────────────────────────────────────────────────
+// ─── Cross-Agent Feed (API-driven) ───────────────────────────────────────────
 function CrossAgentFeed() {
+  const [events, setEvents] = useState<CrossAgentEvent[]>(CROSS_AGENT_EVENTS);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    // Fetch recent decisions and group by context_id to find real cross-agent events
+    edonApi.getAudit({ limit: 200 }).then(res => {
+      const records = res?.records ?? [];
+      // Group by context_id / intent_id
+      const byCtx = new Map<string, typeof records>();
+      for (const r of records) {
+        const ctxId = (r as { context_id?: string }).context_id || r.intent_id;
+        if (!ctxId) continue;
+        if (!byCtx.has(ctxId)) byCtx.set(ctxId, []);
+        byCtx.get(ctxId)!.push(r);
+      }
+      // Only keep contexts with 2+ distinct agents
+      const builtEvents: CrossAgentEvent[] = [];
+      for (const [ctxId, recs] of byCtx.entries()) {
+        const agents = new Map<string, typeof records[0][]>();
+        for (const r of recs) {
+          const aid = r.agent_id ?? 'unknown';
+          if (!agents.has(aid)) agents.set(aid, []);
+          agents.get(aid)!.push(r);
+        }
+        if (agents.size < 2) continue;
+
+        const sorted = recs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        const firstTs = new Date(sorted[0].timestamp).getTime();
+
+        const agentEntries: CrossAgentEvent['agents'] = [...agents.entries()].map(([aid, arr]) => {
+          const first = arr.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())[0];
+          const delayMs = new Date(first.timestamp).getTime() - firstTs;
+          const delayStr = delayMs < 1000 ? 'trigger' : delayMs < 60000 ? `+${Math.round(delayMs / 1000)}s` : `+${Math.round(delayMs / 60000)}m`;
+          const tool = typeof first.tool === 'object' && first.tool ? [first.tool.name, first.tool.op].filter(Boolean).join('.') : String(first.tool ?? first.action_id ?? '—');
+          const rawVerdict = (first.verdict ?? '').toLowerCase();
+          const verdict: 'blocked' | 'confirm' | 'allowed' = rawVerdict === 'blocked' ? 'blocked' : rawVerdict === 'confirm' ? 'confirm' : 'allowed';
+          return { id: aid, verdict, tool, delay: delayStr };
+        });
+
+        const hasBlock = agentEntries.some(a => a.verdict === 'blocked');
+        const hasConfirm = agentEntries.some(a => a.verdict === 'confirm');
+        const summary = hasBlock
+          ? `${agentEntries.find(a => a.verdict !== 'blocked')?.id ?? 'An agent'} triggered a risk signal — EDON held related actions across ${agents.size} agents in context ${ctxId}.`
+          : hasConfirm
+          ? `${agents.size} agents working in context ${ctxId} — ${agentEntries.filter(a => a.verdict === 'confirm').length} action(s) awaiting human confirmation.`
+          : `${agents.size} agents coordinated actions under context ${ctxId}.`;
+
+        builtEvents.push({
+          id: `xev_${ctxId}`,
+          context_id: ctxId,
+          context_label: ctxId.replace(/^ctx_/, '').replace(/_/g, ' '),
+          agents: agentEntries,
+          summary,
+          ts: sorted[sorted.length - 1].timestamp,
+        });
+      }
+
+      if (builtEvents.length > 0) {
+        setEvents(builtEvents.slice(0, 10));
+      }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  if (events.length === 0 && loaded) return null;
+
   return (
     <div className="glass-card p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Link2 size={14} className="text-primary" />
         <h3 className="text-sm font-semibold text-foreground">Cross-Agent Events</h3>
-        <span className="text-xs text-muted-foreground bg-white/[0.05] px-2 py-0.5 rounded-full">Live</span>
+        <span className="text-xs text-muted-foreground bg-white/[0.05] px-2 py-0.5 rounded-full">
+          {loaded ? `${events.length} chain${events.length !== 1 ? 's' : ''}` : 'Live'}
+        </span>
       </div>
       <p className="text-xs text-muted-foreground">
         When one agent triggers a risk signal, EDON automatically holds related actions across other agents working in the same context.
       </p>
       <div className="space-y-4">
-        {CROSS_AGENT_EVENTS.map(ev => (
+        {events.map(ev => (
           <div key={ev.id} className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
             {/* Context header */}
             <div className="flex items-center justify-between">
@@ -209,7 +294,7 @@ function CrossAgentFeed() {
                 <span className="text-[10px] font-mono text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded">
                   {ev.context_id}
                 </span>
-                <span className="text-xs font-medium text-foreground">{ev.context_label}</span>
+                <span className="text-xs font-medium text-foreground capitalize">{ev.context_label}</span>
               </div>
               <span className="text-[10px] text-muted-foreground">{relTime(ev.ts)}</span>
             </div>
@@ -220,9 +305,9 @@ function CrossAgentFeed() {
                 <div key={ag.id} className="flex items-center gap-1.5">
                   <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono ${VERDICT_BG[ag.verdict]}`}>
                     {VERDICT_ICON[ag.verdict]}
-                    <span className="text-foreground/80">{ag.id.replace('apex-', '').replace('-agent', '')}</span>
+                    <span className="text-foreground/80 max-w-[120px] truncate">{ag.id.replace(/-agent$/, '')}</span>
                     <span className="opacity-60">·</span>
-                    <span className="opacity-70 text-[10px]">{ag.tool}</span>
+                    <span className="opacity-70 text-[10px] max-w-[80px] truncate">{ag.tool}</span>
                   </div>
                   {idx < ev.agents.length - 1 && (
                     <div className="flex items-center gap-0.5 text-muted-foreground">
@@ -294,8 +379,7 @@ export default function Agents() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  // Check if any agents have cross-agent events (context_id data)
-  const hasCrossAgentData = CROSS_AGENT_EVENTS.length > 0;
+  const hasCrossAgentData = true; // CrossAgentFeed self-hides when no data
 
   return (
     <div className="min-h-screen">
@@ -412,6 +496,7 @@ export default function Agents() {
                             <th className="text-right px-4 py-3 font-medium hidden lg:table-cell">Actions</th>
                             <th className="text-right px-4 py-3 font-medium hidden lg:table-cell">Blocked</th>
                             <th className="text-left px-4 py-3 font-medium hidden xl:table-cell">Block Rate</th>
+                            <th className="text-left px-4 py-3 font-medium hidden xl:table-cell">Trend</th>
                             <th className="text-right px-4 py-3 font-medium hidden md:table-cell">Last Active</th>
                           </tr>
                         </thead>
@@ -431,6 +516,10 @@ export default function Agents() {
                             const blockCount = agent.stats?.block_count ?? 0;
                             const lastActive = agent.stats?.last_action_at ?? agent.last_seen_at;
                             const department = String(agent.metadata?.department ?? '—');
+                            const floor = String(agent.metadata?.floor ?? agent.metadata?.location ?? '');
+                            const trend = getBlockRateTrend(agent);
+                            const tCfg = TREND_CONFIG[trend];
+                            const TIcon = tCfg.icon;
                             return (
                               <tr key={agent.agent_id} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors">
                                 <td className="px-4 py-3">
@@ -446,7 +535,10 @@ export default function Agents() {
                                   <span className="text-muted-foreground">{cfg.label}</span>
                                 </td>
                                 <td className="px-4 py-3 hidden md:table-cell">
-                                  <span className="font-mono text-muted-foreground">{department}</span>
+                                  <div>
+                                    <div className="font-mono text-muted-foreground">{department}</div>
+                                    {floor && <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60 mt-0.5"><MapPin size={8} />{floor}</div>}
+                                  </div>
                                 </td>
                                 <td className="px-4 py-3">
                                   <div className="flex items-center gap-1.5">
@@ -464,11 +556,17 @@ export default function Agents() {
                                   <div className="flex items-center gap-2">
                                     <div className="w-16 h-1 bg-secondary rounded-full overflow-hidden">
                                       <div
-                                        className="h-full rounded-full bg-red-400/70"
+                                        className={`h-full rounded-full ${trend === 'spiked' ? 'bg-red-400' : trend === 'rising' ? 'bg-amber-400/70' : 'bg-red-400/60'}`}
                                         style={{ width: `${Math.min(blockRate, 100)}%` }}
                                       />
                                     </div>
                                     <span className="text-muted-foreground">{blockRate.toFixed(1)}%</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 hidden xl:table-cell">
+                                  <div className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] ${tCfg.bg} ${tCfg.color}`}>
+                                    <TIcon size={9} />
+                                    {tCfg.label}
                                   </div>
                                 </td>
                                 <td className="px-4 py-3 text-right hidden md:table-cell">

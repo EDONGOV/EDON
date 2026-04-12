@@ -2745,3 +2745,40 @@ class PostgreSQLDatabase:
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None
+
+    # ── Shadow Mode ─────────────────────────────────────────────────────────────
+
+    def get_shadow_mode(self, tenant_id: str) -> bool:
+        """Return True if shadow mode is enabled for the tenant."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS tenant_settings (
+                        tenant_id TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (tenant_id, key)
+                    )
+                """)
+                conn.commit()
+                cur.execute(
+                    "SELECT value FROM tenant_settings WHERE tenant_id=%s AND key='shadow_mode'",
+                    (tenant_id,),
+                )
+                row = cur.fetchone()
+                return row is not None and row[0] == "true"
+
+    def set_shadow_mode(self, tenant_id: str, enabled: bool) -> None:
+        """Enable or disable shadow mode for the tenant."""
+        now = datetime.now(UTC).isoformat()
+        value = "true" if enabled else "false"
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO tenant_settings (tenant_id, key, value, updated_at)
+                    VALUES (%s, 'shadow_mode', %s, %s)
+                    ON CONFLICT (tenant_id, key) DO UPDATE
+                        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                """, (tenant_id, value, now))
+                conn.commit()

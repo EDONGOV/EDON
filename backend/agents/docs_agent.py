@@ -7,6 +7,10 @@ Usage (local):
     git diff HEAD~1 HEAD -- 'backend/edon_gateway/**' | \\
     ANTHROPIC_API_KEY=xxx python -m agents.docs_agent
 
+    # Dry run — shows what would change without writing the file
+    git diff HEAD~1 HEAD -- 'backend/edon_gateway/**' | \\
+    ANTHROPIC_API_KEY=xxx python -m agents.docs_agent --dry-run
+
 GitHub Actions: see .github/workflows/docs_agent.yml
 The workflow writes the diff to EDON_GIT_DIFF env var and runs this script.
 If docs changed, the workflow opens a PR automatically.
@@ -14,6 +18,8 @@ If docs changed, the workflow opens a PR automatically.
 
 from __future__ import annotations
 
+import argparse
+import difflib
 import os
 import sys
 from pathlib import Path
@@ -48,7 +54,7 @@ def _get_diff() -> str:
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def run() -> int:
+def run(dry_run: bool = False) -> int:
     diff = _get_diff()
     if not diff:
         print("[docs] No diff provided — nothing to do.")
@@ -115,6 +121,17 @@ Start directly with the markdown — no preamble."""
         print("[docs] No changes needed — docs are already accurate.")
         return 0
 
+    if dry_run:
+        diff_lines = list(difflib.unified_diff(
+            current_api_ref.splitlines(keepends=True),
+            updated_content.splitlines(keepends=True),
+            fromfile="docs/api-reference.md (current)",
+            tofile="docs/api-reference.md (proposed)",
+        ))
+        print("[docs] DRY RUN — no files written. Proposed changes:\n")
+        print("".join(diff_lines) if diff_lines else "[docs] (no diff lines — content identical after strip)")
+        return 0
+
     API_REF_PATH.write_text(updated_content, encoding="utf-8")
     print(f"[docs] Updated {API_REF_PATH}")
     print("[docs] Done. If running in CI, the workflow will open a PR.")
@@ -122,4 +139,10 @@ Start directly with the markdown — no preamble."""
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    parser = argparse.ArgumentParser(description="EDON Docs Agent")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show proposed doc changes as a diff without writing the file",
+    )
+    args = parser.parse_args()
+    sys.exit(run(dry_run=args.dry_run))

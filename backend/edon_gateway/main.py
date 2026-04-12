@@ -58,10 +58,14 @@ from .routes.alerts import router as alerts_router
 from .routes.privacy import router as privacy_router
 from .routes.devices import router as devices_router
 from .routes.settings import router as settings_router
+from .routes.live_key import router as live_key_router
+from .routes.webhooks import router as webhooks_router
 from .routes.swarm import router as swarm_router
 from .routes.edge import router as edge_router
 from .routes.telegram_bot import router as telegram_bot_router
 from .routes.review_queue import router as review_queue_router
+from .routes.shadow_findings import router as shadow_findings_router
+from .routes.action_result import router as action_result_router
 
 
 # Setup logging
@@ -151,6 +155,10 @@ app.include_router(alerts_router)
 app.include_router(privacy_router)
 app.include_router(devices_router)
 app.include_router(settings_router)
+app.include_router(webhooks_router)
+app.include_router(live_key_router)
+app.include_router(shadow_findings_router)
+app.include_router(action_result_router)
 
 # CORS configuration
 # When allow_credentials=True, cannot use wildcard "*" - must specify origins

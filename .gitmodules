@@ -1,0 +1,3 @@
+[submodule "frontend/EdonLP"]
+	path = frontend/EdonLP
+	url = https://github.com/GHOSTCODERRRRAHAHA/edon-sentinel-core.git

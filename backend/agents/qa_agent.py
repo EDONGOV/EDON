@@ -31,7 +31,7 @@ GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev")
 API_TOKEN = os.environ["EDON_API_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "GHOSTCODERRRRAHAHA/edongov")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "EDONGOV/EDON")
 QA_AGENT_ID = "edon-qa-agent-nightly"
 QA_TENANT_ID = os.environ.get("EDON_QA_TENANT_ID", "tenant_dev")
 
@@ -208,7 +208,7 @@ Write a concise report (plain markdown, no fluff) with:
 Keep it under 300 words. This will be posted as a GitHub issue or Slack message."""
 
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )

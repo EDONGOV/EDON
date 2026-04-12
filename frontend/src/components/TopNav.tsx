@@ -4,8 +4,8 @@ import {
   ShieldCheck, Gauge, ListChecks, FileSearch, Settings2,
   LogOut, User, CreditCard, Users, Key, ChevronDown, Bot,
   Bell, ShieldAlert, X, Menu, Crown, Puzzle, Radio, Layers,
-  Eye, EyeOff, Lock, Sun, Moon, Power,
-  type LucideIcon,
+  Eye, EyeOff, Lock, Sun, Moon, Power, ClipboardList,
+  AlertTriangle, type LucideIcon,
 } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { useEffect, useRef, useState } from 'react';
@@ -29,7 +29,7 @@ import {
 // Map icon name strings → Lucide components
 const ICON_MAP: Record<string, LucideIcon> = {
   Gauge, ListChecks, FileSearch, Bot, ShieldCheck, ShieldAlert, Settings2,
-  Crown, Puzzle, Radio, Layers,
+  Crown, Puzzle, Radio, Layers, ClipboardList,
   Circle: Layers, // fallback for dynamic domain extras
 };
 
@@ -65,6 +65,23 @@ export function TopNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const [hgiHalt, setHgiHalt] = useState(() => localStorage.getItem('edon_hgi_halt') === 'true');
+  const [lockdownConfirm, setLockdownConfirm] = useState(false);
+  const [pendingReviews, setPendingReviews] = useState(0);
+
+  // Poll review queue count
+  useEffect(() => {
+    if (!_hasAnyToken()) return;
+    const fetchCount = async () => {
+      try {
+        const res = await edonApi.getReviewQueue('pending');
+        setPendingReviews(res?.count ?? 0);
+      } catch { /* silent */ }
+    };
+    fetchCount();
+    const iv = setInterval(fetchCount, 30000);
+    return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const _hasAnyToken = () =>
     Boolean(
@@ -200,6 +217,31 @@ export function TopNav() {
         animate={{ opacity: 1, y: 0 }}
         className="sticky top-0 z-50 border-b border-border backdrop-blur-xl bg-background/80"
       >
+        {/* ── Emergency lockdown banner ───────────────────────── */}
+        <AnimatePresence>
+          {hgiHalt && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.18 }}
+              className="flex items-center justify-between px-6 py-1.5 bg-red-500/15 border-b border-red-500/30 overflow-hidden"
+            >
+              <div className="flex items-center gap-2 text-red-400 text-xs">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 animate-pulse" />
+                <span className="font-bold tracking-wider">EMERGENCY LOCKDOWN ACTIVE</span>
+                <span className="text-red-400/60 hidden sm:inline">— all agent actions suspended</span>
+              </div>
+              <button
+                onClick={() => { localStorage.removeItem('edon_hgi_halt'); window.dispatchEvent(new Event('edon-hgi-halt')); }}
+                className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 transition-colors"
+              >
+                Lift Lockdown
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ── Customer preview banner ─────────────────────────── */}
         <AnimatePresence>
           {previewActive && (
@@ -261,6 +303,11 @@ export function TopNav() {
                     <span className="relative flex items-center gap-1.5">
                       <item.icon className="w-3.5 h-3.5" />
                       <span className="hidden lg:inline">{item.label}</span>
+                      {item.to === '/review' && pendingReviews > 0 && (
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
+                          {pendingReviews > 9 ? '9+' : pendingReviews}
+                        </span>
+                      )}
                     </span>
                   </NavLink>
                 );
@@ -293,6 +340,37 @@ export function TopNav() {
                   ? <Sun className="w-3.5 h-3.5 text-muted-foreground" />
                   : <Moon className="w-3.5 h-3.5 text-muted-foreground" />}
               </button>
+
+              {/* Emergency lockdown button */}
+              {hasToken && (
+                <button
+                  onClick={() => hgiHalt
+                    ? (localStorage.removeItem('edon_hgi_halt'), window.dispatchEvent(new Event('edon-hgi-halt')))
+                    : setLockdownConfirm(true)
+                  }
+                  title={hgiHalt ? 'Lockdown active — click to lift' : 'Emergency lockdown — halts all agents'}
+                  className={`hidden sm:flex items-center gap-1.5 px-2.5 h-8 rounded-xl border text-xs font-semibold transition-colors ${
+                    hgiHalt
+                      ? 'border-red-500/50 bg-red-500/20 text-red-400 animate-pulse'
+                      : 'border-red-500/25 bg-red-500/10 text-red-400/70 hover:text-red-400 hover:bg-red-500/15'
+                  }`}
+                >
+                  <Power className="w-3 h-3" />
+                  {hgiHalt ? 'LOCKDOWN' : 'Lockdown'}
+                </button>
+              )}
+
+              {/* AI Chat button */}
+              {hasToken && (
+                <button
+                  onClick={() => window.dispatchEvent(new Event('edon-chat-open'))}
+                  title="Governance AI Assistant"
+                  className="flex items-center justify-center w-8 h-8 rounded-xl border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-colors"
+                  aria-label="Open AI assistant"
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                </button>
+              )}
 
               {/* HGI halt indicator */}
               {hasToken && (
@@ -546,6 +624,58 @@ export function TopNav() {
           )}
         </AnimatePresence>
       </motion.header>
+
+      {/* Lockdown confirmation modal */}
+      <AnimatePresence>
+        {lockdownConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+          >
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setLockdownConfirm(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.3 }}
+              className="relative z-10 glass-card max-w-sm w-full p-6 space-y-4"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-foreground">Activate Emergency Lockdown?</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">This will immediately suspend all agent actions.</p>
+                </div>
+              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                All AI agent actions will be blocked system-wide until the lockdown is lifted. This is logged to your audit trail.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setLockdownConfirm(false)}
+                  className="flex-1 py-2.5 rounded-xl border border-white/15 text-sm text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    localStorage.setItem('edon_hgi_halt', 'true');
+                    window.dispatchEvent(new Event('edon-hgi-halt'));
+                    setLockdownConfirm(false);
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 text-sm font-bold hover:bg-red-500/30 transition-colors"
+                >
+                  Activate Lockdown
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

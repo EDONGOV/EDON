@@ -39,7 +39,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev").rstrip("/")
 API_TOKEN = os.environ.get("EDON_API_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "GHOSTCODERRRRAHAHA/edongov")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "EDONGOV/EDON")
 WEBHOOK_URL = os.environ.get("INCIDENT_WEBHOOK_URL", "")   # Slack / Discord / custom
 ADMIN_TENANT = os.environ.get("EDON_ADMIN_TENANT_ID", "tenant_dev")
 
@@ -264,9 +264,65 @@ Respond as JSON:
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 
+def _gh_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+
+def _find_open_incident(anomaly_types: list[str]) -> dict[str, Any] | None:
+    """Return an existing open incident issue that covers any of the same anomaly types."""
+    if not GITHUB_TOKEN:
+        return None
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/issues",
+            headers=_gh_headers(),
+            params={"state": "open", "labels": "incident", "per_page": 20},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        for issue in r.json():
+            title = issue.get("title", "").lower()
+            if any(atype.lower().replace("_", " ") in title or atype.lower() in title for atype in anomaly_types):
+                return issue
+    except Exception as exc:
+        print(f"[incident] Dedup check failed: {exc}", file=sys.stderr)
+    return None
+
+
+def _add_incident_comment(issue_number: int, report: dict[str, Any], anomalies: list[dict[str, Any]]) -> None:
+    """Append a recurrence comment to an existing incident issue instead of opening a duplicate."""
+    anomaly_list = "\n".join(f"- [{a['severity']}] **{a['type']}**: {a['detail']}" for a in anomalies)
+    comment = (
+        f"### Recurrence — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+        f"**Probable cause:** {report.get('probable_cause', '')}\n\n"
+        f"**Anomalies this run:**\n{anomaly_list}\n\n"
+        f"*Auto-appended by EDON Incident Agent*"
+    )
+    try:
+        requests.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/issues/{issue_number}/comments",
+            headers=_gh_headers(),
+            json={"body": comment},
+            timeout=10,
+        )
+        print(f"[incident] Appended recurrence comment to existing issue #{issue_number}")
+    except Exception as exc:
+        print(f"[incident] Comment failed: {exc}", file=sys.stderr)
+
+
 def open_incident_issue(report: dict[str, Any], anomalies: list[dict[str, Any]]) -> str | None:
     if not GITHUB_TOKEN:
         return None
+
+    anomaly_types = [a["type"] for a in anomalies]
+
+    # Dedup: if the same incident is already open, comment on it instead
+    existing = _find_open_incident(anomaly_types)
+    if existing:
+        _add_incident_comment(existing["number"], report, anomalies)
+        return existing.get("html_url")
+
     sev = report.get("severity", "P1")
     title = f"[INCIDENT {sev}] {report.get('title', 'Anomaly detected')}"
     actions = "\n".join(f"- {a}" for a in report.get("immediate_actions", []))
@@ -297,7 +353,7 @@ def open_incident_issue(report: dict[str, Any], anomalies: list[dict[str, Any]])
     labels = ["incident", f"severity-{sev.lower()}", "automated"]
     r = requests.post(
         f"https://api.github.com/repos/{GITHUB_REPO}/issues",
-        headers={"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"},
+        headers=_gh_headers(),
         json={"title": title, "body": body, "labels": labels},
         timeout=10,
     )

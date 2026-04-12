@@ -212,6 +212,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         "/stats",
         "/health",
         "/settings/ip-allowlist",
+        "/webhooks",
     }
 
     # Only these count toward tenant usage (one governance decision per request)
