@@ -1,0 +1,54 @@
+[
+  {
+    "topic": "What is AI governance and why every health system deploying AI agents needs it",
+    "status": "done",
+    "added_at": "2026-04-14T12:09:01.422120+00:00",
+    "filename": "2026-04-14-what-is-ai-governance-and-why-every-health-system-deploying.md",
+    "completed_at": "2026-04-14T12:10:29.438783+00:00"
+  },
+  {
+    "topic": "HIPAA compliance for AI agents: the 7 rules that actually matter in 2026",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422137+00:00"
+  },
+  {
+    "topic": "How to comply with FDA SaMD guidance when your AI agent controls medical devices",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422139+00:00"
+  },
+  {
+    "topic": "AI agent audit trails: why SHA-256 chain hashing beats a database log",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422141+00:00"
+  },
+  {
+    "topic": "HITECH breach notification for AI systems: when your agent causes a reportable incident",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422142+00:00"
+  },
+  {
+    "topic": "The difference between AI safety and AI governance in clinical settings",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422144+00:00"
+  },
+  {
+    "topic": "How to implement human-in-the-loop for AI agents under Joint Commission standards",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422145+00:00"
+  },
+  {
+    "topic": "DEA compliance for AI agents dispensing controlled substances",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422147+00:00"
+  },
+  {
+    "topic": "What happens when an AI agent violates HIPAA: liability, fines, and how governance prevents it",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422149+00:00"
+  },
+  {
+    "topic": "Building a zero-trust AI agent architecture for hospital deployments",
+    "status": "pending",
+    "added_at": "2026-04-14T12:09:01.422151+00:00"
+  }
+]
