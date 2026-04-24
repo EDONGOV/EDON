@@ -339,6 +339,347 @@ async def export_evidence_package(
     )
 
 
+# ── Compliance Report Export ───────────────────────────────────────────────────
+
+_INV_REGULATION_MAP: dict = {
+    "INV-001-TENANT-RULES":     ("Custom Policy Rules",       "Tenant-defined governance policy override"),
+    "INV-002-SCOPE-BOUNDARY":   ("Scope Boundary",            "HIPAA §164.308(a)(4) Minimum Necessary; SOC2 CC6.1"),
+    "INV-003-RISK-GATE":        ("Risk Level Gate",           "FDA SaMD Guidance; ISO 14971 §6; Joint Commission NPSG.15.01.01"),
+    "INV-004-INTENT-ALIGNMENT": ("Intent Alignment",          "HIPAA §164.308(a)(1) Security Management Process"),
+    "INV-005-MAG-AUTH":         ("MAG Authorization",         "SOC2 CC9.2 Vendor/Partner Management"),
+    "INV-006-INTENT-FRESH":     ("Intent Freshness",          "HIPAA §164.308(a)(5) Workforce Training"),
+    "INV-007-SEQ-DRIFT":        ("Sequence Drift Detection",  "HIPAA §164.308(a)(1)(ii)(D) Activity Review; FDA SaMD Anomaly Handling"),
+    "INV-090-POLICY-ENGINE":    ("Policy Engine Health",      "SOC2 CC7.1 System Monitoring"),
+}
+
+_VERDICT_REGULATION_MAP: dict = {
+    "ALLOW":    "HIPAA §164.308(a)(4) Minimum Necessary — Approved",
+    "BLOCK":    "HIPAA §164.308(a)(1); SOC2 CC6.1; ISO 14971 §6",
+    "ESCALATE": "FDA SaMD Human Oversight; Joint Commission NPSG.15.01.01",
+    "DEGRADE":  "ISO 14971 §6 Risk Control — Safe Alternative Applied",
+    "PAUSE":    "HIPAA §164.308(a)(1)(ii)(D) Activity Review",
+    "ERROR":    "HIPAA §164.308(a)(1) Security Management",
+}
+
+
+def _build_report_payload(
+    events: list,
+    tenant_id: Optional[str],
+    from_ts: Optional[str],
+    to_ts: Optional[str],
+) -> dict:
+    total = len(events)
+    verdict_counts: dict = {}
+    latencies: list = []
+    agents: set = set()
+
+    for e in events:
+        v = (e.get("decision", {}).get("verdict") or e.get("decision_verdict") or "UNKNOWN").upper()
+        verdict_counts[v] = verdict_counts.get(v, 0) + 1
+        lat = e.get("processing_latency_ms")
+        if lat is not None:
+            try:
+                latencies.append(float(lat))
+            except (ValueError, TypeError):
+                pass
+        a = e.get("action", {}).get("agent_id") or e.get("agent_id")
+        if a:
+            agents.add(a)
+
+    allowed   = verdict_counts.get("ALLOW", 0)
+    blocked   = verdict_counts.get("BLOCK", 0) + verdict_counts.get("ERROR", 0)
+    escalated = verdict_counts.get("ESCALATE", 0) + verdict_counts.get("PAUSE", 0)
+    degraded  = verdict_counts.get("DEGRADE", 0)
+    compliance_rate = round((allowed + degraded) / total, 4) if total > 0 else 1.0
+    avg_lat = round(sum(latencies) / len(latencies), 1) if latencies else None
+
+    regulations: set = set()
+    for e in events:
+        v = (e.get("decision", {}).get("verdict") or e.get("decision_verdict") or "").upper()
+        reg = _VERDICT_REGULATION_MAP.get(v, "")
+        if reg:
+            regulations.update(r.strip() for r in reg.split(";"))
+        ctx = e.get("context") or {}
+        for inv in ctx.get("invariant_results", []):
+            inv_id = (inv.get("id") or "").upper()
+            for key, (_, reg_str) in _INV_REGULATION_MAP.items():
+                if key in inv_id:
+                    regulations.update(r.strip() for r in reg_str.split(";"))
+
+    decision_records = []
+    for e in events:
+        action   = e.get("action", {})
+        decision = e.get("decision", {})
+        verdict  = (decision.get("verdict") or e.get("decision_verdict") or "").upper()
+        ctx = e.get("context") or {}
+        inv_checks = ctx.get("invariant_results", [])
+        inv_summary = []
+        for inv in inv_checks:
+            inv_id = inv.get("id", "").upper()
+            meta = _INV_REGULATION_MAP.get(inv_id, ("", ""))
+            inv_summary.append({
+                "check":      inv.get("id", ""),
+                "label":      meta[0],
+                "status":     inv.get("status", ""),
+                "regulation": meta[1],
+                "details":    inv.get("details", ""),
+            })
+        decision_records.append({
+            "decision_id":      e.get("id") or action.get("id") or "",
+            "timestamp":        e.get("timestamp") or e.get("created_at") or "",
+            "agent_id":         action.get("agent_id") or e.get("agent_id") or "",
+            "tool":             action.get("tool") or e.get("action_tool") or "",
+            "operation":        action.get("op") or e.get("action_op") or "",
+            "verdict":          verdict,
+            "reason_code":      decision.get("reason_code") or e.get("decision_reason_code") or "",
+            "explanation":      decision.get("explanation") or e.get("decision_explanation") or "",
+            "regulation":       _VERDICT_REGULATION_MAP.get(verdict, ""),
+            "latency_ms":       e.get("processing_latency_ms"),
+            "anomaly_score":    e.get("anomaly_score"),
+            "intent_id":        e.get("intent_id") or action.get("intent_id") or "",
+            "invariant_checks": inv_summary,
+        })
+
+    return {
+        "report_id":          f"rpt_{uuid.uuid4().hex[:16]}",
+        "generated_at":       datetime.now(UTC).isoformat(),
+        "tenant_id":          tenant_id or "",
+        "period":             {"from": from_ts, "to": to_ts},
+        "summary": {
+            "total_decisions": total,
+            "allowed":         allowed,
+            "blocked":         blocked,
+            "escalated":       escalated,
+            "degraded":        degraded,
+            "compliance_rate": compliance_rate,
+            "avg_latency_ms":  avg_lat,
+            "unique_agents":   len(agents),
+            "verdict_breakdown": verdict_counts,
+        },
+        "regulatory_coverage": sorted(regulations),
+        "decisions":           decision_records,
+    }
+
+
+@router.get("/report/export")
+async def export_compliance_report(
+    request: Request,
+    format: str = Query("json", pattern="^(json|pdf)$"),
+    from_ts: Optional[str] = Query(None),
+    to_ts: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    verdict: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=5000),
+):
+    """Export structured compliance report for bank/enterprise auditors.
+
+    Returns decision log with regulation mappings, INV check translations,
+    and summary statistics. Supports JSON (machine-readable) and PDF formats.
+    """
+    db = get_db()
+    tenant_id = get_request_tenant_id(request)
+
+    events = db.query_audit_events(
+        agent_id=agent_id,
+        verdict=verdict,
+        customer_id=tenant_id,
+        limit=limit,
+    )
+
+    if from_ts or to_ts:
+        def _in_range(ev: dict) -> bool:
+            ts = ev.get("timestamp") or ev.get("created_at") or ""
+            if from_ts and ts < from_ts:
+                return False
+            if to_ts and ts > to_ts:
+                return False
+            return True
+        events = [e for e in events if _in_range(e)]
+
+    report = _build_report_payload(events, tenant_id, from_ts, to_ts)
+    ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+
+    if format == "json":
+        content = json.dumps(report, indent=2, default=str).encode()
+        return StreamingResponse(
+            iter([content]),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=edon_compliance_report_{ts_str}.json"},
+        )
+
+    # PDF format
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.lib.colors import HexColor, white
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="PDF export requires reportlab. Install with: pip install reportlab",
+        )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=20 * mm, rightMargin=20 * mm, topMargin=20 * mm, bottomMargin=20 * mm,
+        title=f"EDON Compliance Report — {tenant_id or 'Unknown'}",
+    )
+
+    styles = getSampleStyleSheet()
+    PRIMARY = HexColor("#6366f1")
+    MUTED   = HexColor("#71717a")
+    RED     = HexColor("#ef4444")
+    GREEN   = HexColor("#22c55e")
+    AMBER   = HexColor("#f59e0b")
+    BLUE    = HexColor("#3b82f6")
+
+    h1    = ParagraphStyle("rh1",  parent=styles["Heading1"], fontSize=20, textColor=PRIMARY, spaceAfter=4)
+    h2    = ParagraphStyle("rh2",  parent=styles["Heading2"], fontSize=13, textColor=PRIMARY, spaceAfter=4, spaceBefore=12)
+    small = ParagraphStyle("rsm",  parent=styles["Normal"],   fontSize=8,  textColor=MUTED,   leading=11)
+
+    VERDICT_COLORS = {
+        "ALLOW":    GREEN,
+        "BLOCK":    RED,
+        "ESCALATE": AMBER,
+        "DEGRADE":  BLUE,
+        "PAUSE":    AMBER,
+        "ERROR":    RED,
+    }
+
+    story = []
+
+    # Header
+    story.append(Paragraph("EDON Governance Platform", small))
+    story.append(Paragraph("Compliance Audit Report", h1))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY, spaceAfter=8))
+
+    meta_rows = [
+        ["Report ID:",      report["report_id"]],
+        ["Tenant:",         report["tenant_id"] or "—"],
+        ["Generated:",      datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")],
+        ["Period:",         f"{from_ts or 'All time'} → {to_ts or 'Now'}"],
+        ["Total records:",  str(report["summary"]["total_decisions"])],
+    ]
+    meta_tbl = Table(meta_rows, colWidths=[45 * mm, 120 * mm])
+    meta_tbl.setStyle(TableStyle([
+        ("FONT",         (0, 0), (0, -1), "Helvetica-Bold", 8),
+        ("FONT",         (1, 0), (1, -1), "Helvetica",      8),
+        ("TEXTCOLOR",    (0, 0), (0, -1), MUTED),
+        ("TEXTCOLOR",    (1, 0), (1, -1), HexColor("#27272a")),
+        ("TOPPADDING",   (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
+    ]))
+    story.append(meta_tbl)
+    story.append(Spacer(1, 10 * mm))
+
+    # Executive summary
+    story.append(Paragraph("Executive Summary", h2))
+    s = report["summary"]
+    summary_rows = [
+        ["Metric",                       "Value"],
+        ["Total Decisions",              str(s["total_decisions"])],
+        ["Allowed",                      str(s["allowed"])],
+        ["Blocked",                      str(s["blocked"])],
+        ["Escalated (Human Review)",     str(s["escalated"])],
+        ["Degraded (Safe Alternative)",  str(s["degraded"])],
+        ["Compliance Rate",              f"{s['compliance_rate'] * 100:.1f}%"],
+        ["Avg Decision Latency",         f"{s['avg_latency_ms']} ms" if s["avg_latency_ms"] else "—"],
+        ["Unique Agents",                str(s["unique_agents"])],
+    ]
+    sum_tbl = Table(summary_rows, colWidths=[90 * mm, 60 * mm])
+    sum_tbl.setStyle(TableStyle([
+        ("BACKGROUND",     (0, 0), (-1, 0), PRIMARY),
+        ("TEXTCOLOR",      (0, 0), (-1, 0), white),
+        ("FONT",           (0, 0), (-1, 0), "Helvetica-Bold", 9),
+        ("FONT",           (0, 1), (-1, -1), "Helvetica",     9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#f4f4f5"), white]),
+        ("GRID",           (0, 0), (-1, -1), 0.5, HexColor("#e4e4e7")),
+        ("TOPPADDING",     (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",    (0, 0), (-1, -1), 8),
+    ]))
+    story.append(sum_tbl)
+    story.append(Spacer(1, 8 * mm))
+
+    # Regulatory coverage
+    story.append(Paragraph("Regulatory Coverage", h2))
+    reg_text = " · ".join(report["regulatory_coverage"]) if report["regulatory_coverage"] else "None mapped in this period."
+    story.append(Paragraph(reg_text, small))
+    story.append(Spacer(1, 8 * mm))
+
+    # Decision log
+    story.append(Paragraph(f"Decision Log ({len(report['decisions'])} records)", h2))
+    decisions = report["decisions"]
+    if decisions:
+        cap = 500
+        header = ["#", "Timestamp", "Agent", "Tool / Op", "Verdict", "Reason Code", "Regulation"]
+        rows = [header]
+        for i, d in enumerate(decisions[:cap], 1):
+            tool_op = f"{d['tool']}.{d['operation']}" if d["tool"] or d["operation"] else "—"
+            ts_fmt  = (d["timestamp"] or "")[:19].replace("T", " ") or "—"
+            rows.append([
+                str(i),
+                ts_fmt,
+                (d["agent_id"] or "—")[:24],
+                tool_op,
+                d["verdict"] or "—",
+                (d["reason_code"] or "—")[:30],
+                (d["regulation"] or "—")[:55],
+            ])
+
+        col_widths = [8 * mm, 32 * mm, 28 * mm, 25 * mm, 18 * mm, 26 * mm, 31 * mm]
+        dec_tbl = Table(rows, colWidths=col_widths, repeatRows=1)
+        dec_tbl.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0), PRIMARY),
+            ("TEXTCOLOR",      (0, 0), (-1, 0), white),
+            ("FONT",           (0, 0), (-1, 0), "Helvetica-Bold", 7),
+            ("FONT",           (0, 1), (-1, -1), "Helvetica",     7),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#f4f4f5"), white]),
+            ("GRID",           (0, 0), (-1, -1), 0.3, HexColor("#e4e4e7")),
+            ("TOPPADDING",     (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 3),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 4),
+            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
+        ]))
+        for i, d in enumerate(decisions[:cap], 1):
+            color = VERDICT_COLORS.get(d["verdict"], MUTED)
+            dec_tbl.setStyle(TableStyle([
+                ("TEXTCOLOR", (4, i), (4, i), color),
+                ("FONT",      (4, i), (4, i), "Helvetica-Bold", 7),
+            ]))
+        story.append(dec_tbl)
+        if len(decisions) > cap:
+            story.append(Spacer(1, 3 * mm))
+            story.append(Paragraph(
+                f"Note: PDF capped at {cap} records. Download JSON for all {len(decisions)} records.", small
+            ))
+    else:
+        story.append(Paragraph("No decisions found for this period.", small))
+
+    story.append(Spacer(1, 10 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#e4e4e7")))
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph(
+        f"Generated by EDON Governance Platform · {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+        f"Report ID: {report['report_id']} · "
+        f"All decisions are cryptographically chained and tamper-evident. "
+        f"For chain proof, download the evidence package from /audit/evidence-package.",
+        small,
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+
+    filename = f"edon_compliance_report_{tenant_id or 'unknown'}_{ts_str}.pdf"
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ── Human Review Queue ─────────────────────────────────────────────────────────
 
 router_review = APIRouter(prefix="/review", tags=["human-review"])

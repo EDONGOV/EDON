@@ -3,13 +3,17 @@
 This module implements the PolicyEngine class, which evaluates actions against
 policy rules and returns decisions. It's inspired by the MAG authority engine
 but adapted for the Python gateway context.
+
+PolicyConfig (formerly in policies.py) and all behavioural guards
+(rate-limiting, loop detection, work-hours, dangerous-command, external-sharing)
+now live here. policies.py is a thin backward-compat re-export.
 """
 
 import os
 import logging
 import concurrent.futures
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from datetime import datetime, UTC
 from collections import OrderedDict
 
@@ -29,6 +33,70 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── PolicyConfig ──────────────────────────────────────────────────────────────
+
+@dataclass
+class PolicyConfig:
+    """Behavioural-guard configuration (rate limiting, loop detection, work hours, etc.)."""
+
+    max_actions_per_minute: int = 30
+    loop_detection_window_seconds: int = 60
+    loop_detection_threshold: int = 5
+
+    # Work hours (24-hour, local server time by default)
+    work_hours_start: int = 8
+    work_hours_end: int = 18
+
+    # Risk thresholds
+    auto_allow_risk_levels: Optional[Set[str]] = None
+    escalate_risk_levels: Optional[Set[str]] = None
+
+    # Shell commands that are always dangerous (substring match as fast path)
+    dangerous_shell_commands: Optional[Set[str]] = None
+
+    # Op-name patterns that indicate external data sharing
+    external_sharing_patterns: Optional[List[str]] = None
+
+    def __post_init__(self):
+        try:
+            if os.getenv("EDON_MAX_ACTIONS_PER_MINUTE"):
+                self.max_actions_per_minute = int(os.getenv("EDON_MAX_ACTIONS_PER_MINUTE") or 30)
+            if os.getenv("EDON_LOOP_DETECTION_WINDOW_SECONDS"):
+                self.loop_detection_window_seconds = int(os.getenv("EDON_LOOP_DETECTION_WINDOW_SECONDS") or 60)
+            if os.getenv("EDON_LOOP_DETECTION_THRESHOLD"):
+                self.loop_detection_threshold = int(os.getenv("EDON_LOOP_DETECTION_THRESHOLD") or 5)
+        except ValueError:
+            pass
+
+        if self.auto_allow_risk_levels is None:
+            self.auto_allow_risk_levels = {"low"}
+        if self.escalate_risk_levels is None:
+            self.escalate_risk_levels = {"high", "critical"}
+        if self.dangerous_shell_commands is None:
+            self.dangerous_shell_commands = {
+                "rm -rf",
+                "format",
+                "del /f /s /q",
+                "shutdown",
+                "reboot",
+                "mkfs",
+                "dd if=",
+                "chmod 777 /",
+                ":(){:|:&};:",  # fork bomb
+                "curl | bash",
+                "wget | bash",
+                "wget -O- | sh",
+            }
+        if self.external_sharing_patterns is None:
+            self.external_sharing_patterns = [
+                "export",
+                "upload",
+                "share",
+                "send_to",
+                "external",
+            ]
 
 # Fail-safe configuration (legacy alias kept for backward compat)
 # When policy engine encounters an error, it can either:
@@ -101,25 +169,92 @@ class PolicyEngine:
         # decision.decision == Decision.BLOCK
     """
 
-    def __init__(self, policy_sets: Optional[List[PolicySet]] = None, rules: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        policy_sets: Optional[List[PolicySet]] = None,
+        rules: Optional[List[Dict[str, Any]]] = None,
+        config: Optional["PolicyConfig"] = None,
+        rate_store=None,
+    ):
         """Initialize policy engine.
 
         Args:
             policy_sets: Optional list of PolicySet objects to load.
-            rules: Optional list of plain-dict rules for simple evaluation
-                   (used by lightweight callers that don't need full PolicySet).
+            rules: Optional list of plain-dict rules for simple evaluation.
+            config: Behavioural-guard configuration (rate limiting, loop detection, etc.).
+            rate_store: Optional RateStore for Redis-backed rate/loop state.
+                        Falls back to in-memory list when None.
         """
         self.policy_sets: Dict[str, PolicySet] = {}
         self.rules_cache: OrderedDict[str, PolicyRule] = OrderedDict()
-        self._cache_size = 1000  # Max cached rules
-        # Simple dict-based rules list (for lightweight evaluate/evaluate_impl path)
-        self.rules: List[Dict[str, Any]] = list(rules) if rules else []
+        self._cache_size = 1000
+
+        # Behavioural guard state
+        self.config: PolicyConfig = config or PolicyConfig()
+        # Legacy in-memory history — used only when rate_store is not provided
+        self._action_history: List[tuple] = []  # (timestamp_float, tool, op, params_hash)
+
+        # Redis-backed state (injected; falls back to None → in-memory path)
+        self._rate_store = rate_store  # RateStore | None
+
+        # Migrate plain-dict rules into the unified PolicyRule cache so there is
+        # only one evaluation path.  Callers that pass raw dicts still work.
+        if rules:
+            for idx, r in enumerate(rules):
+                self._ingest_dict_rule(r, idx)
 
         if policy_sets:
             for policy_set in policy_sets:
                 self.add_policy_set(policy_set)
 
         logger.info(f"PolicyEngine initialized with {len(self.rules_cache)} rules")
+
+    def _ingest_dict_rule(self, r: Dict[str, Any], idx: int) -> None:
+        """Convert a plain-dict rule into a PolicyRule and add it to the cache.
+
+        Supports the same rule types as the old _evaluate_simple_rules path:
+        always, action_type, threshold, range.
+        """
+        rule_id = str(r.get("rule_id") or r.get("id") or f"dict_rule_{idx}")
+        name = str(r.get("name") or rule_id)
+        verdict = str(r.get("verdict", "BLOCK")).upper()
+        action_map = {
+            "BLOCK": PolicyAction.BLOCK,
+            "ALLOW": PolicyAction.ALLOW,
+            "HUMAN_REQUIRED": PolicyAction.REQUIRE_APPROVAL,
+            "DEGRADE": PolicyAction.DEGRADE,
+        }
+        policy_action = action_map.get(verdict, PolicyAction.BLOCK)
+        rule_type_str = str(r.get("type", "threshold")).lower()
+        type_map = {
+            "threshold": RuleType.THRESHOLD,
+            "range": RuleType.RANGE,
+            "action_type": RuleType.EQUALS,
+            "always": RuleType.EQUALS,
+        }
+        rule_type = type_map.get(rule_type_str, RuleType.THRESHOLD)
+
+        rule = PolicyRule(
+            rule_id=rule_id,
+            name=name,
+            rule_type=rule_type,
+            field=str(r.get("field", "action")),
+            threshold=r.get("threshold"),
+            range_min=r.get("range_min"),
+            range_max=r.get("range_max"),
+            value=r.get("value") or r.get("allowed_actions"),
+            action=policy_action,
+            priority=int(r.get("priority", 50)),
+            enabled=bool(r.get("enabled", True)),
+        )
+        # "always" type: we mark via a special field value so _evaluate_rule handles it
+        if rule_type_str == "always":
+            rule.field = "_always"
+            rule.value = True
+        elif rule_type_str == "action_type":
+            rule.field = "action"
+            rule.rule_type = RuleType.CONTAINS
+        self._add_to_cache(rule)
 
     def add_policy_set(self, policy_set: PolicySet):
         """Add a policy set to the engine.
@@ -235,21 +370,10 @@ class PolicyEngine:
         context: Dict[str, Any],
         intent: Optional[Dict[str, Any]] = None,
     ) -> "PolicyDecision":
-        """Internal evaluation implementation.
-
-        Supports two evaluation paths:
-        1. Simple dict-based rules (self.rules list) — lightweight path.
-        2. Full PolicyRule/PolicySet cache (self.rules_cache) — full path.
-        """
-        # ── Simple dict-based rules path ─────────────────────────────────
-        if self.rules is not None and len(self.rules) == 0 and not self.rules_cache:
+        """Evaluate action against all rules in the unified PolicyRule cache."""
+        if not self.rules_cache:
             return PolicyDecision(verdict="ALLOW", reason="No policy rules configured")
 
-        if self.rules:
-            return self._evaluate_simple_rules(action, context, intent)
-
-        # ── Full PolicyRule/PolicySet cache path ──────────────────────────
-        # Merge context and intent for field lookup
         eval_context = {
             "action": action,
             "context": context,
@@ -257,7 +381,6 @@ class PolicyEngine:
         }
 
         matched_rules: List[str] = []
-        constraints: List[Dict[str, Any]] = []
 
         # Evaluate rules in priority order (highest first)
         for rule_id, rule in self.rules_cache.items():
@@ -300,94 +423,6 @@ class PolicyEngine:
         # No rules matched — default allow
         return PolicyDecision(verdict="ALLOW", reason="No matching policy rules - default allow")
 
-    def _evaluate_simple_rules(
-        self,
-        action: str,
-        context: Dict[str, Any],
-        intent: Optional[Dict[str, Any]] = None,
-    ) -> "PolicyDecision":
-        """Evaluate action against simple dict-based rules (self.rules list).
-
-        Supported rule types: threshold, range, action_type, always.
-        """
-        for rule in self.rules:
-            rule_type = rule.get("type", "")
-            rule_id = rule.get("rule_id") or rule.get("id")
-
-            # always rules
-            if rule_type == "always":
-                verdict = rule.get("verdict", "ALLOW").upper()
-                return PolicyDecision(
-                    verdict=verdict,
-                    reason=rule.get("reason", f"Always rule: {verdict}"),
-                    rule_id=rule_id,
-                )
-
-            # action_type rules
-            if rule_type == "action_type":
-                allowed = rule.get("allowed_actions", [])
-                if action not in allowed:
-                    verdict = rule.get("verdict", "BLOCK").upper()
-                    return PolicyDecision(
-                        verdict=verdict,
-                        reason=rule.get("reason", f"Action '{action}' not in allowed list"),
-                        rule_id=rule_id,
-                    )
-
-            # threshold rules
-            if rule_type == "threshold":
-                field_path = rule.get("field", "")
-                threshold = rule.get("threshold")
-                operator = rule.get("operator", "greater_than")
-                value = self._get_field_value(field_path, {"action": action, "context": context, "intent": intent or {}})
-                if value is not None and threshold is not None:
-                    try:
-                        numeric_value = float(value)
-                        numeric_threshold = float(threshold)
-                        triggered = False
-                        if operator == "greater_than" and numeric_value > numeric_threshold:
-                            triggered = True
-                        elif operator == "less_than" and numeric_value < numeric_threshold:
-                            triggered = True
-                        elif operator == "greater_equal" and numeric_value >= numeric_threshold:
-                            triggered = True
-                        elif operator == "less_equal" and numeric_value <= numeric_threshold:
-                            triggered = True
-                        if triggered:
-                            verdict = rule.get("verdict", "BLOCK").upper()
-                            return PolicyDecision(
-                                verdict=verdict,
-                                reason=rule.get("reason", f"Threshold exceeded: {field_path}={value}"),
-                                rule_id=rule_id,
-                            )
-                    except (ValueError, TypeError):
-                        pass
-
-            # range rules
-            if rule_type == "range":
-                field_path = rule.get("field", "")
-                range_min = rule.get("range_min")
-                range_max = rule.get("range_max")
-                value = self._get_field_value(field_path, {"action": action, "context": context, "intent": intent or {}})
-                if value is not None:
-                    try:
-                        numeric_value = float(value)
-                        outside = False
-                        if range_min is not None and numeric_value < float(range_min):
-                            outside = True
-                        if range_max is not None and numeric_value > float(range_max):
-                            outside = True
-                        if outside:
-                            verdict = rule.get("verdict", "BLOCK").upper()
-                            return PolicyDecision(
-                                verdict=verdict,
-                                reason=rule.get("reason", f"Value out of range: {field_path}={value}"),
-                                rule_id=rule_id,
-                            )
-                    except (ValueError, TypeError):
-                        pass
-
-        return PolicyDecision(verdict="ALLOW", reason="No policy rules matched")
 
     def _evaluate_rule(
         self,
@@ -556,6 +591,103 @@ class PolicyEngine:
                 verdict="BLOCK",
                 reason=f"Fail-safe: {error_msg}",
             )
+
+    # ── Behavioural guards (formerly in policies.py) ─────────────────────────
+
+    def is_work_hours(self, timestamp: datetime) -> bool:
+        """Return True if *timestamp* falls within configured work hours."""
+        hour = timestamp.hour
+        return self.config.work_hours_start <= hour < self.config.work_hours_end
+
+    def is_dangerous_command(self, command: str) -> bool:
+        """Return True if *command* matches a known-dangerous substring pattern."""
+        command_lower = command.lower()
+        return any(
+            pattern in command_lower
+            for pattern in (self.config.dangerous_shell_commands or set())
+        )
+
+    def is_external_sharing(self, op: str, params: dict) -> bool:
+        """Return True if *op* or *params* suggest external data egress."""
+        op_lower = op.lower()
+        patterns = self.config.external_sharing_patterns or []
+        if any(p in op_lower for p in patterns):
+            return True
+        params_str = str(params).lower()
+        return any(p in params_str for p in patterns)
+
+    def record_action(
+        self,
+        action,
+        current_time: datetime,
+        tenant_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> None:
+        """Record an action for rate limiting and loop detection."""
+        params_hash = str(sorted(action.params.items()))
+        if self._rate_store is not None:
+            from ..state.rate_store import RateStore
+            rate_key = RateStore.rate_key(tenant_id, agent_id)
+            loop_key = RateStore.loop_key(
+                tenant_id, agent_id,
+                action.tool.value if hasattr(action.tool, "value") else str(action.tool),
+                action.op,
+                params_hash,
+            )
+            self._rate_store.add_and_count(rate_key, 60.0)
+            self._rate_store.add_and_count(loop_key, float(self.config.loop_detection_window_seconds))
+        else:
+            ts = current_time.timestamp()
+            self._action_history.append((ts, action.tool, action.op, params_hash))
+            cutoff = ts - 3600
+            self._action_history = [e for e in self._action_history if e[0] >= cutoff]
+
+    def check_rate_limit(
+        self,
+        current_time: datetime,
+        tenant_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> bool:
+        """Return True if the rate limit has been exceeded."""
+        if self._rate_store is not None:
+            from ..state.rate_store import RateStore
+            key = RateStore.rate_key(tenant_id, agent_id)
+            count = self._rate_store.count_in_window(key, 60.0)
+            return count >= self.config.max_actions_per_minute
+        cutoff = current_time.timestamp() - 60
+        recent = [e for e in self._action_history if e[0] >= cutoff]
+        return len(recent) >= self.config.max_actions_per_minute
+
+    def detect_loop(
+        self,
+        tool,
+        op: str,
+        params_hash: str,
+        current_time: datetime,
+        tenant_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> bool:
+        """Return True if the same (tool, op, params) has been seen too many times recently."""
+        if self._rate_store is not None:
+            from ..state.rate_store import RateStore
+            key = RateStore.loop_key(
+                tenant_id, agent_id,
+                tool.value if hasattr(tool, "value") else str(tool),
+                op,
+                params_hash,
+            )
+            count = self._rate_store.count_in_window(key, float(self.config.loop_detection_window_seconds))
+            return count >= self.config.loop_detection_threshold
+        window_start = current_time.timestamp() - self.config.loop_detection_window_seconds
+        tool_val = tool.value if hasattr(tool, "value") else str(tool)
+        matching = [
+            e for e in self._action_history
+            if e[0] >= window_start
+            and (e[1].value if hasattr(e[1], "value") else str(e[1])) == tool_val
+            and e[2] == op
+            and e[3] == params_hash
+        ]
+        return len(matching) >= self.config.loop_detection_threshold
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get engine statistics for monitoring.

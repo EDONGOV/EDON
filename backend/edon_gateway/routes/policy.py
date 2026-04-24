@@ -14,6 +14,29 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/policy", tags=["policy"])
 
+router_signing = APIRouter(prefix="/v1", tags=["governance"])
+
+
+@router_signing.get("/pubkey", summary="Gateway Ed25519 public key for decision verification")
+async def get_pubkey():
+    """Return the gateway's Ed25519 public key so customers can verify decision signatures.
+
+    Each Decision returned by POST /v1/action includes ``meta.sig`` (base64url Ed25519
+    signature) and ``meta.kid`` (first 16 hex chars of the public key). Verify offline::
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        import base64, json
+        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))
+        pub.verify(base64.urlsafe_b64decode(sig + "=="), canonical_payload)
+    """
+    from ..security.signing import get_public_key_hex, get_key_id
+    return {
+        "public_key_hex": get_public_key_hex(),
+        "key_id": get_key_id(),
+        "algorithm": "Ed25519",
+        "usage": "Verify decision signatures: meta.sig is base64url Ed25519 over canonical JSON of decision fields (excluding meta, invariant_results, policy_snapshot_hash).",
+    }
+
 
 # ── Policy Pack routes (/policy-packs) ─────────────────────────────────────────
 
@@ -125,6 +148,57 @@ COMPLIANCE_TEMPLATES = [
             "monitoring",
         ],
     },
+    {
+        "id": "joint_commission",
+        "name": "Joint Commission",
+        "description": "Joint Commission AI governance standards for accredited hospitals",
+        "regulation": "Joint Commission",
+        "rules": [
+            "clinical_decision_support",
+            "patient_safety_escalation",
+            "medication_order_review",
+            "diagnostic_output_validation",
+            "care_plan_approval",
+        ],
+    },
+    {
+        "id": "clinical_governance",
+        "name": "Clinical AI Governance",
+        "description": "PHI minimization and clinical AI guardrails (HIPAA §164.312)",
+        "regulation": "Clinical",
+        "rules": [
+            "phi_minimization",
+            "clinical_scope_enforcement",
+            "patient_consent_check",
+            "clinical_alert_escalation",
+        ],
+    },
+    {
+        "id": "bank_model_risk",
+        "name": "SR 11-7 Model Risk",
+        "description": "Federal Reserve SR 11-7 model risk management controls for AI/ML in banking",
+        "regulation": "SR 11-7",
+        "rules": [
+            "model_validation_gate",
+            "model_output_review",
+            "model_inventory_logging",
+            "challenger_model_escalation",
+            "model_performance_alert",
+        ],
+    },
+    {
+        "id": "bank_aml_compliance",
+        "name": "AML / BSA Compliance",
+        "description": "AI governance for AML, BSA, and FFIEC audit requirements",
+        "regulation": "FFIEC / BSA",
+        "rules": [
+            "aml_alert_escalation",
+            "sar_filing_review",
+            "customer_data_protection",
+            "ffiec_audit_trail",
+            "fraud_decision_review",
+        ],
+    },
 ]
 
 # Map rule names in templates to policy rule definitions
@@ -213,13 +287,155 @@ _TEMPLATE_RULE_DEFS = {
         "condition_tags": ["monitoring", "telemetry"],
         "priority": 850,
     },
+    "clinical_decision_support": {
+        "name": "Clinical Decision Support Oversight",
+        "description": "Escalate AI-generated clinical recommendations for physician review before action",
+        "action": "ESCALATE",
+        "condition_tags": ["clinical", "diagnosis", "treatment"],
+        "priority": 980,
+    },
+    "patient_safety_escalation": {
+        "name": "Patient Safety Escalation",
+        "description": "Block AI actions that could directly affect patient safety without human sign-off",
+        "action": "BLOCK",
+        "condition_tags": ["patient_safety", "critical_alert"],
+        "priority": 990,
+    },
+    "medication_order_review": {
+        "name": "Medication Order Review",
+        "description": "Escalate all medication-related AI actions for pharmacist or physician review",
+        "action": "ESCALATE",
+        "condition_tags": ["medication", "prescription", "drug"],
+        "priority": 970,
+    },
+    "diagnostic_output_validation": {
+        "name": "Diagnostic Output Validation",
+        "description": "Escalate AI diagnostic outputs before they are surfaced to clinical staff",
+        "action": "ESCALATE",
+        "condition_tags": ["diagnostic", "lab_result", "imaging"],
+        "priority": 960,
+    },
+    "care_plan_approval": {
+        "name": "Care Plan Approval Gate",
+        "description": "Block AI-generated care plan modifications without attending physician approval",
+        "action": "BLOCK",
+        "condition_tags": ["care_plan", "discharge", "treatment_plan"],
+        "priority": 975,
+    },
+    "phi_minimization": {
+        "name": "PHI Minimization",
+        "description": "Block AI outputs containing more PHI than necessary for the stated clinical purpose",
+        "action": "BLOCK",
+        "condition_tags": ["phi", "pii", "patient_data"],
+        "priority": 940,
+    },
+    "clinical_scope_enforcement": {
+        "name": "Clinical Scope Enforcement",
+        "description": "Block AI actions that exceed the agent's defined clinical scope or role",
+        "action": "BLOCK",
+        "condition_tags": ["scope_violation", "unauthorized_clinical"],
+        "priority": 930,
+    },
+    "patient_consent_check": {
+        "name": "Patient Consent Verification",
+        "description": "Escalate AI actions involving patient data where consent status is unknown",
+        "action": "ESCALATE",
+        "condition_tags": ["consent", "authorization"],
+        "priority": 920,
+    },
+    "clinical_alert_escalation": {
+        "name": "Clinical Alert Escalation",
+        "description": "Escalate AI-generated clinical alerts to on-call staff within SLA",
+        "action": "ESCALATE",
+        "condition_tags": ["clinical_alert", "sepsis", "deterioration"],
+        "priority": 985,
+    },
+    "model_validation_gate": {
+        "name": "Model Validation Gate",
+        "description": "Block AI model outputs that have not passed SR 11-7 independent validation",
+        "action": "BLOCK",
+        "condition_tags": ["unvalidated_model", "model_output"],
+        "priority": 980,
+    },
+    "model_output_review": {
+        "name": "Model Output Review",
+        "description": "Escalate high-impact AI model decisions for senior risk officer review",
+        "action": "ESCALATE",
+        "condition_tags": ["credit_decision", "risk_score", "model_recommendation"],
+        "priority": 970,
+    },
+    "model_inventory_logging": {
+        "name": "Model Inventory Logging",
+        "description": "Escalate any AI action that modifies model configuration or parameters",
+        "action": "ESCALATE",
+        "condition_tags": ["model_config", "model_update", "parameter_change"],
+        "priority": 900,
+    },
+    "challenger_model_escalation": {
+        "name": "Challenger Model Escalation",
+        "description": "Escalate when challenger model output diverges significantly from champion",
+        "action": "ESCALATE",
+        "condition_tags": ["challenger_model", "model_divergence"],
+        "priority": 940,
+    },
+    "model_performance_alert": {
+        "name": "Model Performance Alert",
+        "description": "Escalate when AI model performance degrades below defined threshold",
+        "action": "ESCALATE",
+        "condition_tags": ["model_drift", "performance_degradation"],
+        "priority": 950,
+    },
+    "aml_alert_escalation": {
+        "name": "AML Alert Escalation",
+        "description": "Escalate AI-generated AML alerts to BSA officer before filing or dismissal",
+        "action": "ESCALATE",
+        "condition_tags": ["aml_alert", "suspicious_activity", "transaction_monitoring"],
+        "priority": 990,
+    },
+    "sar_filing_review": {
+        "name": "SAR Filing Review",
+        "description": "Block AI-initiated SAR filing or suppression without compliance officer approval",
+        "action": "BLOCK",
+        "condition_tags": ["sar", "suspicious_activity_report"],
+        "priority": 995,
+    },
+    "customer_data_protection": {
+        "name": "Customer Data Protection (GLBA)",
+        "description": "Block AI access to non-public customer financial data without explicit authorization",
+        "action": "BLOCK",
+        "condition_tags": ["nppi", "customer_data", "financial_record"],
+        "priority": 960,
+    },
+    "ffiec_audit_trail": {
+        "name": "FFIEC Audit Trail Integrity",
+        "description": "Escalate any AI action that modifies or suppresses audit log entries",
+        "action": "ESCALATE",
+        "condition_tags": ["audit_log", "log_suppression", "ffiec"],
+        "priority": 980,
+    },
+    "fraud_decision_review": {
+        "name": "Fraud Decision Review",
+        "description": "Escalate AI fraud decisions above risk threshold for human confirmation",
+        "action": "ESCALATE",
+        "condition_tags": ["fraud_flag", "fraud_score", "dispute"],
+        "priority": 975,
+    },
 }
 
 
 @router.get("/templates")
 async def list_policy_templates():
-    """List all available compliance policy template packs (HIPAA, HITRUST, SOC 2)."""
-    return COMPLIANCE_TEMPLATES
+    """List all available compliance policy template packs."""
+    return [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "description": t.get("description"),
+            "regulation": t.get("regulation"),
+            "rule_count": len(t["rules"]),
+        }
+        for t in COMPLIANCE_TEMPLATES
+    ]
 
 
 @router.post("/templates/{template_id}/apply", status_code=201)

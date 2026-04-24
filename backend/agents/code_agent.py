@@ -43,6 +43,8 @@ from typing import Any
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "EDONGOV/EDON")
@@ -242,6 +244,16 @@ def apply_change(change: dict[str, Any]) -> tuple[bool, str]:
         else:
             return False, f"Unknown change_type: {change_type}"
 
+        decision = gov_check(
+            agent_id="code_agent",
+            action_type="file.write",
+            parameters={"path": file_path, "change_type": change_type},
+            stated_intent="apply approved code improvement from product/agent signals",
+            context={"pr_title": change.get("pr_title", ""), "risk_level": change.get("risk_level", "")},
+        )
+        if not decision:
+            return False, f"Governance blocked file write to {file_path}: {decision.reason}"
+
         full_path.write_text(updated, encoding="utf-8")
         return True, f"Applied {change_type} to {file_path}"
 
@@ -336,6 +348,18 @@ def create_pr(change: dict[str, Any], test_output: str, test_passed: bool) -> st
         ).raise_for_status()
     except Exception as exc:
         print(f"Failed to push file: {exc}")
+        return None
+
+    # Governance check before creating a PR
+    pr_decision = gov_check(
+        agent_id="code_agent",
+        action_type="github.pr_create",
+        parameters={"repo": GITHUB_REPO, "branch": branch, "base": "master", "file": file_path},
+        stated_intent="open PR for human review of auto-generated code improvement",
+        context={"risk_level": change.get("risk_level", ""), "test_passed": test_passed},
+    )
+    if not pr_decision:
+        print(f"[self_govern] PR creation blocked: {pr_decision.reason}")
         return None
 
     # Create PR

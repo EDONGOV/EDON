@@ -53,7 +53,6 @@ AGENTS_DIR = Path(__file__).resolve().parents[3] / "agents"
 # Agents that can be triggered via /run
 TRIGGERABLE_AGENTS = {
     "qa": "nightly_qa.yml",
-    "ops": "ops_agent.yml",
     "outbound": "outbound_agent.yml",
     "security": "security_monitor.yml",
     "brief": "chief_of_staff.yml",
@@ -346,6 +345,88 @@ def handle_run(chat_id: int, agent_name: str) -> None:
         send_message(chat_id, f"❌ Error: {exc}")
 
 
+def handle_jarvis(chat_id: int, question: str) -> None:
+    """Ask Jarvis a natural language question. Uses live EDON data."""
+    if not question.strip():
+        send_message(chat_id, "Usage: `/jarvis <question>`\nExample: `/jarvis how many clients had blocks today?`")
+        return
+
+    send_message(chat_id, "🔍 Checking live data…")
+
+    gateway_url = os.getenv("EDON_GATEWAY_URL", "http://localhost:8080")
+    bootstrap_secret = os.getenv("EDON_BOOTSTRAP_SECRET", "")
+
+    try:
+        r = http_requests.post(
+            f"{gateway_url}/v1/jarvis/ask",
+            headers={
+                "Content-Type": "application/json",
+                "X-Bootstrap-Secret": bootstrap_secret,
+            },
+            json={"question": question},
+            timeout=60,
+        )
+        r.raise_for_status()
+        answer = r.json().get("answer", "No answer returned.")
+        send_message(chat_id, answer)
+    except Exception as exc:
+        send_message(chat_id, f"❌ Jarvis error: {exc}")
+
+
+def handle_voice_message(chat_id: int, file_id: str) -> None:
+    """Download voice message, transcribe via Whisper, pass to Jarvis."""
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if not openai_key:
+        send_message(chat_id, "🎙 Voice received but OPENAI_API_KEY not set — can't transcribe.\nType your question instead.")
+        return
+
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    try:
+        # Get file path from Telegram
+        r = http_requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+            params={"file_id": file_id},
+            timeout=10,
+        )
+        r.raise_for_status()
+        file_path = r.json()["result"]["file_path"]
+
+        # Download the OGG/voice file
+        audio_r = http_requests.get(
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
+            timeout=30,
+        )
+        audio_r.raise_for_status()
+        audio_bytes = audio_r.content
+
+        # Transcribe via Whisper
+        send_message(chat_id, "🎙 Transcribing…")
+        files = {"file": ("voice.ogg", audio_bytes, "audio/ogg")}
+        data  = {"model": "whisper-1"}
+        whisper_r = http_requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {openai_key}"},
+            files=files,
+            data=data,
+            timeout=30,
+        )
+        whisper_r.raise_for_status()
+        transcript = whisper_r.json().get("text", "").strip()
+
+        if not transcript:
+            send_message(chat_id, "❌ Couldn't transcribe — audio may be too short or unclear.")
+            return
+
+        send_message(chat_id, f"🎙 _{transcript}_")
+        handle_jarvis(chat_id, transcript)
+
+    except Exception as exc:
+        logger.error("Voice message handling failed: %s", exc)
+        send_message(chat_id, f"❌ Voice processing failed: {exc}")
+
+
 def handle_help(chat_id: int) -> None:
     msg = """🤖 *EDON Command Centre*
 
@@ -357,6 +438,10 @@ def handle_help(chat_id: int) -> None:
 /decisions — last 10 governance decisions
 /compliance — compliance health status
 /status — all agent last run times
+
+*Jarvis (natural language)*
+/jarvis <question> — ask anything about EDON
+🎙 Send a voice message — auto-transcribed, passed to Jarvis
 
 *Trigger agents*
 /run brief — generate fresh daily brief
@@ -398,7 +483,18 @@ async def telegram_webhook(request: Request) -> dict:
     chat_id = message.get("chat", {}).get("id")
     text = (message.get("text") or "").strip()
 
-    if not chat_id or not text:
+    if not chat_id:
+        return {"ok": True}
+
+    # Voice message — transcribe and pass to Jarvis
+    voice = message.get("voice") or message.get("audio")
+    if voice and not text:
+        if not is_owner(chat_id):
+            return {"ok": True}
+        handle_voice_message(chat_id, voice["file_id"])
+        return {"ok": True}
+
+    if not text:
         return {"ok": True}
 
     # Owner-only
@@ -433,10 +529,14 @@ async def telegram_webhook(request: Request) -> dict:
                 handle_run(chat_id, agent)
             else:
                 send_message(chat_id, "Usage: `/run <agent_name>`\nAvailable: " + ", ".join(TRIGGERABLE_AGENTS.keys()))
+        elif cmd == "jarvis":
+            question = " ".join(args) if args else ""
+            handle_jarvis(chat_id, question)
         elif cmd in ("help", "start"):
             handle_help(chat_id)
         else:
-            send_message(chat_id, f"Unknown command: `{cmd}`\nType /help for available commands.")
+            # Unknown command — send to Jarvis as a free-form question
+            handle_jarvis(chat_id, text)
     except Exception as exc:
         logger.exception("Error handling Telegram command %s: %s", cmd, exc)
         send_message(chat_id, f"❌ Error processing `/{cmd}`: {exc}")

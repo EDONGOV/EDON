@@ -1488,6 +1488,23 @@ async function transcribeAudio(blob: Blob, openaiKey: string): Promise<string> {
   return data.text
 }
 
+// Ask Jarvis via EDON backend (live data tools, no API key in browser)
+async function askJarvis(
+  question: string,
+  secret: string,
+  conversation: Array<{role: string; content: unknown}> = [],
+): Promise<string> {
+  const res = await fetch(`${GATEWAY}/v1/jarvis/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Bootstrap-Secret': secret },
+    body: JSON.stringify({ question, conversation }),
+  })
+  if (!res.ok) throw new Error(`Jarvis ${res.status}: ${await res.text()}`)
+  const data = await res.json() as { answer: string }
+  return data.answer
+}
+
+// Fallback: direct Claude call when no bootstrap secret (dev / no server key)
 async function chiefOfStaffReason(transcript: string, anthropicKey: string): Promise<string> {
   const system = `You are the Chief of Staff AI for EDON, an AI governance startup. The founder is talking to you directly.
 You manage a team of agents through Multica: ${AGENTS.map(a => `${a.name} (id: ${a.id})`).join(', ')}.
@@ -1535,9 +1552,12 @@ function CommandTab() {
   const [openaiKey, setOpenaiKey]       = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
   const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
   const [multicaToken, setMulticaToken] = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
+  const [savedSecret]                   = useState(() => localStorage.getItem(SECRET_KEY) || '')
   const [messages, setMessages]         = useState<Message[]>([
-    { id: 'welcome', role: 'assistant', text: "Chief of Staff online. Type a task and pick an agent — I'll dispatch it immediately.", ts: new Date() }
+    { id: 'welcome', role: 'assistant', text: "Jarvis online. Ask me anything about EDON — client health, governance stats, open findings, healing status. Or say 'run <agent>' to dispatch a task.", ts: new Date() }
   ])
+  const conversationRef = useRef<Array<{role: string; content: unknown}>>([])
+
   const [recording, setRecording]       = useState(false)
   const [processing, setProcessing]     = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
@@ -1572,8 +1592,29 @@ function CommandTab() {
     addMessage('user', text)
     setProcessing(true)
     try {
-      // If Anthropic key available, use Claude to reason first (enhanced mode)
-      if (anthropicKey) {
+      // Jarvis mode — backend handles Claude + live EDON data tools
+      if (savedSecret) {
+        const reply = await askJarvis(text, savedSecret, conversationRef.current)
+        addMessage('assistant', reply)
+        // Track conversation for multi-turn context
+        conversationRef.current = [
+          ...conversationRef.current,
+          { role: 'user', content: text },
+          { role: 'assistant', content: [{ type: 'text', text: reply }] },
+        ].slice(-20) // keep last 10 turns
+        // Check if Claude is also dispatching an agent task
+        const match = reply.match(/\{[\s\S]*?\}/)
+        if (match) {
+          try {
+            const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
+            if (action.action === 'multica_issue' && action.agent) {
+              await dispatchToMultica(action.task || text, action.agent)
+            }
+          } catch { /* not a dispatch block */ }
+        }
+        if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
+      } else if (anthropicKey) {
+        // Fallback: direct Claude (no live data, but works without bootstrap secret)
         const reply = await chiefOfStaffReason(text, anthropicKey)
         addMessage('assistant', reply)
         const match = reply.match(/\{[\s\S]*?\}/)
@@ -1583,7 +1624,7 @@ function CommandTab() {
             if (action.action === 'multica_issue' && action.agent) {
               await dispatchToMultica(action.task || text, action.agent)
             }
-          } catch { /* parse failed — just show reply */ }
+          } catch { /* parse failed */ }
         }
         if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
       } else {
@@ -1646,8 +1687,11 @@ function CommandTab() {
             <Bot size={18} className="text-emerald-400" />
           </div>
           <div>
-            <h2 className="font-semibold text-sm">Chief of Staff</h2>
-            <p className="text-[10px] text-muted-foreground">{anthropicKey ? 'Claude · Enhanced mode' : 'Direct mode'} · Multica dispatch</p>
+            <h2 className="font-semibold text-sm">Jarvis</h2>
+            <p className="text-[10px] text-muted-foreground">
+              {savedSecret ? 'Live data mode · backend Claude' : anthropicKey ? 'Direct Claude · no live data' : 'Direct dispatch mode'}
+              {' · Multica'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">

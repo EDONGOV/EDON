@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -120,4 +120,146 @@ async def get_model_summary(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Authentication required")
     engine = get_fleet_learning_engine()
     return engine.model_summary(tenant_id=tenant_id)
+
+
+@router.get("/precision")
+async def get_precision_stats(request: Request) -> Dict[str, Any]:
+    """Return per-tool.op block precision (what fraction of blocks were correct).
+
+    Requires operators to submit 'false_positive' labels via POST /learning/feedback
+    when a block was wrong. Without those corrections the precision is unknown (1.0).
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    engine = get_fleet_learning_engine()
+    stats = engine.precision_stats(tenant_id=tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "tool_ops": stats,
+        "overall_false_positive_count": sum(s["false_positives"] for s in stats),
+    }
+
+
+@router.get("/drift/{agent_id}")
+async def get_agent_drift(agent_id: str, request: Request) -> Dict[str, Any]:
+    """Compare an agent's current-week behaviour to its 4-week rolling baseline.
+
+    Returns drift=True with signals if volume, block rate, or tool usage shifted
+    significantly. Requires at least 10 baseline events to produce a result.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    db = get_db()
+    engine = get_fleet_learning_engine()
+    return engine.detect_agent_drift(db=db, tenant_id=tenant_id, agent_id=agent_id)
+
+
+@router.get("/suggestions")
+async def get_policy_suggestions(request: Request) -> Dict[str, Any]:
+    """Return all AI-generated policy suggestions from the background analysis loop."""
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from ..ai.policy_suggester import get_cached_suggestions
+    return get_cached_suggestions()
+
+
+@router.get("/suggestions/pending")
+async def get_pending_suggestions(request: Request) -> Dict[str, Any]:
+    """Return only high-confidence suggestions (auto_escalate=True) for one-click approval.
+
+    These are suggestions with confidence >= 0.85. They still require a human
+    to explicitly approve via POST /learning/suggestions/approve.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from ..ai.policy_suggester import get_cached_suggestions
+    all_s = get_cached_suggestions()
+    pending = [s for s in (all_s.get("suggestions") or []) if s.get("auto_escalate")]
+    return {
+        "pending": pending,
+        "count": len(pending),
+        "generated_at": all_s.get("generated_at"),
+    }
+
+
+class ApproveSuggestionRequest(BaseModel):
+    name: str = Field(..., description="Suggestion name to approve (from /suggestions/pending)")
+    priority: Optional[int] = Field(default=500, ge=0, le=1000)
+
+
+@router.post("/suggestions/approve")
+async def approve_suggestion(
+    request: Request, body: ApproveSuggestionRequest
+) -> Dict[str, Any]:
+    """One-click approve: submit a pending suggestion as a live policy rule.
+
+    Finds the named suggestion in the cache and creates it as an enabled policy
+    rule for this tenant. The suggestion must exist and have auto_escalate=True.
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    from ..ai.policy_suggester import get_cached_suggestions
+    from ..persistence import get_db
+
+    all_s = get_cached_suggestions()
+    match = next(
+        (s for s in (all_s.get("suggestions") or [])
+         if s.get("name") == body.name and s.get("auto_escalate")),
+        None,
+    )
+    if not match:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No high-confidence pending suggestion named '{body.name}'. "
+                   "Check GET /learning/suggestions/pending for available names.",
+        )
+
+    db = get_db()
+    rule_id = db.create_policy_rule(
+        tenant_id=tenant_id,
+        name=match["name"],
+        description=f"{match['description']} [approved from AI suggestion: {match['rationale']}]",
+        action=match["action"],
+        condition_tool=match.get("condition_tool"),
+        condition_op=match.get("condition_op"),
+        priority=body.priority or 500,
+        enabled=True,
+    )
+    return {
+        "approved": True,
+        "rule_id": rule_id,
+        "name": match["name"],
+        "action": match["action"],
+        "condition_tool": match.get("condition_tool"),
+        "condition_op": match.get("condition_op"),
+        "source_confidence": match.get("confidence"),
+    }
+
+
+@router.get("/threshold-suggestions")
+async def get_threshold_suggestions(request: Request) -> Dict[str, Any]:
+    """Return threshold tuning suggestions derived from block precision stats.
+
+    over_sensitive: tool.op blocks with <60% precision — threshold too tight.
+    well_calibrated: tool.op blocks with >95% precision — working correctly.
+    auto_escalate=True entries need attention (precision <40%, 20+ blocks).
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    engine = get_fleet_learning_engine()
+    suggestions = engine.suggest_threshold_adjustments(tenant_id=tenant_id)
+    needs_attention = [s for s in suggestions if s.get("auto_escalate")]
+    return {
+        "tenant_id": tenant_id,
+        "suggestions": suggestions,
+        "needs_attention": needs_attention,
+        "count": len(suggestions),
+    }
 

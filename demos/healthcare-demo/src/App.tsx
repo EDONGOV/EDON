@@ -48,12 +48,26 @@ import {
   LayoutGrid,
   Link2,
   ArrowRight,
+  Upload,
+  Loader2,
+  DollarSign,
+  FileCode2,
+  CheckCircle,
+  Package,
+  Database,
+  Check,
+  Copy,
+  Users,
+  ListChecks,
+  ShieldAlert,
+  LogOut,
+  RefreshCw,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Verdict = 'ALLOW' | 'BLOCK' | 'ESCALATE'
-type Tab = 'dashboard' | 'agents' | 'audit' | 'policies' | 'review'
+type Tab = 'dashboard' | 'agents' | 'audit' | 'policies' | 'review' | 'impact'
 
 interface HospitalAgent {
   id: string
@@ -599,6 +613,831 @@ const PASSCODE_HASH = '6df06e04a6f94d20a8a7f82b078e95ee68d2b0566c40a53cae98a80fd
 async function sha256hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// ─── Healthcare Onboarding Mock Data ─────────────────────────────────────────
+
+const HC_MOCK_BUNDLE = {
+  total_count: 16,
+  hard_safety: [
+    { policy_id:'hs1', action_pattern:'phi.external.send',       decision:'BLOCK',          reason:'PHI egress blocked at all external trust boundaries', agent_system:'clinical-agent' },
+    { policy_id:'hs2', action_pattern:'medication.order.*',      decision:'HUMAN_REQUIRED', reason:'All medication orders require attending physician confirmation', agent_system:'pharmacy-agent' },
+    { policy_id:'hs3', action_pattern:'surgery.authorize.*',     decision:'HUMAN_REQUIRED', reason:'Surgical pre-auth requires surgeon + EDON dual verification', agent_system:'surgical-agent' },
+    { policy_id:'hs4', action_pattern:'patient.record.delete',   decision:'BLOCK',          reason:'Patient record deletion blocked — HIPAA retention requirement', agent_system:'ehr-agent' },
+    { policy_id:'hs5', action_pattern:'credential.llm.api.*',    decision:'ESCALATE',       reason:'LLM API credential access requires security review', agent_system:'clinical-agent' },
+  ],
+  operational: [
+    { policy_id:'op1', action_pattern:'phi.read.*',              decision:'ALLOW',          reason:'PHI reads allowed within verified clinical session scope', agent_system:'clinical-agent' },
+    { policy_id:'op2', action_pattern:'lab.result.retrieve',     decision:'ALLOW',          reason:'Lab retrieval pre-authorized for treating providers', agent_system:'lab-agent' },
+    { policy_id:'op3', action_pattern:'alert.send.critical',     decision:'ESCALATE',       reason:'Critical alerts require dual-acknowledgement before dispatch', agent_system:'monitoring-agent' },
+    { policy_id:'op4', action_pattern:'dosage.calculate.*',      decision:'ESCALATE',       reason:'Dosage calculations routed to pharmacist review queue', agent_system:'pharmacy-agent' },
+    { policy_id:'op5', action_pattern:'patient.discharge.*',     decision:'HUMAN_REQUIRED', reason:'Discharge authorization requires attending sign-off', agent_system:'ehr-agent' },
+    { policy_id:'op6', action_pattern:'report.generate.*',       decision:'ALLOW',          reason:'Report generation allowed with automatic PHI scrubbing', agent_system:'clinical-agent' },
+  ],
+  intent_contracts: [
+    { policy_id:'ic1', action_pattern:'agent.scope.*',           decision:'ALLOW',          reason:'Agent scope bounded to assigned department and patient list', agent_system:'clinical-agent' },
+    { policy_id:'ic2', action_pattern:'cross.dept.data.*',       decision:'ESCALATE',       reason:'Cross-department data access requires explicit authorization', agent_system:'ehr-agent' },
+    { policy_id:'ic3', action_pattern:'audit.trail.*',           decision:'ALLOW',          reason:'All decisions logged immutably with HIPAA-compliant audit chain', agent_system:'all' },
+    { policy_id:'ic4', action_pattern:'bulk.export.*',           decision:'BLOCK',          reason:'Bulk PHI export blocked outside approved data governance workflow', agent_system:'all' },
+    { policy_id:'ic5', action_pattern:'training.data.include.*', decision:'BLOCK',          reason:'Patient data excluded from LLM training pipelines', agent_system:'all' },
+  ],
+}
+
+const HC_MOCK_DEPLOYMENT = {
+  deployment_mode: 'vpc',
+  estimated_setup_h: 2,
+  connector_configs: [{ name:'EHR Gateway' }, { name:'Pharmacy API' }, { name:'Lab Interface' }],
+  env_vars: {
+    EDON_TENANT_ID: 'hc-demo-001',
+    EDON_ENFORCEMENT: 'active',
+    EDON_DOMAIN: 'healthcare',
+    EDON_HIPAA_MODE: 'true',
+    EDON_FAIL_CLOSED: 'true',
+    EDON_AUDIT_STREAM: 'kinesis://edon-audit-prod',
+  },
+  helm_values: { replicaCount: 2 },
+  rollback_plan: ['Disable EDON sidecar in K8s manifest', 'Restore original agent routing', 'Notify security team', 'Re-enable after root-cause review'],
+}
+
+// ─── Healthcare Onboarding Screen ─────────────────────────────────────────────
+
+type HCOBMsg = { role: 'copilot' | 'user'; text: string; id: number }
+
+function HCOnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; onLogout: () => void }) {
+  const [screen, setScreen]     = useState(1)
+  const [msgs, setMsgs]         = useState<HCOBMsg[]>([])
+  const [input, setInput]       = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const [ctaReady, setCtaReady] = useState(false)
+  const [convStep, setConvStep] = useState(0)
+  const [busy, setBusy]         = useState(false)
+
+  const idRef     = useRef(0)
+  const cancelRef = useRef(false)
+  const msgEndRef = useRef<HTMLDivElement>(null)
+  const inputRef  = useRef<HTMLInputElement>(null)
+
+  const [orgName,     setOrgName]     = useState('')
+  const [agentDrafts, setAgentDrafts] = useState<{name:string;phi:boolean;autonomous:boolean;actions:string[]}[]>([])
+  const [extSinks,    setExtSinks]    = useState<string[]>([])
+  const [trustChecks, setTrustChecks] = useState({ intercept:false, block:false, audit:false, ownership:false, killswitch:false })
+  const [bundle,      setBundle]      = useState<typeof HC_MOCK_BUNDLE | null>(null)
+  const [deployment,  setDeployment]  = useState<typeof HC_MOCK_DEPLOYMENT | null>(null)
+  const [policyReviewed, setPolicyReviewed] = useState<Record<string, 'accept'|'modify'|'reject'>>({})
+  const [activationStep, setActivationStep] = useState(-1)
+
+  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior:'smooth' }) }, [msgs, isTyping])
+
+  const addCopilot = useCallback((text: string, delay = 950): Promise<void> =>
+    new Promise(resolve => {
+      setIsTyping(true)
+      setTimeout(() => {
+        if (cancelRef.current) { resolve(); return }
+        setIsTyping(false)
+        setMsgs(p => [...p, { role:'copilot', text, id: ++idRef.current }])
+        setTimeout(resolve, 80)
+      }, delay)
+    }), [])
+
+  useEffect(() => {
+    cancelRef.current = false
+    setMsgs([]); setConvStep(0); setCtaReady(false); setInput('')
+    const openers: Record<number, string> = {
+      1:  'What healthcare organization is this EDON governance boundary for? (hospital system, clinic network, health tech platform, etc.)',
+      2:  'List the clinical AI systems in use — EHR assistants, diagnostic tools, pharmacy agents, patient monitoring bots.',
+      3:  'What clinical actions can these agents perform? Lab retrieval, medication orders, surgical pre-auth, patient alerts?',
+      4:  'Do any agents send data outside your clinical trust boundary — external LLM APIs, analytics platforms, vendor systems?',
+      5:  'HIPAA requires fail-closed enforcement. I\'ll compile a PHI-aware policy pack. Strict (recommended) or balanced?',
+      6:  'Where should the EDON enforcement layer run? VPC-native inside your hospital network, or cloud proxy?',
+      7:  'Run shadow simulation — EDON will observe your clinical AI actions and flag what it would have blocked. Ready?',
+      8:  'Review and confirm each clinical governance control. Legal and compliance sign-off attaches here.',
+      9:  'Generating your EDON clinical deployment package — HIPAA audit pipeline, PHI enforcement engine, identity bindings.',
+      10: 'Once activated, EDON enforces HIPAA-grade governance in real time. All agent actions are evaluated before execution.',
+    }
+    const t = setTimeout(async () => {
+      await addCopilot(openers[screen] ?? '', 600)
+      if (screen === 9) {
+        setBusy(true)
+        await new Promise(r => setTimeout(r, 1800))
+        setDeployment(HC_MOCK_DEPLOYMENT)
+        if (!cancelRef.current) await addCopilot(`Clinical deployment bundle ready. ${HC_MOCK_DEPLOYMENT.estimated_setup_h}h estimated setup. HIPAA audit pipeline included.`, 400)
+        setBusy(false)
+        setCtaReady(true)
+      }
+      if (screen === 10) setCtaReady(true)
+    }, 160)
+    return () => { cancelRef.current = true; clearTimeout(t) }
+  }, [screen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const allTrustChecked = Object.values(trustChecks).every(Boolean)
+  useEffect(() => { if (screen === 8) setCtaReady(allTrustChecked) }, [allTrustChecked, screen])
+
+  const allPoliciesReviewed = bundle
+    ? [...bundle.hard_safety, ...bundle.operational, ...bundle.intent_contracts].slice(0, 15).every(p => policyReviewed[p.policy_id])
+    : false
+  useEffect(() => { if (screen === 5 && bundle) setCtaReady(allPoliciesReviewed) }, [allPoliciesReviewed, screen, bundle])
+
+  const sendDirect = async (text: string) => {
+    if (!text || isTyping || busy) return
+    setMsgs(p => [...p, { role:'user', text, id: ++idRef.current }])
+    setConvStep(s => s + 1)
+
+    if (screen === 1) {
+      setOrgName(text)
+      await addCopilot(`Healthcare governance workspace initialized for "${text}".`)
+      await addCopilot('Domain: Healthcare · Applying HIPAA + FDA SaMD + AI Agent Safety templates. PHI enforcement enabled at all trust boundaries.', 700)
+      setCtaReady(true)
+    }
+    else if (screen === 2) {
+      if (convStep === 0) {
+        const parts = text.split(/\band\b|,/i).map(s => s.trim()).filter(s => s.length > 3)
+        const agents = (parts.length > 0 ? parts : [text]).map((p, i) => ({
+          name: /ehr|record|chart/i.test(p) ? 'ehr-agent' : /pharm|medic|drug/i.test(p) ? 'pharmacy-agent' : /lab|test|result/i.test(p) ? 'lab-agent' : /monitor|vital|alert/i.test(p) ? 'monitoring-agent' : `clinical-agent-${i+1}`,
+          phi: true, autonomous: true, actions: [],
+        }))
+        setAgentDrafts(agents)
+        const list = agents.map((a,i) => `${i+1}. ${a.name}  — PHI risk tag applied`).join('\n')
+        await addCopilot(`Identified ${agents.length} clinical AI system${agents.length !== 1 ? 's' : ''}:\n\n${list}`)
+        await addCopilot('All clinical agents classified as PHI-handling. Do they operate autonomously or require physician approval?', 700)
+      } else {
+        const auto = /autonom|mostly|auto|no human|independent/i.test(text)
+        setAgentDrafts(p => p.map(a => ({ ...a, autonomous: auto })))
+        await addCopilot(auto
+          ? 'Autonomous clinical agents detected — applying elevated HIPAA governance scope and mandatory escalation paths for high-risk actions.'
+          : 'Human-in-loop clinical agents — lighter escalation thresholds, physician confirmation still required for critical actions.')
+        setCtaReady(true)
+      }
+    }
+    else if (screen === 3) {
+      if (convStep === 0) {
+        const write  = /order|prescri|administer|updat|write|modif|creat/i.test(text)
+        const crit   = /surgery|operat|resuscit|dnr|icu/i.test(text)
+        const acts   = ['phi.read', 'lab.result.retrieve', ...write ? ['medication.order','patient.record.update'] : [], ...crit ? ['surgery.authorize','critical.alert.escalate'] : []]
+        setAgentDrafts(p => p.map((a,i) => i === 0 ? { ...a, actions:acts } : a))
+        if (crit) {
+          await addCopilot('Critical clinical actions detected — surgery authorization and resuscitation flags identified.')
+          await addCopilot('These will be classified as HUMAN_REQUIRED. No autonomous execution permitted under HIPAA clinical safety policy.', 700)
+        } else if (write) {
+          await addCopilot('Write-paths into clinical systems flagged. Medication orders and record updates require verification policies.')
+        } else {
+          await addCopilot('Read-only clinical access pattern. PHI access policies will be applied to all data retrieval paths.')
+        }
+        await addCopilot('Do any agents access credential stores or external API keys?', 800)
+      } else {
+        if (/yes|api|key|credential|token/i.test(text)) {
+          setAgentDrafts(p => p.map(a => ({ ...a, actions:[...a.actions,'credential.api.access'] })))
+          await addCopilot('External API credentials flagged — ESCALATE policy applied to all credential-touching operations.')
+        } else {
+          await addCopilot('No direct credential access. Action surface mapping complete for your clinical environment.')
+        }
+        setCtaReady(true)
+      }
+    }
+    else if (screen === 4) {
+      const detected: string[] = []
+      if (/openai|gpt|anthropic|claude|llm|language model/i.test(text)) detected.push('External LLM API (PHI exposure risk)')
+      if (/analytic|tableau|looker|segment/i.test(text)) detected.push('Analytics export pipeline')
+      if (/slack|email|teams|pager|twilio/i.test(text)) detected.push('Clinical notification sink')
+      if (/s3|gcs|blob|storage|bucket/i.test(text)) detected.push('Cloud storage (must be HIPAA BAA)')
+      if (detected.length === 0 && /yes|external|vendor|api|cloud/i.test(text)) detected.push('External vendor endpoint')
+      setExtSinks(p => [...new Set([...p, ...detected])])
+      if (detected.length > 0) {
+        await addCopilot(`${detected.length} external data sink${detected.length !== 1 ? 's' : ''} identified:\n\n${detected.map((d,i) => `${i+1}. ${d}`).join('\n')}`)
+        await addCopilot('All external sinks flagged as PHI trust boundary violations. BLOCK policies will be generated for unclassified PHI egress.', 800)
+      } else if (/no|none|internal/i.test(text)) {
+        await addCopilot('No external data sinks. All clinical data flows remain within your HIPAA trust boundary.')
+      } else {
+        await addCopilot('External flows noted. Trust boundary topology updated.')
+      }
+      setCtaReady(true)
+    }
+    else if (screen === 5) {
+      await addCopilot(/strict|yes|recommend|hipaa|fail.close/i.test(text)
+        ? 'Fail-closed enforcement selected. PHI protection prioritized — any policy ambiguity defaults to BLOCK.'
+        : 'Balanced enforcement with escalation paths. Critical PHI operations still require human confirmation.')
+      await addCopilot('Compiling HIPAA-aligned policy pack...', 500)
+      setBusy(true)
+      await new Promise(r => setTimeout(r, 2200))
+      setBundle(HC_MOCK_BUNDLE)
+      await addCopilot(`Policy Pack v1 ready — ${HC_MOCK_BUNDLE.total_count} rules across 3 layers. ${HC_MOCK_BUNDLE.hard_safety.length} hard safety rules are immutable after go-live.`, 300)
+      setBusy(false)
+    }
+    else if (screen === 6) {
+      const mode = /vpc|aws|private|network/i.test(text) ? 'vpc' : 'cloud_proxy'
+      await addCopilot(mode === 'vpc'
+        ? 'VPC-native deployment selected. EDON enforcement layer runs inside your hospital network perimeter — no PHI leaves the boundary.'
+        : 'Cloud proxy selected. Managed TLS termination with end-to-end encryption. HIPAA BAA required for cloud provider.')
+      setBusy(true)
+      await new Promise(r => setTimeout(r, 1400))
+      setDeployment(HC_MOCK_DEPLOYMENT)
+      await addCopilot(`Deployment config generated. ${HC_MOCK_DEPLOYMENT.estimated_setup_h}h estimated setup.`, 300)
+      setBusy(false)
+      setCtaReady(true)
+    }
+    else if (screen === 7) {
+      if (/yes|run|go|start/i.test(text)) {
+        await addCopilot('Running clinical shadow simulation...')
+        setBusy(true)
+        await new Promise(r => setTimeout(r, 2000))
+        setBusy(false)
+        await addCopilot('Simulation complete. Your clinical AI systems already have governance gaps that EDON would have caught.', 400)
+        setCtaReady(true)
+      } else {
+        await addCopilot("Type 'run' when you're ready to see what EDON would have blocked in your clinical environment.")
+      }
+    }
+  }
+
+  const sendMsg = () => { const t = input.trim(); if (!t) return; setInput(''); sendDirect(t) }
+
+  const handleCTA = async () => {
+    if (screen < 10) { setScreen(s => s + 1); return }
+    setBusy(true)
+    const steps = ['Installing clinical gateway', 'Binding identity provider', 'Activating HIPAA enforcement', 'Verifying network routing', 'Audit pipeline online']
+    for (let i = 0; i < steps.length; i++) { setActivationStep(i); await new Promise(r => setTimeout(r, 700)) }
+    await new Promise(r => setTimeout(r, 400))
+    localStorage.setItem('hc_demo_ob', '1')
+    onComplete()
+    setBusy(false)
+  }
+
+  const CTA_LABELS: Record<number,string> = {
+    1:'Begin Clinical Inventory', 2:'Confirm Agent Inventory', 3:'Confirm Action Surface',
+    4:'Map Clinical Boundaries', 5:'Accept HIPAA Policy Pack', 6:'Generate Deployment Config',
+    7:'Continue to Trust Agreement', 8:'Activate Governance Boundary',
+    9:'Continue to Activation', 10:'Activate Clinical Governance',
+  }
+
+  const SCREEN_META: Record<number,{title:string;sub:string}> = {
+    1:  { title:'Create Clinical Governance Boundary', sub:'Initialize HIPAA-compliant enforcement workspace' },
+    2:  { title:'Clinical AI Inventory',              sub:'Map agents, diagnostic tools, automation flows' },
+    3:  { title:'Clinical Action Surface',            sub:'PHI access paths, medication orders, surgical pre-auth' },
+    4:  { title:'External Data Sinks',                sub:'PHI egress and trust boundary analysis' },
+    5:  { title:'HIPAA Policy Generation',            sub:'Auto-compile 3-layer clinical governance rules' },
+    6:  { title:'Deployment Architecture',            sub:'VPC or cloud proxy, identity bindings, audit pipeline' },
+    7:  { title:'Shadow Simulation',                  sub:'Observe governance before clinical enforcement goes live' },
+    8:  { title:'Trust Boundary Agreement',           sub:'Explicit clinical governance control confirmation' },
+    9:  { title:'Generate Deployment Bundle',         sub:'HIPAA audit pipeline + enforcement engine + runbook' },
+    10: { title:'Activate Clinical Governance',       sub:'HIPAA enforcement goes live — demo console unlocks' },
+  }
+  const meta = SCREEN_META[screen]
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{ background:'#07100b' }}>
+      {/* Header */}
+      <header className="shrink-0 flex items-center px-6 h-[54px]" style={{ borderBottom:'1px solid rgba(74,222,128,0.1)', background:'rgba(7,16,11,0.97)' }}>
+        <div className="flex items-center gap-2.5">
+          <Heart className="w-4 h-4 text-rose-400" />
+          <span className="text-sm font-semibold tracking-widest text-white/90">EDON</span>
+          <span className="text-[10px] text-muted-foreground/60 tracking-widest uppercase ml-1">Healthcare</span>
+        </div>
+        <div className="flex items-center gap-1.5 mx-auto">
+          {Array.from({length:10},(_,i) => (
+            <div key={i} className="rounded-full transition-all duration-300" style={{
+              width:i+1===screen?10:6, height:i+1===screen?10:6,
+              background:i+1<screen?'#4ade80':i+1===screen?'#4ade80':'rgba(255,255,255,0.1)',
+              boxShadow:i+1===screen?'0 0 8px rgba(74,222,128,0.6)':'none',
+            }} />
+          ))}
+          <span className="text-xs text-muted-foreground ml-2 tabular-nums">{screen}/10</span>
+        </div>
+        <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-red-400 transition-colors">
+          <LogOut size={14} />
+        </button>
+      </header>
+
+      {/* Body */}
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+
+        {/* LEFT — Copilot */}
+        <div className="flex flex-col shrink-0 md:w-[400px] w-full md:max-h-full max-h-[45vh]" style={{ borderRight:'1px solid rgba(74,222,128,0.08)', borderBottom:'1px solid rgba(74,222,128,0.08)', background:'#0b1610' }}>
+          <div className="px-5 pt-5 pb-4 shrink-0" style={{ borderBottom:'1px solid rgba(74,222,128,0.07)' }}>
+            <div className="flex items-center gap-2 mb-0.5">
+              <div className="w-5 h-5 rounded-full bg-emerald-500/25 flex items-center justify-center text-[10px] font-bold text-emerald-300 shrink-0">{screen}</div>
+              <h2 className="text-sm font-semibold text-white truncate">{meta.title}</h2>
+            </div>
+            <p className="text-[11px] text-muted-foreground/60 pl-7 leading-tight">{meta.sub}</p>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+            {msgs.map(m => (
+              <div key={m.id} className={`flex gap-2.5 ${m.role==='user'?'flex-row-reverse':''}`}>
+                {m.role==='copilot' && (
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background:'rgba(74,222,128,0.15)', border:'1px solid rgba(74,222,128,0.25)' }}>
+                    <Heart size={12} className="text-emerald-400" />
+                  </div>
+                )}
+                <div className="rounded-2xl px-3.5 py-2.5 text-sm max-w-[272px] whitespace-pre-line leading-relaxed" style={{
+                  borderRadius:m.role==='copilot'?'4px 16px 16px 16px':'16px 4px 16px 16px',
+                  background:m.role==='copilot'?'rgba(255,255,255,0.04)':'rgba(74,222,128,0.08)',
+                  border:m.role==='copilot'?'1px solid rgba(255,255,255,0.07)':'1px solid rgba(74,222,128,0.2)',
+                  color:'rgba(255,255,255,0.88)',
+                }}>{m.text}</div>
+              </div>
+            ))}
+            {isTyping && (
+              <div className="flex gap-2.5">
+                <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{ background:'rgba(74,222,128,0.15)', border:'1px solid rgba(74,222,128,0.25)' }}>
+                  <Heart size={12} className="text-emerald-400" />
+                </div>
+                <div className="rounded-2xl px-4 py-3" style={{ borderRadius:'4px 16px 16px 16px', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)' }}>
+                  <div className="flex gap-1">
+                    {[0,1,2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-emerald-400/50 animate-bounce" style={{ animationDelay:`${i*0.15}s` }} />)}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={msgEndRef} />
+          </div>
+
+          {screen < 8 && (
+            <div className="px-4 pb-4 pt-2 shrink-0" style={{ borderTop:'1px solid rgba(74,222,128,0.07)' }}>
+              <div className="flex gap-2">
+                <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); sendMsg() } }}
+                  placeholder="Reply to EDON Copilot..." disabled={isTyping||busy}
+                  className="flex-1 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder:text-white/25 focus:outline-none disabled:opacity-40"
+                  style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)' }}
+                />
+                <button onClick={sendMsg} disabled={!input.trim()||isTyping||busy}
+                  className="w-10 h-10 rounded-xl flex items-center justify-center transition-colors shrink-0 disabled:opacity-30"
+                  style={{ background:'rgba(74,222,128,0.12)', border:'1px solid rgba(74,222,128,0.25)' }}>
+                  <Send size={14} className="text-emerald-400" />
+                </button>
+              </div>
+              {screen===1 && msgs.length>0 && !ctaReady && (
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  {['Regional hospital system','Clinical AI platform','Health tech startup'].map(s => (
+                    <button key={s} onClick={() => sendDirect(s)} className="text-[11px] px-2.5 py-1 rounded-full transition-colors" style={{ border:'1px solid rgba(74,222,128,0.18)', color:'rgba(74,222,128,0.65)' }}>{s}</button>
+                  ))}
+                </div>
+              )}
+              {screen===5 && !ctaReady && (
+                <div className="flex gap-2 mt-2">
+                  {['Strict (HIPAA)','Balanced'].map(s => (
+                    <button key={s} onClick={() => sendDirect(s)} className="text-[11px] px-3 py-1 rounded-full transition-colors" style={{ border:'1px solid rgba(74,222,128,0.18)', color:'rgba(74,222,128,0.65)' }}>{s}</button>
+                  ))}
+                </div>
+              )}
+              {screen===6 && !ctaReady && (
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  {['VPC native','Cloud proxy'].map(s => (
+                    <button key={s} onClick={() => sendDirect(s)} className="text-[11px] px-2.5 py-1 rounded-full transition-colors" style={{ border:'1px solid rgba(74,222,128,0.18)', color:'rgba(74,222,128,0.65)' }}>{s}</button>
+                  ))}
+                </div>
+              )}
+              {screen===7 && !ctaReady && (
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => sendDirect('Run it')} className="text-[11px] px-3 py-1 rounded-full transition-colors" style={{ border:'1px solid rgba(59,130,246,0.3)', color:'rgba(147,197,253,0.7)' }}>Run simulation</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT — Artifact pane */}
+        <div className="flex-1 overflow-y-auto">
+          <AnimatePresence mode="wait">
+            <motion.div key={screen} initial={{ opacity:0, x:20 }} animate={{ opacity:1, x:0 }} exit={{ opacity:0, x:-20 }} transition={{ duration:0.18 }} className="flex flex-col min-h-full">
+              <div className="flex-1 p-8 space-y-6">
+
+                {/* Screen 1 */}
+                {screen===1 && (
+                  <div className="max-w-lg space-y-6">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical Governance Compiler</p>
+                      <h1 className="text-3xl font-bold text-white leading-tight">HIPAA-Grade AI Governance</h1>
+                      <p className="text-sm text-muted-foreground mt-2 leading-relaxed">EDON converts your clinical AI environment description into enforceable HIPAA governance — PHI protection, physician escalation paths, and immutable audit trails.</p>
+                    </div>
+                    {ctaReady && orgName ? (
+                      <div className="rounded-2xl p-6 space-y-4" style={{ border:'1px solid rgba(74,222,128,0.22)', background:'rgba(74,222,128,0.04)' }}>
+                        <div className="flex items-center gap-3">
+                          <CheckCircle2 size={18} className="text-emerald-400" />
+                          <p className="text-sm font-semibold text-white">Clinical workspace initialized for "{orgName}"</p>
+                        </div>
+                        {[['Domain','Healthcare'],['Compliance','HIPAA + FDA SaMD'],['PHI Enforcement','Active'],['Fail-closed','Enabled']].map(([k,v]) => (
+                          <div key={k} className="flex items-center justify-between text-xs px-3 py-2 rounded-xl" style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.05)' }}>
+                            <span className="text-muted-foreground">{k}</span><span className="font-semibold text-white">{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-4">
+                        {([
+                          [Shield,'PHI Enforcement','Block unauthorised PHI access and egress'],
+                          [Heart,'Clinical Safety','Physician escalation for high-risk actions'],
+                          [FileText,'HIPAA Audit','Immutable decision trail for compliance review'],
+                        ] as const).map(([Icon, label, sub]) => (
+                          <div key={label} className="rounded-2xl p-5 text-center space-y-3" style={{ border:'1px solid rgba(255,255,255,0.07)', background:'rgba(255,255,255,0.02)' }}>
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto" style={{ background:'rgba(74,222,128,0.1)', border:'1px solid rgba(74,222,128,0.15)' }}>
+                              <Icon size={17} className="text-emerald-400" />
+                            </div>
+                            <p className="text-xs font-semibold text-white">{label}</p>
+                            <p className="text-[11px] text-muted-foreground leading-tight">{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 2 */}
+                {screen===2 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical AI Inventory</p>
+                      <h1 className="text-3xl font-bold text-white">AI System Discovery</h1>
+                    </div>
+                    {agentDrafts.length===0 ? (
+                      <div className="rounded-2xl border-dashed border p-14 text-center" style={{ borderColor:'rgba(255,255,255,0.09)' }}>
+                        <Bot size={30} className="text-muted-foreground/25 mx-auto mb-3" />
+                        <p className="text-sm text-muted-foreground/40">Clinical agent nodes will appear as you describe your systems</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {agentDrafts.map((a,i) => (
+                          <motion.div key={i} initial={{ opacity:0, y:10 }} animate={{ opacity:1, y:0 }} transition={{ delay:i*0.1 }}
+                            className="flex items-center gap-4 p-4 rounded-2xl" style={{ border:'1px solid rgba(251,146,60,0.25)', background:'rgba(251,146,60,0.04)' }}>
+                            <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background:'rgba(251,146,60,0.15)' }}>
+                              <Stethoscope size={16} className="text-orange-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm font-semibold text-white">{a.name}</p>
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background:'rgba(251,146,60,0.15)', border:'1px solid rgba(251,146,60,0.3)', color:'#fb923c' }}>PHI</span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-0.5">clinical agent · {a.autonomous?'autonomous':'human-in-loop'}</p>
+                            </div>
+                            <span className="text-[10px] px-2.5 py-1 rounded-full font-bold shrink-0" style={{ background:'rgba(74,222,128,0.1)', border:'1px solid rgba(74,222,128,0.2)', color:'#4ade80' }}>IDENTIFIED</span>
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 3 */}
+                {screen===3 && (
+                  <div className="max-w-2xl space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical Action Surface</p>
+                      <h1 className="text-3xl font-bold text-white">Action Surface Mapping</h1>
+                    </div>
+                    <div className="rounded-2xl overflow-hidden" style={{ border:'1px solid rgba(255,255,255,0.08)' }}>
+                      <div className="grid grid-cols-4 px-5 py-3 text-[11px] font-bold text-muted-foreground/60 uppercase tracking-widest" style={{ background:'rgba(255,255,255,0.03)', borderBottom:'1px solid rgba(255,255,255,0.06)' }}>
+                        <span>Agent</span><span>Actions</span><span>Data Class</span><span>Risk</span>
+                      </div>
+                      {agentDrafts.map((a,i) => (
+                        <div key={i} className="grid grid-cols-4 px-5 py-4 text-xs gap-2 items-start" style={{ borderBottom:i<agentDrafts.length-1?'1px solid rgba(255,255,255,0.04)':'none' }}>
+                          <span className="font-semibold text-white text-sm">{a.name}</span>
+                          <div className="space-y-1.5">
+                            {(a.actions.length>0?a.actions:['phi.read']).map(act => (
+                              <span key={act} className="block font-mono text-[10px] px-2 py-0.5 rounded w-fit" style={{
+                                background:act.includes('order')||act.includes('surgery')?'rgba(239,68,68,0.12)':act.includes('credential')?'rgba(251,146,60,0.12)':'rgba(59,130,246,0.12)',
+                                color:act.includes('order')||act.includes('surgery')?'#f87171':act.includes('credential')?'#fb923c':'#93c5fd',
+                              }}>{act}</span>
+                            ))}
+                          </div>
+                          <span className="text-orange-400 font-medium">PHI · PII</span>
+                          <span className="text-[11px] px-2 py-0.5 rounded-full font-bold w-fit" style={{ background:'rgba(239,68,68,0.12)', color:'#f87171', border:'1px solid rgba(239,68,68,0.2)' }}>CRITICAL</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Screen 4 */}
+                {screen===4 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">PHI Trust Boundary</p>
+                      <h1 className="text-3xl font-bold text-white">External Data Sink Map</h1>
+                    </div>
+                    <div className="rounded-2xl p-6 space-y-4" style={{ border:'1px solid rgba(255,255,255,0.07)', background:'rgba(255,255,255,0.015)' }}>
+                      <div className="rounded-xl p-4 space-y-2" style={{ border:'1px solid rgba(74,222,128,0.2)', background:'rgba(74,222,128,0.04)' }}>
+                        <p className="text-[10px] font-bold text-emerald-400/70 uppercase tracking-widest">HIPAA Trust Zone</p>
+                        <div className="flex flex-wrap gap-2">
+                          {(agentDrafts.length>0?agentDrafts.map(a=>a.name):['clinical-agent']).map(n => (
+                            <span key={n} className="text-xs px-2.5 py-1 rounded-lg font-medium text-white/70" style={{ background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)' }}>{n}</span>
+                          ))}
+                          <span className="text-xs px-2.5 py-1 rounded-lg text-orange-400" style={{ background:'rgba(251,146,60,0.1)', border:'1px solid rgba(251,146,60,0.2)' }}>EHR / PHI store</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-center py-1">
+                        <span className="text-[11px] text-muted-foreground/60 px-3 py-1 rounded-lg" style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)' }}>EDON enforcement boundary</span>
+                      </div>
+                      <div className="rounded-xl p-4 space-y-2" style={{ border:`1px solid ${extSinks.length>0?'rgba(239,68,68,0.25)':'rgba(255,255,255,0.07)'}`, background:extSinks.length>0?'rgba(239,68,68,0.04)':'rgba(255,255,255,0.01)' }}>
+                        <p className={`text-[10px] font-bold uppercase tracking-widest ${extSinks.length>0?'text-red-400/70':'text-muted-foreground/40'}`}>External Sinks {extSinks.length>0?`(${extSinks.length} detected)`:'(scanning...)'}</p>
+                        {extSinks.length>0 ? extSinks.map(s => (
+                          <div key={s} className="flex items-center gap-2 text-xs text-red-300/80"><AlertTriangle size={10} className="text-red-400 shrink-0" />{s}</div>
+                        )) : <p className="text-xs text-muted-foreground/40">Describe external clinical services in the chat</p>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Screen 5 */}
+                {screen===5 && (
+                  <div className="max-w-2xl space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">HIPAA-Aligned</p>
+                      <h1 className="text-3xl font-bold text-white">Clinical Policy Pack v1</h1>
+                    </div>
+                    {busy && !bundle && (
+                      <div className="flex items-center gap-3 px-5 py-4 rounded-2xl" style={{ border:'1px solid rgba(74,222,128,0.15)', background:'rgba(74,222,128,0.04)' }}>
+                        <RefreshCw size={15} className="text-emerald-400 animate-spin" />
+                        <p className="text-sm text-emerald-300/80">Compiling HIPAA-aligned policy pack from clinical environment description...</p>
+                      </div>
+                    )}
+                    {bundle && (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-3 gap-3">
+                          {([
+                            ['Hard Safety', bundle.hard_safety.length, '#ef4444', 'rgba(239,68,68,0.06)', 'rgba(239,68,68,0.22)'],
+                            ['Operational', bundle.operational.length, '#f59e0b', 'rgba(245,158,11,0.06)', 'rgba(245,158,11,0.22)'],
+                            ['Intent Contracts', bundle.intent_contracts.length, '#4ade80', 'rgba(74,222,128,0.06)', 'rgba(74,222,128,0.22)'],
+                          ] as const).map(([label,count,color,bg,border]) => (
+                            <div key={label} className="rounded-2xl p-5 text-center" style={{ background:bg, border:`1px solid ${border}` }}>
+                              <p className="text-4xl font-bold" style={{ color }}>{count}</p>
+                              <p className="text-xs font-semibold mt-1" style={{ color }}>{label}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {([
+                          [bundle.hard_safety,'Layer A — Hard Safety','Immutable after go-live','#ef4444','rgba(239,68,68,0.18)'],
+                          [bundle.operational,'Layer B — Operational','Rate limits, PHI access, escalation','#f59e0b','rgba(245,158,11,0.18)'],
+                          [bundle.intent_contracts,'Layer C — Intent Contracts','Clinical scope and purpose bounds','#4ade80','rgba(74,222,128,0.18)'],
+                        ] as const).map(([policies,label,note,color,border],gi) => (
+                          <details key={gi} open className="rounded-2xl overflow-hidden" style={{ border:`1px solid ${border}` }}>
+                            <summary className="cursor-pointer flex items-center justify-between px-5 py-4 text-sm font-semibold select-none" style={{ color, background:'rgba(255,255,255,0.02)' }}>
+                              <span>{label}</span>
+                              <span className="text-xs font-normal" style={{ color:'rgba(255,255,255,0.35)' }}>{note} · {(policies as typeof bundle.hard_safety).length} rules</span>
+                            </summary>
+                            <div className="p-4 space-y-2" style={{ background:'rgba(0,0,0,0.15)' }}>
+                              {(policies as typeof bundle.hard_safety).map(p => {
+                                const rv = policyReviewed[p.policy_id]
+                                return (
+                                  <div key={p.policy_id} className="flex items-start gap-3 px-3 py-2.5 rounded-xl" style={{ background:rv?'rgba(74,222,128,0.04)':'rgba(255,255,255,0.03)', border:rv?'1px solid rgba(74,222,128,0.18)':'1px solid rgba(255,255,255,0.05)', transition:'all 0.15s' }}>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 mt-0.5" style={{ background:p.decision==='BLOCK'?'rgba(239,68,68,0.15)':p.decision==='HUMAN_REQUIRED'?'rgba(251,146,60,0.15)':'rgba(74,222,128,0.15)', color:p.decision==='BLOCK'?'#f87171':p.decision==='HUMAN_REQUIRED'?'#fb923c':'#4ade80' }}>{p.decision}</span>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-medium text-white">{p.action_pattern}</p>
+                                      <p className="text-[11px] text-muted-foreground mt-0.5">{p.reason}</p>
+                                    </div>
+                                    {rv ? (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0" style={{ background:rv==='accept'?'rgba(74,222,128,0.15)':rv==='reject'?'rgba(239,68,68,0.15)':'rgba(245,158,11,0.15)', color:rv==='accept'?'#4ade80':rv==='reject'?'#f87171':'#fbbf24' }}>{rv.toUpperCase()}</span>
+                                    ) : (
+                                      <div className="flex gap-1 shrink-0">
+                                        {(['accept','modify','reject'] as const).map(a => (
+                                          <button key={a} onClick={() => setPolicyReviewed(r => ({ ...r, [p.policy_id]:a }))}
+                                            className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+                                            style={{ border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.4)' }}>{a}</button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </details>
+                        ))}
+                        {bundle && !allPoliciesReviewed && (
+                          <div className="flex items-center gap-2 px-4 py-3 rounded-xl text-xs text-amber-400/80" style={{ background:'rgba(245,158,11,0.06)', border:'1px solid rgba(245,158,11,0.18)' }}>
+                            <AlertTriangle size={12} /> Review all visible rules to unlock "Accept HIPAA Policy Pack"
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!bundle && !busy && (
+                      <div className="rounded-2xl border-dashed border p-14 text-center" style={{ borderColor:'rgba(255,255,255,0.08)' }}>
+                        <Shield size={30} className="text-muted-foreground/25 mx-auto mb-3" />
+                        <p className="text-sm text-muted-foreground/40">Tell EDON your enforcement preference to generate the HIPAA policy pack</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 6 */}
+                {screen===6 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical Runtime Topology</p>
+                      <h1 className="text-3xl font-bold text-white">Deployment Architecture</h1>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {([
+                        ['VPC Native','Private routing inside hospital network',Shield],
+                        ['Cloud Proxy','Managed TLS + HIPAA BAA required',Database],
+                      ] as const).map(([label,sub,Icon]) => (
+                        <div key={label} className="rounded-2xl p-4 text-center space-y-2.5" style={{ border:'1px solid rgba(255,255,255,0.07)', background:'rgba(255,255,255,0.02)' }}>
+                          <Icon size={18} className="text-muted-foreground mx-auto" />
+                          <p className="text-xs font-semibold text-white">{label}</p>
+                          <p className="text-[10px] text-muted-foreground leading-tight">{sub}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {deployment && (
+                      <div className="space-y-2.5">
+                        {[['Mode',deployment.deployment_mode],['Est. setup',`${deployment.estimated_setup_h}h`],['Connectors',String(deployment.connector_configs.length)],['Env vars',String(Object.keys(deployment.env_vars).length)]].map(([k,v]) => (
+                          <div key={k} className="flex items-center justify-between text-xs px-4 py-2.5 rounded-xl" style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.05)' }}>
+                            <span className="text-muted-foreground">{k}</span><span className="font-semibold text-white">{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {busy && <div className="flex items-center gap-3 px-5 py-3.5 rounded-2xl text-sm" style={{ border:'1px solid rgba(74,222,128,0.15)', background:'rgba(74,222,128,0.04)' }}><RefreshCw size={14} className="text-emerald-400 animate-spin" /><span className="text-emerald-300/80">Generating clinical deployment config...</span></div>}
+                  </div>
+                )}
+
+                {/* Screen 7 */}
+                {screen===7 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Pre-Enforcement Observation</p>
+                      <h1 className="text-3xl font-bold text-white">Clinical Shadow Simulation</h1>
+                    </div>
+                    {!ctaReady ? (
+                      <div className="rounded-2xl p-12 text-center space-y-5" style={{ border:'1px solid rgba(59,130,246,0.2)', background:'rgba(59,130,246,0.04)' }}>
+                        <Eye size={26} className="text-blue-400 mx-auto" />
+                        <div>
+                          <p className="font-semibold text-blue-200">EDON will simulate clinical governance without enforcing it</p>
+                          <p className="text-sm text-blue-300/60 mt-1">See what would have been blocked before enforcement goes live</p>
+                        </div>
+                        {busy && <div className="flex items-center justify-center gap-2 text-xs text-blue-300/60"><RefreshCw size={12} className="animate-spin" />Running clinical simulation...</div>}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="rounded-2xl p-4 flex items-center gap-3" style={{ border:'1px solid rgba(74,222,128,0.25)', background:'rgba(74,222,128,0.05)' }}>
+                          <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                          <p className="text-sm font-semibold text-emerald-200">Your clinical AI systems already have invisible governance failures.</p>
+                        </div>
+                        {([
+                          ['Unauthorised PHI access attempts',8,'critical',ShieldAlert],
+                          ['Medication orders without verification',4,'high',AlertTriangle],
+                          ['External PHI flows (LLM APIs)',2,'high',AlertTriangle],
+                          ['Actions that would be BLOCKED',11,'medium',XCircle],
+                        ] as const).map(([label,count,sev,Icon],i) => (
+                          <motion.div key={i} initial={{ opacity:0, x:16 }} animate={{ opacity:1, x:0 }} transition={{ delay:i*0.12 }}
+                            className="flex items-center gap-4 px-5 py-4 rounded-2xl" style={{
+                              border:sev==='critical'?'1px solid rgba(239,68,68,0.25)':'1px solid rgba(251,146,60,0.25)',
+                              background:sev==='critical'?'rgba(239,68,68,0.05)':'rgba(251,146,60,0.04)',
+                            }}>
+                            <Icon size={16} className={sev==='critical'?'text-red-400':'text-orange-400'} />
+                            <span className="flex-1 text-sm text-white/85">{label}</span>
+                            <span className={`text-2xl font-bold ${sev==='critical'?'text-red-400':'text-orange-400'}`}>{count}</span>
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 8 */}
+                {screen===8 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical Governance Agreement</p>
+                      <h1 className="text-3xl font-bold text-white">Trust Boundary Agreement</h1>
+                      <p className="text-sm text-muted-foreground mt-2">HIPAA compliance sign-off attaches here. Confirm each clinical control explicitly.</p>
+                    </div>
+                    <div className="space-y-2.5">
+                      {([
+                        ['intercept','EDON may intercept all clinical AI actions','Every agent action passes through the governance proxy before execution'],
+                        ['block','EDON may block execution of unsafe clinical actions','Hard safety rules enforce BLOCK/ESCALATE/HUMAN_REQUIRED verdicts'],
+                        ['audit','EDON maintains full HIPAA-compliant audit logs','Every decision produces an immutable trail with causal attribution'],
+                        ['ownership','Organisation retains final clinical policy control','You can modify or override any policy at any time through the console'],
+                        ['killswitch','Clinical kill-switch authority is explicitly defined',`Kill-switch assigned to: ${orgName||'clinical administrator'}`],
+                      ] as [keyof typeof trustChecks, string, string][]).map(([key,label,sub]) => (
+                        <div key={key} onClick={() => setTrustChecks(p => ({ ...p, [key]:!p[key] }))}
+                          className="flex items-start gap-4 p-4 rounded-2xl cursor-pointer transition-all"
+                          style={{ border:trustChecks[key]?'1px solid rgba(74,222,128,0.3)':'1px solid rgba(255,255,255,0.07)', background:trustChecks[key]?'rgba(74,222,128,0.05)':'rgba(255,255,255,0.02)' }}>
+                          <div className="mt-0.5 w-5 h-5 rounded flex items-center justify-center shrink-0 border-2 transition-colors" style={{ background:trustChecks[key]?'#22c55e':'transparent', borderColor:trustChecks[key]?'#22c55e':'rgba(255,255,255,0.2)' }}>
+                            {trustChecks[key] && <Check size={11} className="text-white" />}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-white">{label}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {allTrustChecked && (
+                      <motion.div initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }}
+                        className="flex items-center gap-2 px-4 py-3 rounded-xl text-xs text-emerald-400" style={{ background:'rgba(74,222,128,0.06)', border:'1px solid rgba(74,222,128,0.2)' }}>
+                        <CheckCircle2 size={13} /> All clinical controls confirmed. Governance boundary ready for deployment.
+                      </motion.div>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 9 */}
+                {screen===9 && (
+                  <div className="max-w-lg space-y-5">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Clinical Deployment Package</p>
+                      <h1 className="text-3xl font-bold text-white">Deployment Bundle</h1>
+                    </div>
+                    <div className="space-y-2.5">
+                      {([
+                        ['Clinical gateway config',Shield,true],
+                        ['Identity bindings',Lock,true],
+                        ['HIPAA audit pipeline',FileText,true],
+                        ['PHI enforcement engine',Zap,true],
+                        ['Helm chart / network rules',Package,!!deployment],
+                        ['Install checklist + runbook',ListChecks,!!deployment],
+                      ] as const).map(([label,Icon,ready],i) => (
+                        <div key={i} className="flex items-center gap-3 px-4 py-3.5 rounded-xl" style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.05)' }}>
+                          <Icon size={14} className={ready?'text-emerald-400':'text-muted-foreground/30'} />
+                          <span className={`text-sm flex-1 ${ready?'text-white/90':'text-muted-foreground/40'}`}>{label}</span>
+                          {ready ? <CheckCircle2 size={14} className="text-emerald-400 shrink-0" /> : <RefreshCw size={12} className="text-muted-foreground/30 animate-spin shrink-0" />}
+                        </div>
+                      ))}
+                    </div>
+                    {deployment && (
+                      <>
+                        <details className="rounded-2xl overflow-hidden" style={{ border:'1px solid rgba(255,255,255,0.08)' }}>
+                          <summary className="cursor-pointer px-5 py-3.5 text-xs font-semibold text-muted-foreground/60 select-none" style={{ background:'rgba(255,255,255,0.02)' }}>
+                            Environment Variables ({Object.keys(deployment.env_vars).length})
+                          </summary>
+                          <div className="overflow-auto max-h-44" style={{ background:'rgba(0,0,0,0.4)' }}>
+                            <pre className="p-4 text-[11px] text-white/60 font-mono">{Object.entries(deployment.env_vars).map(([k,v]) => `${k}=${v}`).join('\n')}</pre>
+                          </div>
+                        </details>
+                        <div className="flex gap-2">
+                          <button onClick={() => {
+                            const content = Object.entries(deployment.env_vars).map(([k,v]) => `${k}=${v}`).join('\n')
+                            const blob = new Blob([content], { type:'text/plain' })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a'); a.href=url; a.download='edon-healthcare.env'; a.click()
+                            URL.revokeObjectURL(url)
+                          }} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-colors" style={{ background:'rgba(74,222,128,0.1)', border:'1px solid rgba(74,222,128,0.25)', color:'#86efac' }}>
+                            <Package size={14} /> Download .env Bundle
+                          </button>
+                          <button onClick={() => navigator.clipboard.writeText(Object.entries(deployment.env_vars).map(([k,v]) => `${k}=${v}`).join('\n')).catch(()=>{})}
+                            className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm transition-colors" style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.5)' }}>
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Screen 10 */}
+                {screen===10 && (
+                  <div className="max-w-lg space-y-6">
+                    <div>
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-500/50 uppercase mb-1.5">Final Step</p>
+                      <h1 className="text-3xl font-bold text-white">Activate Clinical Governance</h1>
+                    </div>
+                    <div className="space-y-2.5">
+                      {['Installing clinical gateway','Binding identity provider','Activating HIPAA enforcement','Verifying network routing','Audit pipeline online'].map((step,i) => {
+                        const done = activationStep>=0 && i<=activationStep
+                        return (
+                          <motion.div key={i} initial={{ opacity:0, x:12 }} animate={{ opacity:1, x:0 }} transition={{ delay:i*0.15 }}
+                            className="flex items-center gap-3 px-5 py-3.5 rounded-xl transition-all duration-300"
+                            style={{ background:done?'rgba(74,222,128,0.07)':'rgba(255,255,255,0.02)', border:done?'1px solid rgba(74,222,128,0.2)':'1px solid rgba(255,255,255,0.06)' }}>
+                            {activationStep===i && !done ? <RefreshCw size={14} className="text-emerald-400 animate-spin shrink-0" />
+                              : done ? <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
+                              : <div className="w-3.5 h-3.5 rounded-full shrink-0" style={{ border:'2px solid rgba(255,255,255,0.15)' }} />}
+                            <span className={`text-sm flex-1 ${done?'text-white/90':'text-white/35'}`}>{step}</span>
+                            <span className={`text-[11px] font-bold ${done?'text-emerald-400':'text-white/20'}`}>{done?'DONE':'PENDING'}</span>
+                          </motion.div>
+                        )
+                      })}
+                    </div>
+                    <div className="rounded-2xl p-6 space-y-3" style={{ border:'1px solid rgba(74,222,128,0.22)', background:'rgba(74,222,128,0.05)' }}>
+                      <p className="font-semibold text-emerald-200">Clinical governance system ready to activate.</p>
+                      <p className="text-sm text-muted-foreground leading-relaxed">Once activated, EDON enforces HIPAA-grade governance in real time. All clinical AI actions are intercepted, evaluated, and enforced per Policy Pack v1. The healthcare demo console unlocks immediately.</p>
+                    </div>
+                  </div>
+                )}
+
+              </div>
+
+              {/* CTA bar */}
+              {ctaReady && (
+                <div className="px-8 pb-8 pt-4 shrink-0" style={{ borderTop:'1px solid rgba(255,255,255,0.04)' }}>
+                  <button onClick={handleCTA} disabled={busy||(screen===8&&!allTrustChecked)}
+                    className="w-full flex items-center justify-center gap-2.5 py-4 rounded-2xl font-semibold text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{
+                      background:screen===10?'rgba(74,222,128,0.22)':'rgba(74,222,128,0.12)',
+                      border:screen===10?'2px solid rgba(74,222,128,0.5)':'1px solid rgba(74,222,128,0.28)',
+                      color:'#86efac',
+                      boxShadow:screen===10?'0 0 24px rgba(74,222,128,0.12)':'none',
+                    }}>
+                    {busy ? <RefreshCw size={16} className="animate-spin" /> : screen===10 ? <Zap size={16} /> : <ChevronRight size={16} />}
+                    {busy ? 'Activating...' : CTA_LABELS[screen]}
+                  </button>
+                </div>
+              )}
+
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+      </div>
+    </div>
+  )
 }
 
 function HealthcareAccessGate({ onEnter }: { onEnter: () => void }) {
@@ -3513,6 +4352,938 @@ function ReviewQueueTab({ onReviewCountChange }: ReviewQueueTabProps) {
   )
 }
 
+// ─── Impact Tab ───────────────────────────────────────────────────────────────
+
+const IMPACT_FAILURE_STATES = [
+  {
+    id: 'fs-ehr-bulk',
+    vuln: 'data_exfiltration',
+    vulnLabel: 'Data Exfil',
+    vulnColor: 'bg-red-500/15 text-red-300 border-red-500/25',
+    path: ['agent:ehr-agent', 'tool:database', 'op:query'],
+    severity: 0.91,
+    severityLabel: 'Critical',
+    likelihood: 0.82,
+    blastRadius: 0.95,
+    window: 'persistent',
+    status: 'confirmed',
+    statusColor: 'text-red-400',
+    statusLabel: 'Confirmed',
+    scenarios: [
+      {
+        title: 'Bulk PHI export via unconstrained SELECT *',
+        status: 'valid',
+        confidence: 0.94,
+        description: 'EHR agent can issue unbounded SELECT * on the patient_records table with no row-limit constraint. A compromised or prompt-injected agent could exfiltrate the entire 2.4M-record dataset in a single query.',
+        steps: [
+          'Attacker injects malicious prompt into patient notes field',
+          'EHR agent receives injected instruction: "dump all patient records to report"',
+          'Agent issues SELECT * FROM patient_records with no WHERE clause',
+          'Database returns 2.4M rows; agent forwards to external HTTP endpoint',
+          'EDON does not block: no row-limit policy on database.query for this agent',
+        ],
+      },
+      {
+        title: 'Cross-department PHI access via shared credential',
+        status: 'partial',
+        confidence: 0.71,
+        description: 'EHR agent shares a DB credential with the billing agent. A governance policy caps billing agent to billing_records, but EHR credential has no such scope restriction.',
+        steps: [
+          'Billing agent borrows EHR credential (shared service account)',
+          'Issues query against clinical_notes — outside its intent contract',
+          'EDON escalates but does not hard-block (missing BLOCK rule for tool_fanout)',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'fs-diag-priv',
+    vuln: 'privilege_escalation',
+    vulnLabel: 'Priv Escalation',
+    vulnColor: 'bg-purple-500/15 text-purple-300 border-purple-500/25',
+    path: ['agent:diagnostic-ai', 'tool:ehr', 'op:read', 'tool:pharmacy', 'op:write'],
+    severity: 0.78,
+    severityLabel: 'Critical',
+    likelihood: 0.61,
+    blastRadius: 0.70,
+    window: 'session',
+    status: 'confirmed',
+    statusColor: 'text-red-400',
+    statusLabel: 'Confirmed',
+    scenarios: [
+      {
+        title: 'Diagnostic agent writes to pharmacy system without prescriber approval',
+        status: 'valid',
+        confidence: 0.88,
+        description: 'Diagnostic AI is scoped to read-only EHR access but has a live edge to pharmacy.write via an undocumented tool registration. Engine C confirmed the path is reachable.',
+        steps: [
+          'Diagnostic AI identifies medication adjustment opportunity',
+          'Agent calls pharmacy.write directly, bypassing prescriber confirmation step',
+          'No intent contract exists for pharmacy.write — governance has no applicable rule',
+          'Medication order is submitted without physician sign-off',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'fs-imaging-audit',
+    vuln: 'audit_gap',
+    vulnLabel: 'Audit Gap',
+    vulnColor: 'bg-slate-500/15 text-slate-300 border-slate-500/25',
+    path: ['agent:imaging-agent', 'tool:http', 'op:external_call'],
+    severity: 0.54,
+    severityLabel: 'High',
+    likelihood: 0.77,
+    blastRadius: 0.45,
+    window: 'persistent',
+    status: 'probed',
+    statusColor: 'text-blue-400',
+    statusLabel: 'Probed',
+    scenarios: [
+      {
+        title: 'Imaging agent externalizes DICOM data without audit log entry',
+        status: 'valid',
+        confidence: 0.80,
+        description: 'Imaging agent calls an external radiology API (http.request) but the call is not intercepted by the governance layer — it bypasses the /v1/action endpoint entirely, leaving no audit trail.',
+        steps: [
+          'Imaging agent fires direct HTTP request to external DICOM cloud',
+          'Request does not pass through EDON governance proxy',
+          'HIPAA audit log has no record of PHI leaving the network perimeter',
+          'Compliance violation: 45 CFR §164.312(b) — audit control requirement',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'fs-cross-tenant',
+    vuln: 'cross_tenant_data_leak',
+    vulnLabel: 'Cross-Tenant Leak',
+    vulnColor: 'bg-rose-500/15 text-rose-300 border-rose-500/25',
+    path: ['agent:scheduling-agent', 'tool:database', 'op:query'],
+    severity: 0.66,
+    severityLabel: 'High',
+    likelihood: 0.49,
+    blastRadius: 0.58,
+    window: 'opportunistic',
+    status: 'unprobed',
+    statusColor: 'text-slate-400',
+    statusLabel: 'Unprobed',
+    scenarios: [],
+  },
+]
+
+// ─── Bootstrap / Upload types ─────────────────────────────────────────────────
+
+type DemoFailureState = typeof IMPACT_FAILURE_STATES[0]
+
+const VULN_STYLE: Record<string, { label: string; color: string }> = {
+  data_exfiltration:             { label: 'Data Exfil',      color: 'bg-red-500/15 text-red-300 border-red-500/25' },
+  privilege_escalation:          { label: 'Priv Escalation', color: 'bg-purple-500/15 text-purple-300 border-purple-500/25' },
+  audit_gap:                     { label: 'Audit Gap',       color: 'bg-slate-500/15 text-slate-300 border-slate-500/25' },
+  prompt_injection_propagation:  { label: 'Prompt Inject',   color: 'bg-orange-500/15 text-orange-300 border-orange-500/25' },
+  policy_bypass_via_chaining:    { label: 'Policy Bypass',   color: 'bg-pink-500/15 text-pink-300 border-pink-500/25' },
+  unconstrained_tool_fanout:     { label: 'Tool Fanout',     color: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/25' },
+  confused_deputy:               { label: 'Confused Deputy', color: 'bg-amber-500/15 text-amber-300 border-amber-500/25' },
+  unconstrained_credential_access: { label: 'Cred Access',  color: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/25' },
+}
+
+interface BootstrapFinding {
+  failure_state_id: string
+  vulnerability_class: string
+  description: string
+  severity_score: number
+  total_estimated_usd: number
+  exploit_paths: {
+    path_id: string
+    narrative: string
+    estimated_usd: number
+    severity_score: number
+    exploitability_window: string
+    data_classes: string[]
+    confidence_score: number
+  }[]
+  proof?: {
+    logical_proof?: {
+      steps: { step_number: number; actor: string; action: string; target: string; rule_violated: string; consequence: string; is_critical: boolean }[]
+    }
+  }
+  sandbox?: {
+    steps: { step_number: number; action_type: string; side_effect: string; data_accessed: string[]; data_transmitted: string[]; reversible: boolean; would_be_blocked: boolean }[]
+    exploit_completed: boolean
+    blast_radius_summary: string
+    execution_narrative: string
+    data_exfiltrated: string[]
+  }
+}
+
+interface BootstrapReport {
+  job_id: string
+  agents_discovered: number
+  tools_discovered: number
+  endpoints_analyzed: number
+  total_failure_states: number
+  critical_count: number
+  high_count: number
+  top_findings: BootstrapFinding[]
+  total_estimated_risk_usd: number
+  top_vulnerability_class: string
+  confidence: number
+  executive_summary: string
+  elapsed_seconds: number
+  data_sources: string[]
+}
+
+function mapBootstrapToFailureStates(report: BootstrapReport): DemoFailureState[] {
+  return report.top_findings.map((finding, i) => {
+    const vuln  = finding.vulnerability_class
+    const style = VULN_STYLE[vuln] ?? { label: vuln.replace(/_/g, ' '), color: 'bg-slate-500/15 text-slate-300 border-slate-500/25' }
+    const sev   = finding.severity_score
+    const severityLabel = sev >= 0.75 ? 'Critical' : sev >= 0.5 ? 'High' : sev >= 0.25 ? 'Medium' : 'Low'
+
+    const scenarios = finding.exploit_paths.map(path => {
+      const steps: string[] = []
+      if (finding.proof?.logical_proof?.steps?.length) {
+        finding.proof.logical_proof.steps.forEach(s => {
+          steps.push(`${s.actor} → ${s.action} (target: ${s.target})`)
+          if (s.consequence) steps.push(`  Consequence: ${s.consequence}`)
+        })
+      } else if (finding.sandbox?.steps?.length) {
+        finding.sandbox.steps.forEach(s => {
+          const label = s.data_transmitted?.length
+            ? `${s.action_type}: ${s.side_effect} [data out: ${s.data_transmitted.join(', ')}]`
+            : `${s.action_type}: ${s.side_effect}`
+          steps.push(label)
+        })
+      } else {
+        steps.push(...(path.narrative || 'attack path').split(' → ').filter(Boolean))
+      }
+      const exploitDone = finding.sandbox?.exploit_completed ?? false
+      return {
+        title: path.narrative?.slice(0, 80) || `Attack path ${path.path_id}`,
+        status: exploitDone ? 'valid' : 'partial' as 'valid' | 'partial',
+        confidence: path.confidence_score ?? 0.75,
+        description: [
+          finding.description,
+          finding.sandbox?.blast_radius_summary ? `Sandbox: ${finding.sandbox.blast_radius_summary}` : '',
+          `Estimated exposure: $${path.estimated_usd.toLocaleString()}`,
+        ].filter(Boolean).join(' '),
+        steps: steps.length ? steps : [path.narrative || 'No detail available'],
+      }
+    })
+
+    return {
+      id:           finding.failure_state_id || `scan-${i}`,
+      vuln,
+      vulnLabel:    style.label,
+      vulnColor:    style.color,
+      path:         [finding.description?.split(' ')[0] || `agent:${vuln}`],
+      severity:     sev,
+      severityLabel,
+      likelihood:   Math.min(sev * 0.9, 0.95),
+      blastRadius:  sev * 0.85,
+      window:       finding.exploit_paths[0]?.exploitability_window || 'session',
+      status:       finding.sandbox?.exploit_completed ? 'confirmed' : 'probed',
+      statusColor:  finding.sandbox?.exploit_completed ? 'text-red-400' : 'text-blue-400',
+      statusLabel:  finding.sandbox?.exploit_completed ? 'Confirmed' : 'Probed',
+      scenarios,
+    }
+  })
+}
+
+// ─── Scan Upload Panel ────────────────────────────────────────────────────────
+
+function ScanUploadPanel({ onResult }: { onResult: (report: BootstrapReport) => void }) {
+  const [gatewayUrl, setGatewayUrl] = useState(
+    () => localStorage.getItem('edon_api_base') || localStorage.getItem('EDON_BASE_URL') || 'https://edon-gateway-prod.fly.dev'
+  )
+  const [token, setToken] = useState(
+    () => localStorage.getItem('edon_token') || localStorage.getItem('edon_api_key') || ''
+  )
+  const [showToken, setShowToken] = useState(false)
+  const [specText, setSpecText] = useState('')
+  const [dragging, setDragging] = useState(false)
+  const [fileName, setFileName] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const handleFile = (file: File) => {
+    setFileName(file.name)
+    setError('')
+    const reader = new FileReader()
+    reader.onload = e => setSpecText((e.target?.result as string) || '')
+    reader.readAsText(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file) handleFile(file)
+  }
+
+  const runScan = async () => {
+    if (!specText.trim()) { setError('Paste or upload an OpenAPI spec first.'); return }
+    if (!token.trim())    { setError('Enter your EDON API token.'); return }
+    setScanning(true)
+    setError('')
+    try {
+      let parsed: Record<string, unknown>
+      try { parsed = JSON.parse(specText) } catch {
+        // try YAML-as-JSON fallback — just send as raw string in openapi_yaml field
+        parsed = {}
+      }
+      const body = Object.keys(parsed).length
+        ? { openapi_spec: parsed }
+        : { openapi_yaml: specText }
+
+      const base = gatewayUrl.replace(/\/$/, '')
+      const res = await fetch(`${base}/v1/bootstrap?wait=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-EDON-TOKEN': token },
+        body: JSON.stringify({ ...body, tenant_id: 'demo' }),
+      })
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(detail.detail || `${res.status}`)
+      }
+      const data = await res.json() as BootstrapReport
+      localStorage.setItem('edon_api_base', base)
+      localStorage.setItem('edon_token', token)
+      onResult(data)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Scan failed. Check gateway URL and token.')
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl border border-white/8 bg-white/3 p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Scan size={14} className="text-primary" />
+          <span className="text-sm font-semibold">Connect to EDON Gateway</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">Gateway URL</label>
+            <input
+              type="text"
+              value={gatewayUrl}
+              onChange={e => setGatewayUrl(e.target.value)}
+              placeholder="https://edon-gateway-prod.fly.dev"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground">API Token</label>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                placeholder="edon_…"
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 pr-8 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+              />
+              <button onClick={() => setShowToken(!showToken)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                {showToken ? <EyeOff size={12} /> : <Eye size={12} />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-white/8 bg-white/3 p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <FileCode2 size={14} className="text-primary" />
+          <span className="text-sm font-semibold">Upload API Spec</span>
+          <span className="text-xs text-muted-foreground">.json or .yaml</span>
+        </div>
+
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => fileRef.current?.click()}
+          className={cn(
+            'relative rounded-xl border-2 border-dashed p-8 text-center cursor-pointer transition-all',
+            dragging ? 'border-primary/60 bg-primary/8' : 'border-white/12 hover:border-white/25 hover:bg-white/3',
+          )}
+        >
+          <input ref={fileRef} type="file" accept=".json,.yaml,.yml" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+          {fileName ? (
+            <div className="flex flex-col items-center gap-2">
+              <CheckCircle size={20} className="text-primary" />
+              <div className="text-sm font-medium">{fileName}</div>
+              <div className="text-xs text-muted-foreground">Click to replace</div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <Upload size={20} className="text-muted-foreground/50" />
+              <div className="text-sm text-muted-foreground">Drop your OpenAPI spec here</div>
+              <div className="text-xs text-muted-foreground/60">or click to browse</div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-white/8" />
+          <span className="text-xs text-muted-foreground">or paste</span>
+          <div className="flex-1 h-px bg-white/8" />
+        </div>
+
+        <textarea
+          value={specText}
+          onChange={e => { setSpecText(e.target.value); if (e.target.value) setFileName('') }}
+          placeholder={'{\n  "openapi": "3.0.0",\n  "info": { "title": "My API", "version": "1.0" },\n  "paths": { ... }\n}'}
+          rows={6}
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/40 font-mono focus:outline-none focus:border-primary/50 resize-none"
+        />
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-xs text-red-400">
+          <AlertCircle size={13} />
+          {error}
+        </div>
+      )}
+
+      <button
+        onClick={runScan}
+        disabled={scanning}
+        className={cn(
+          'w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-all',
+          scanning
+            ? 'bg-primary/20 text-primary/60 cursor-not-allowed'
+            : 'bg-primary/15 border border-primary/30 text-primary hover:bg-primary/25',
+        )}
+      >
+        {scanning ? (
+          <><Loader2 size={15} className="animate-spin" /> Scanning your system…</>
+        ) : (
+          <><Scan size={15} /> Run Security Scan</>
+        )}
+      </button>
+
+      <p className="text-center text-[11px] text-muted-foreground/50">
+        No real systems are touched. Findings are generated from your API spec in seconds.
+      </p>
+    </div>
+  )
+}
+
+const COVERAGE_DATA = [18, 22, 29, 31, 38, 42, 45, 51, 54, 58, 61, 65, 68, 71, 73, 75, 78, 80, 82, 84]
+
+function ImpactSparkline() {
+  const W = 200, H = 40
+  const max = Math.max(...COVERAGE_DATA)
+  const xStep = W / (COVERAGE_DATA.length - 1)
+  const coords = COVERAGE_DATA.map((v, i): [number, number] => [i * xStep, H - (v / max) * H * 0.85])
+  const d = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+  const area = `${d} L${(COVERAGE_DATA.length - 1) * xStep},${H} L0,${H} Z`
+  return (
+    <svg width={W} height={H} className="overflow-visible">
+      <defs>
+        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="hsl(142 70% 45%)" stopOpacity="0.25" />
+          <stop offset="100%" stopColor="hsl(142 70% 45%)" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#spark-fill)" />
+      <path d={d} fill="none" stroke="hsl(142 70% 45%)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={coords[coords.length - 1][0]} cy={coords[coords.length - 1][1]} r="3" fill="hsl(142 70% 45%)" />
+    </svg>
+  )
+}
+
+// Live feed events for Value tab
+const FEED_TEMPLATES = [
+  { icon: '🛡️', text: 'PHI exfiltration attempt blocked on ehr-agent', color: 'text-red-400' },
+  { icon: '✅', text: 'Diagnostic AI action approved — within intent contract', color: 'text-emerald-400' },
+  { icon: '⚠️', text: 'pharmacy.write attempted without prescriber approval — escalated', color: 'text-amber-400' },
+  { icon: '🔍', text: 'Engine B generated new attack scenario for data_exfiltration path', color: 'text-blue-400' },
+  { icon: '🛡️', text: 'Cross-department PHI query blocked — scope violation', color: 'text-red-400' },
+  { icon: '✅', text: 'HIPAA audit log entry written — imaging agent call captured', color: 'text-emerald-400' },
+  { icon: '🤖', text: 'Self-healing rule deployed — SELECT * row-limit enforced', color: 'text-primary' },
+  { icon: '⚠️', text: 'Imaging agent direct HTTP call detected — bypassing governance', color: 'text-amber-400' },
+]
+
+function ImpactTab() {
+  const [selected, setSelected] = useState<string | null>('fs-ehr-bulk')
+  const [expandedScenario, setExpandedScenario] = useState<number | null>(0)
+  const [innerTab, setInnerTab] = useState<'upload' | 'value' | 'findings' | 'graph'>('value')
+  const [feed, setFeed] = useState(() => FEED_TEMPLATES.slice(0, 4).map((t, i) => ({ ...t, id: String(i), ago: `${(4 - i) * 3}m ago` })))
+  const feedRef = useRef(4)
+  const [scanReport, setScanReport] = useState<BootstrapReport | null>(null)
+  const [liveStates, setLiveStates] = useState<DemoFailureState[] | null>(null)
+
+  const activeStates = liveStates ?? IMPACT_FAILURE_STATES
+  const selectedState = activeStates.find(s => s.id === selected) ?? null
+  const confirmed = activeStates.filter(s => s.status === 'confirmed').length
+  const critical = activeStates.filter(s => s.severity >= 0.75).length
+
+  const handleScanResult = (report: BootstrapReport) => {
+    setScanReport(report)
+    const mapped = mapBootstrapToFailureStates(report)
+    setLiveStates(mapped)
+    setSelected(mapped[0]?.id ?? null)
+    setExpandedScenario(0)
+    setInnerTab('findings')
+  }
+
+  // Live feed ticker
+  useEffect(() => {
+    if (innerTab !== 'value') return
+    const iv = setInterval(() => {
+      const t = FEED_TEMPLATES[feedRef.current % FEED_TEMPLATES.length]
+      feedRef.current++
+      setFeed(prev => [{ ...t, id: String(Date.now()), ago: 'just now' }, ...prev.slice(0, 6)])
+    }, 6000)
+    return () => clearInterval(iv)
+  }, [innerTab])
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <Scan size={16} className="text-primary" />
+            Impact Intelligence
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Continuous execution graph · AI red team · deterministic validation
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/3 text-xs text-muted-foreground hover:text-foreground transition-colors">
+            <FileText size={11} />
+            Report
+          </button>
+          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors">
+            <RefreshCcw size={11} />
+            Run Cycle
+          </button>
+        </div>
+      </div>
+
+      {/* Inner tab bar */}
+      <div className="flex items-center gap-1 border-b border-white/8">
+        {([
+          { id: 'upload',   label: scanReport ? 'New Scan' : 'Upload & Scan', icon: Upload },
+          { id: 'value',    label: 'Value',    icon: TrendingUp },
+          { id: 'findings', label: scanReport ? `Findings (${activeStates.length})` : 'Findings', icon: AlertTriangle },
+          { id: 'graph',    label: 'Graph',    icon: Share2 },
+        ] as const).map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => setInnerTab(id)}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors',
+              innerTab === id
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Icon size={11} />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {innerTab === 'upload' && (
+        <ScanUploadPanel onResult={handleScanResult} />
+      )}
+
+      {innerTab === 'value' && (
+        <div className="space-y-4">
+          {/* Scan result banner */}
+          {scanReport && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-xl border border-primary/25 bg-primary/8 p-4"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <CheckCircle size={13} className="text-primary" />
+                    <span className="text-sm font-semibold text-primary">Live Scan Complete</span>
+                    <span className="text-xs text-muted-foreground">in {scanReport.elapsed_seconds.toFixed(1)}s</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed max-w-xl">{scanReport.executive_summary}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-2xl font-bold text-red-400">${(scanReport.total_estimated_risk_usd / 1000).toFixed(0)}K</div>
+                  <div className="text-xs text-muted-foreground">total risk</div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Value hero cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {scanReport ? [
+              { label: 'Risk Exposed', value: `$${(scanReport.total_estimated_risk_usd / 1000).toFixed(0)}K`, sub: `${scanReport.critical_count} critical findings`, color: 'text-red-400', bg: 'bg-red-500/8 border-red-500/20', icon: DollarSign },
+              { label: 'Failure States', value: String(scanReport.total_failure_states), sub: `${scanReport.high_count} high severity`, color: 'text-amber-400', bg: 'bg-amber-500/8 border-amber-500/20', icon: AlertTriangle },
+              { label: 'Confidence', value: `${Math.round(scanReport.confidence * 100)}%`, sub: scanReport.data_sources.join(' + ') || 'openapi', color: 'text-primary', bg: 'bg-primary/8 border-primary/20', icon: TrendingUp },
+              { label: 'Endpoints Scanned', value: String(scanReport.endpoints_analyzed), sub: `${scanReport.agents_discovered} agents found`, color: 'text-blue-400', bg: 'bg-blue-500/8 border-blue-500/20', icon: Scan },
+            ].map(({ label, value, sub, color, bg, icon: Icon }) => (
+              <div key={label} className={cn('rounded-xl border p-4', bg)}>
+                <div className="flex items-center gap-2 mb-2">
+                  <Icon size={13} className={color} />
+                  <span className="text-xs text-muted-foreground">{label}</span>
+                </div>
+                <div className={cn('text-2xl font-bold', color)}>{value}</div>
+                <div className="text-xs text-muted-foreground mt-1">{sub}</div>
+              </div>
+            )) : [
+              { label: 'PHI Records Protected', value: '2.4M', sub: 'from bulk exfiltration', color: 'text-emerald-400', bg: 'bg-emerald-500/8 border-emerald-500/20', icon: Shield },
+              { label: 'HIPAA Violations Blocked', value: '847', sub: 'this quarter', color: 'text-red-400', bg: 'bg-red-500/8 border-red-500/20', icon: XCircle },
+              { label: 'Coverage Growth', value: '+84%', sub: 'Cycle #20', color: 'text-primary', bg: 'bg-primary/8 border-primary/20', icon: TrendingUp },
+              { label: 'Autonomous Mitigations', value: '3', sub: 'rules auto-deployed', color: 'text-blue-400', bg: 'bg-blue-500/8 border-blue-500/20', icon: Zap },
+            ].map(({ label, value, sub, color, bg, icon: Icon }) => (
+              <div key={label} className={cn('rounded-xl border p-4', bg)}>
+                <div className="flex items-center gap-2 mb-2">
+                  <Icon size={13} className={color} />
+                  <span className="text-xs text-muted-foreground">{label}</span>
+                </div>
+                <div className={cn('text-2xl font-bold', color)}>{value}</div>
+                <div className="text-xs text-muted-foreground mt-1">{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Coverage sparkline + stats row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs font-medium">Coverage Over Time</div>
+                <span className="text-xs text-primary font-semibold">84% now</span>
+              </div>
+              <ImpactSparkline />
+              <div className="mt-2 text-xs text-muted-foreground">20 cycles · started at 18%</div>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-2.5">
+              <div className="text-xs font-medium mb-1">Risk Breakdown</div>
+              {[
+                { label: 'Critical',      count: critical,   total: activeStates.length,                                                  color: 'bg-red-500' },
+                { label: 'Confirmed',     count: confirmed,  total: activeStates.length,                                                  color: 'bg-amber-500' },
+                { label: 'Scenarios run', count: activeStates.reduce((n, s) => n + s.scenarios.length, 0), total: Math.max(activeStates.reduce((n, s) => n + s.scenarios.length, 0), 1), color: 'bg-blue-500' },
+              ].map(({ label, count, total, color }) => (
+                <div key={label}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span className="font-medium">{count}<span className="text-muted-foreground">/{total}</span></span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-white/8 overflow-hidden">
+                    <div className={cn('h-full rounded-full', color)} style={{ width: `${(count / total) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Live feed */}
+          <div className="rounded-xl border border-white/8 bg-white/3 overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-white/8">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-xs font-medium">Live Governance Feed</span>
+            </div>
+            <div className="divide-y divide-white/5">
+              <AnimatePresence initial={false}>
+                {feed.map(item => (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex items-center gap-3 px-4 py-2.5"
+                  >
+                    <span className="text-sm shrink-0">{item.icon}</span>
+                    <span className={cn('text-xs flex-1', item.color)}>{item.text}</span>
+                    <span className="text-[10px] text-muted-foreground/50 shrink-0">{item.ago}</span>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {innerTab === 'graph' && (
+        <div className="rounded-xl border border-white/8 bg-white/3 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="text-sm font-medium">Agent–Tool Execution Graph</div>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-primary/60 border border-primary" />Agent
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded bg-blue-500/60 border border-blue-400" />Tool
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-px bg-white/25" />Edge
+              </div>
+            </div>
+          </div>
+          <svg viewBox="0 0 640 280" className="w-full" style={{ maxHeight: 280 }}>
+            <defs>
+              <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255,255,255,0.25)" />
+              </marker>
+            </defs>
+            {[
+              [130, 80,  310, 60], [130, 80,  310, 140],
+              [130, 160, 310, 140], [130, 160, 310, 220],
+              [130, 240, 310, 140], [130, 240, 310, 220],
+              [510, 60,  590, 140], [510, 140, 590, 140],
+            ].map(([x1,y1,x2,y2], i) => (
+              <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke="rgba(255,255,255,0.12)" strokeWidth="1.5" markerEnd="url(#arr)" />
+            ))}
+            {[
+              [130, 80, 'ehr-agent'], [130, 160, 'diagnostic-ai'], [130, 240, 'imaging-agent'],
+            ].map(([cx, cy, label]) => (
+              <g key={label as string} transform={`translate(${cx},${cy})`}>
+                <circle r={18} fill="hsl(142 70% 14% / 0.8)" stroke="hsl(142 70% 45%)" strokeWidth="1.5" />
+                <text y={5} textAnchor="middle" fontSize={10} fill="hsl(142 70% 65%)">✚</text>
+                <text y={30} textAnchor="middle" fontSize={9} fill="rgba(255,255,255,0.55)">{label as string}</text>
+              </g>
+            ))}
+            {[
+              [310, 60, 'database'], [310, 140, 'ehr'], [310, 220, 'http'],
+              [510, 60, 'pharmacy'], [510, 140, 'ext. API'],
+            ].map(([cx, cy, label]) => (
+              <g key={label as string} transform={`translate(${cx},${cy})`}>
+                <rect x={-16} y={-12} width={32} height={24} rx={4}
+                  fill="hsl(217 91% 20% / 0.8)" stroke="hsl(217 91% 60%)" strokeWidth="1.5" />
+                <text y={24} textAnchor="middle" fontSize={9} fill="rgba(255,255,255,0.55)">{label as string}</text>
+              </g>
+            ))}
+            {/* Risk ring on database */}
+            <circle cx={310} cy={60} r={22} fill="none" stroke="hsl(0 80% 55%)" strokeWidth="1" strokeDasharray="3 2" opacity="0.6" />
+            <text x={342} y={44} fontSize={8} fill="hsl(0 80% 65%)" opacity="0.8">confirmed</text>
+          </svg>
+          <div className="mt-4 flex items-center gap-6 text-xs text-muted-foreground justify-center">
+            <span>4 agents · 5 tools · 8 edges</span>
+            <span className="text-red-400/80">2 confirmed findings on this graph</span>
+          </div>
+        </div>
+      )}
+
+      {innerTab === 'findings' && (
+        <div className="flex flex-col md:flex-row gap-4" style={{ minHeight: 440 }}>
+          {/* Left list */}
+          <div className="w-full md:w-72 shrink-0 space-y-2">
+            {activeStates.map(state => (
+              <button
+                key={state.id}
+                onClick={() => { setSelected(state.id); setExpandedScenario(0); }}
+                className={cn(
+                  'w-full text-left rounded-xl border p-3 transition-all',
+                  selected === state.id
+                    ? 'border-primary/40 bg-primary/8'
+                    : 'border-white/8 bg-white/3 hover:bg-white/5 hover:border-white/15',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <span className={cn('text-xs px-1.5 py-0.5 rounded border', state.vulnColor)}>
+                    {state.vulnLabel}
+                  </span>
+                  <span className={cn(
+                    'text-xs font-bold tabular-nums',
+                    state.severity >= 0.75 ? 'text-red-400' : state.severity >= 0.5 ? 'text-amber-400' : 'text-yellow-400'
+                  )}>
+                    {Math.round(state.severity * 100)}
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground font-mono truncate mb-1.5">
+                  {state.path.slice(0, 3).join(' → ')}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className={cn('text-xs', state.statusColor)}>{state.statusLabel}</span>
+                  <span className={cn(
+                    'text-[10px] px-1.5 py-0.5 rounded-full border',
+                    state.severity >= 0.75 ? 'bg-red-500/12 text-red-400 border-red-500/20' :
+                    state.severity >= 0.5  ? 'bg-amber-500/12 text-amber-400 border-amber-500/20' :
+                                             'bg-yellow-500/12 text-yellow-400 border-yellow-500/20',
+                  )}>
+                    {state.severityLabel}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {/* Right detail */}
+          <div className="flex-1 min-w-0 rounded-xl border border-white/8 bg-white/3 overflow-hidden">
+            {selectedState ? (
+              <div className="flex flex-col h-full">
+                <div className="p-4 border-b border-white/8">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={cn('text-xs font-mono px-1.5 py-0.5 rounded border', selectedState.vulnColor)}>
+                          {selectedState.vulnLabel}
+                        </span>
+                        <span className={cn('text-xs font-medium', selectedState.statusColor)}>
+                          {selectedState.statusLabel}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground font-mono">
+                        {selectedState.path.join(' → ')}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className={cn('text-xl font-bold', selectedState.severity >= 0.75 ? 'text-red-400' : 'text-amber-400')}>
+                        {Math.round(selectedState.severity * 100)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">{selectedState.severityLabel}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: 'Likelihood', value: `${Math.round(selectedState.likelihood * 100)}%` },
+                      { label: 'Blast Radius', value: `${Math.round(selectedState.blastRadius * 100)}%` },
+                      { label: 'Window', value: selectedState.window },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="rounded-lg bg-white/3 border border-white/8 px-2 py-2 text-center">
+                        <div className="text-[10px] text-muted-foreground">{label}</div>
+                        <div className="text-xs font-semibold mt-0.5 capitalize">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Dollar impact from live scan */}
+                  {scanReport && (() => {
+                    const finding = scanReport.top_findings.find(f => f.failure_state_id === selectedState.id)
+                    if (!finding) return null
+                    return (
+                      <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/8 px-3 py-2.5 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <DollarSign size={12} className="text-red-400" />
+                          <span className="text-xs text-muted-foreground">Estimated exposure</span>
+                        </div>
+                        <span className="text-sm font-bold text-red-400">${finding.total_estimated_usd.toLocaleString()}</span>
+                      </div>
+                    )
+                  })()}
+                </div>
+
+                {/* Sandbox execution trace from live scan */}
+                {scanReport && (() => {
+                  const finding = scanReport.top_findings.find(f => f.failure_state_id === selectedState.id)
+                  const sb = finding?.sandbox
+                  if (!sb) return null
+                  return (
+                    <div className="px-4 pb-2">
+                      <div className="rounded-lg border border-white/8 bg-white/2 overflow-hidden">
+                        <div className="flex items-center gap-2 px-3 py-2 border-b border-white/8">
+                          <Zap size={11} className={sb.exploit_completed ? 'text-red-400' : 'text-amber-400'} />
+                          <span className="text-xs font-medium">Sandbox Execution</span>
+                          <span className={cn('ml-auto text-[10px] px-1.5 py-0.5 rounded border', sb.exploit_completed ? 'bg-red-500/15 text-red-400 border-red-500/20' : 'bg-amber-500/15 text-amber-400 border-amber-500/20')}>
+                            {sb.exploit_completed ? 'EXPLOIT SUCCEEDED' : 'PARTIAL'}
+                          </span>
+                        </div>
+                        <div className="divide-y divide-white/5">
+                          {sb.steps.slice(0, 4).map((step, i) => (
+                            <div key={i} className="flex items-start gap-3 px-3 py-2">
+                              <span className="text-[10px] text-muted-foreground/50 tabular-nums pt-0.5 shrink-0">{step.step_number}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-[11px] text-muted-foreground font-mono">{step.action_type}</div>
+                                <div className="text-[11px] text-foreground/70 mt-0.5">{step.side_effect}</div>
+                              </div>
+                              {step.data_transmitted?.length > 0 && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/12 text-red-400 border border-red-500/20 shrink-0">out</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        {sb.blast_radius_summary && (
+                          <div className="px-3 py-2 border-t border-white/8 text-[11px] text-muted-foreground bg-white/2">
+                            {sb.blast_radius_summary}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground mb-3">
+                    {scanReport ? 'Exploit Paths' : 'Red Team Scenarios'} ({selectedState.scenarios.length})
+                  </div>
+                  {selectedState.scenarios.length === 0 ? (
+                    <div className="text-center py-8 text-xs text-muted-foreground">
+                      Not yet probed. Run a cycle to generate scenarios.
+                    </div>
+                  ) : selectedState.scenarios.map((s, i) => (
+                    <div key={i} className="border border-white/8 rounded-lg overflow-hidden">
+                      <button
+                        className="w-full flex items-center gap-3 p-3 hover:bg-white/3 transition-colors text-left"
+                        onClick={() => setExpandedScenario(expandedScenario === i ? null : i)}
+                      >
+                        {s.status === 'valid'
+                          ? <XCircle size={13} className="text-red-400 shrink-0" />
+                          : <AlertTriangle size={13} className="text-amber-400 shrink-0" />}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium truncate">{s.title}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            {s.status === 'valid' ? 'Confirmed' : 'Partial'} · {Math.round(s.confidence * 100)}% confidence
+                          </div>
+                        </div>
+                        <ChevronRight size={13} className={cn('text-muted-foreground shrink-0 transition-transform', expandedScenario === i && 'rotate-90')} />
+                      </button>
+                      <AnimatePresence>
+                        {expandedScenario === i && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.15 }}
+                            className="overflow-hidden"
+                          >
+                            <div className="px-3 pb-3 border-t border-white/8 pt-3 space-y-3">
+                              <p className="text-xs text-muted-foreground leading-relaxed">{s.description}</p>
+                              <div>
+                                <div className="text-xs font-medium text-muted-foreground mb-1.5">Attack steps</div>
+                                <ol className="space-y-1.5">
+                                  {s.steps.map((step, j) => (
+                                    <li key={j} className="flex gap-2 text-xs">
+                                      <span className="text-muted-foreground/60 shrink-0 tabular-nums">{j + 1}.</span>
+                                      <span className="text-muted-foreground">{step}</span>
+                                    </li>
+                                  ))}
+                                </ol>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                <Scan size={28} className="text-muted-foreground/30 mb-3" />
+                <div className="text-sm font-medium">Select a failure state</div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Click any state to see red team scenarios and attack paths.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Top Nav ──────────────────────────────────────────────────────────────────
 
 const NAV_TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
@@ -3521,6 +5292,7 @@ const NAV_TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'audit',     label: 'Audit',         icon: FileText },
   { id: 'policies',  label: 'Policies',      icon: Shield },
   { id: 'review',    label: 'Review Queue',  icon: ClipboardList },
+  { id: 'impact',    label: 'Impact',        icon: Scan },
 ]
 
 interface TopNavProps {
@@ -3535,20 +5307,40 @@ interface TopNavProps {
 
 function TopNav({ activeTab, setActiveTab, theme, onToggleTheme, lockdown, onLockdown, pendingReviewCount }: TopNavProps) {
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-xl">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6">
-        <div className="flex items-center gap-4 h-14">
+    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
+      {lockdown && (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-red-500/12 border-b border-red-500/20">
+          <div className="flex items-center gap-2 text-red-400 text-xs">
+            <AlertTriangle size={12} className="animate-pulse shrink-0" />
+            <span className="font-semibold tracking-wide">EMERGENCY LOCKDOWN ACTIVE</span>
+            <span className="text-red-400/50 hidden sm:inline">— all agent actions suspended</span>
+          </div>
+          <button
+            onClick={onLockdown}
+            className="px-2.5 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-500/12 hover:bg-red-500/20 border border-red-500/25 transition-colors"
+          >
+            Lift Lockdown
+          </button>
+        </div>
+      )}
+      <div className="px-4 sm:px-6">
+        <div className="flex items-center gap-3" style={{ height: 52 }}>
           {/* Wordmark */}
           <div className="flex items-center gap-2 shrink-0">
-            <div className="w-7 h-7 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center">
+            <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/25 flex items-center justify-center">
               <Lock size={13} className="text-primary" />
             </div>
-            <span className="edon-brand font-bold text-foreground text-sm tracking-widest">EDON</span>
-            <span className="text-muted-foreground text-xs hidden sm:block">· St. Mercy Health System</span>
+            <div className="flex items-center gap-1.5">
+              <span className="edon-brand font-bold text-foreground text-sm tracking-widest">EDON</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Live" />
+            </div>
+            <span className="text-muted-foreground/60 text-xs hidden md:block">· St. Mercy Health</span>
           </div>
 
-          {/* Nav pills */}
-          <nav className="flex items-center gap-1 bg-secondary/60 rounded-xl p-1 ml-2">
+          <div className="hidden md:block w-px h-5 bg-border/50 mx-1" />
+
+          {/* Nav */}
+          <nav className="flex items-center gap-0.5">
             {NAV_TABS.map(tab => {
               const Icon = tab.icon
               const isActive = activeTab === tab.id
@@ -3557,23 +5349,22 @@ function TopNav({ activeTab, setActiveTab, theme, onToggleTheme, lockdown, onLoc
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    'relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200',
-                    isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+                    'relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-150',
+                    isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
                   )}
                 >
                   {isActive && (
                     <motion.div
-                      layoutId="nav-indicator"
-                      className="absolute inset-0 rounded-lg"
-                      style={{ background: 'var(--nav-indicator-bg)' }}
-                      transition={{ type: 'spring', bounce: 0.2, duration: 0.35 }}
+                      layoutId="nav-pill"
+                      className="absolute inset-0 rounded-lg bg-white/8 border border-white/8"
+                      transition={{ type: 'spring', bounce: 0.15, duration: 0.3 }}
                     />
                   )}
                   <span className="relative flex items-center gap-1.5">
                     <Icon size={13} />
                     <span className="hidden sm:inline">{tab.label}</span>
                     {tab.id === 'review' && pendingReviewCount > 0 && (
-                      <span className="flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-[9px] font-bold text-black leading-none">
+                      <span className="flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white">
                         {pendingReviewCount}
                       </span>
                     )}
@@ -3583,43 +5374,32 @@ function TopNav({ activeTab, setActiveTab, theme, onToggleTheme, lockdown, onLoc
             })}
           </nav>
 
-          {/* Right badges */}
-          <div className="ml-auto flex items-center gap-2">
-            {/* Theme toggle */}
+          <div className="flex-1" />
+
+          {/* Right actions */}
+          <div className="flex items-center gap-1.5">
             <button
               onClick={onToggleTheme}
-              className="flex items-center justify-center w-8 h-8 rounded-xl border border-border bg-secondary hover:bg-muted transition-colors"
+              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 hover:bg-secondary transition-colors"
               aria-label="Toggle theme"
             >
-              {theme === 'dark'
-                ? <Sun size={14} className="text-muted-foreground" />
-                : <Moon size={14} className="text-muted-foreground" />}
+              {theme === 'dark' ? <Sun size={13} className="text-muted-foreground" /> : <Moon size={13} className="text-muted-foreground" />}
             </button>
-            <Badge variant="green">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-dot" />
-              Live
-            </Badge>
-            <Badge variant="default" className="hidden sm:inline-flex">
-              <Shield size={10} className="text-primary" />
-              Clinical Safety
-            </Badge>
-            <div className="flex items-center gap-1.5 bg-secondary rounded-xl px-2.5 py-1.5 border border-border">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/60 bg-secondary/60">
               <User size={12} className="text-muted-foreground" />
               <span className="text-xs text-foreground font-medium hidden sm:block">Dr. Chen</span>
             </div>
-            {/* Emergency Lockdown */}
             <button
               onClick={onLockdown}
               className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all duration-200',
+                'flex items-center justify-center w-8 h-8 rounded-lg border transition-all',
                 lockdown
-                  ? 'bg-red-500/20 border-red-400/60 text-red-400 animate-pulse'
-                  : 'bg-red-500/10 border-red-500/30 text-red-400/80 hover:bg-red-500/20 hover:border-red-400/50 hover:text-red-400',
+                  ? 'bg-red-500/20 border-red-400/50 text-red-400 animate-pulse'
+                  : 'border-border/60 bg-secondary/60 text-muted-foreground/50 hover:text-red-400/80 hover:bg-red-500/8 hover:border-red-500/20',
               )}
-              title={lockdown ? 'Lockdown active — click to lift' : 'Emergency lockdown — halts all agents'}
+              title={lockdown ? 'Lockdown active — click to lift' : 'Emergency lockdown'}
             >
-              <AlertTriangle size={12} />
-              <span className="hidden sm:inline">{lockdown ? 'LOCKDOWN' : 'Lockdown'}</span>
+              <AlertTriangle size={13} />
             </button>
           </div>
         </div>
@@ -3631,7 +5411,8 @@ function TopNav({ activeTab, setActiveTab, theme, onToggleTheme, lockdown, onLoc
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [showGate, setShowGate] = useState(true)
+  const [entered, setEntered] = useState(false)
+  const [onboarded, setOnboarded] = useState(() => localStorage.getItem('hc_demo_ob') === '1')
   const [activeTab, setActiveTab] = useState<Tab>('dashboard')
   const [lockdown, setLockdown] = useState(false)
   const [lockdownConfirm, setLockdownConfirm] = useState(false)
@@ -3696,8 +5477,20 @@ export default function App() {
     setPaused(false)
   }, [])
 
-  if (showGate) {
-    return <HealthcareAccessGate onEnter={() => setShowGate(false)} />
+  if (!entered) {
+    return <HealthcareAccessGate onEnter={() => setEntered(true)} />
+  }
+
+  if (!onboarded) {
+    return (
+      <HCOnboardingScreen
+        onComplete={() => {
+          localStorage.setItem('hc_demo_ob', '1')
+          setOnboarded(true)
+        }}
+        onLogout={() => setEntered(false)}
+      />
+    )
   }
 
   return (
@@ -3801,6 +5594,17 @@ export default function App() {
               transition={{ duration: 0.25 }}
             >
               <ReviewQueueTab onReviewCountChange={setPendingReviewCount} />
+            </motion.div>
+          )}
+          {activeTab === 'impact' && (
+            <motion.div
+              key="impact"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25 }}
+            >
+              <ImpactTab />
             </motion.div>
           )}
         </AnimatePresence>

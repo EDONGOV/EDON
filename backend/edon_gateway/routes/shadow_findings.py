@@ -19,6 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from ..tenancy import get_request_tenant_id
 
@@ -351,3 +352,141 @@ async def get_baseline(trace_id: str):
                    "Baselines are written on the next shadow sample after capture."
         )
     return row
+
+
+# ── Fix proposals ─────────────────────────────────────────────────────────────
+
+
+@router.get("/fix-proposals")
+async def get_fix_proposals(
+    request: Request,
+    status: Optional[str] = Query("pending_review", enum=["pending_review", "approved", "rejected", "applied"]),
+    severity: Optional[str] = Query(None, enum=["critical", "advisory"]),
+    limit: int = Query(100, le=500),
+):
+    """Return shadow-generated policy fix proposals queued for human review.
+
+    These are auto-generated whenever a critical or advisory shadow finding is
+    detected. Each proposal contains a suggested policy rule and the rationale.
+    Approve or reject via the dedicated endpoints below.
+    """
+    from ..shadow.fix_pipeline import get_proposals
+    tenant_id = get_request_tenant_id(request)
+    proposals = get_proposals(tenant_id=tenant_id, status=status, severity=severity, limit=limit)
+    return {"proposals": proposals, "count": len(proposals)}
+
+
+@router.get("/fix-proposals/summary")
+async def get_fix_proposals_summary(request: Request):
+    """Return count breakdown of fix proposals by status and severity."""
+    from ..shadow.fix_pipeline import proposal_summary
+    tenant_id = get_request_tenant_id(request)
+    return proposal_summary(tenant_id=tenant_id)
+
+
+@router.post("/fix-proposals/{proposal_id}/approve")
+async def approve_fix_proposal(
+    proposal_id: str,
+    request: Request,
+    resolved_by: str = Query("api"),
+    note: Optional[str] = Query(None),
+):
+    """Approve a fix proposal. Marks it as approved for the next policy push.
+
+    Approved proposals are NOT automatically applied to live policy. An operator
+    must explicitly push the rule via the policy management API.
+    """
+    from ..shadow.fix_pipeline import approve_proposal
+    from fastapi import HTTPException
+    result = approve_proposal(proposal_id, resolved_by=resolved_by, note=note)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
+    return result
+
+
+@router.post("/fix-proposals/{proposal_id}/reject")
+async def reject_fix_proposal(
+    proposal_id: str,
+    request: Request,
+    resolved_by: str = Query("api"),
+    note: Optional[str] = Query(None),
+):
+    """Reject a fix proposal. Records rejection with optional explanation."""
+    from ..shadow.fix_pipeline import reject_proposal
+    from fastapi import HTTPException
+    result = reject_proposal(proposal_id, resolved_by=resolved_by, note=note)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found")
+    return result
+
+
+# ── Governance validation gate ────────────────────────────────────────────────
+
+
+class PolicyRuleBody(BaseModel):
+    tool: Optional[str] = None
+    operation: Optional[str] = None
+    action: str = "BLOCK"
+    reason: str = "Proposed policy rule"
+
+
+class ValidatePolicyBody(BaseModel):
+    rule: PolicyRuleBody
+    limit: int = 50
+    include_stable: bool = True
+
+
+@router.post("/validate-policy")
+async def validate_policy(request: Request, body: ValidatePolicyBody):
+    """Run the governance validation gate for a proposed policy rule.
+
+    Replays recent shadow findings through the governor with the proposed rule
+    injected. Returns a regression report showing:
+      - bypasses_fixed  — critical/advisory findings the rule would fix
+      - regressions     — stable ALLOW traces the rule would incorrectly block
+      - net_improvement — bypasses_fixed minus regressions (positive = safe)
+      - recommendation  — "apply" | "review" | "reject" | "inconclusive"
+
+    The rule is NEVER applied to live policy by this endpoint. It is purely
+    advisory — human approval is always required before applying any rule change.
+
+    Example body:
+        {
+            "rule": {
+                "tool": "email",
+                "operation": "send",
+                "action": "BLOCK",
+                "reason": "Block all email sends pending security review"
+            },
+            "limit": 50
+        }
+    """
+    from ..shadow.policy_validator import validate_proposed_rule_async
+    from ..shadow.trace_capture import get_trace_store
+    from fastapi import HTTPException
+
+    governor = getattr(request.app.state, "governor", None)
+    if governor is None:
+        raise HTTPException(status_code=503, detail="Governor not initialised")
+
+    tenant_id = get_request_tenant_id(request)
+    store = get_trace_store()
+
+    rule_dict = {
+        "tool": body.rule.tool,
+        "operation": body.rule.operation,
+        "action": body.rule.action,
+        "reason": body.rule.reason,
+    }
+
+    from dataclasses import asdict
+    report = await validate_proposed_rule_async(
+        rule_dict,
+        governor=governor,
+        store=store,
+        tenant_id=tenant_id,
+        limit=max(1, min(body.limit, 200)),
+        include_stable=body.include_stable,
+    )
+
+    return asdict(report)

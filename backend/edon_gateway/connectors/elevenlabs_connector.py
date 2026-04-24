@@ -91,8 +91,14 @@ class ElevenLabsConnector:
                 if "application/json" in ct:
                     data = r.json()
                     return {"success": True, "response": data}
-                # Raw audio
-                return {"success": True, "audio_size_bytes": len(r.content), "content_type": ct}
+                # Raw audio — include bytes and base64 for callers
+                import base64 as _b64
+                return {
+                    "success": True,
+                    "audio_bytes": r.content,
+                    "audio_b64": _b64.b64encode(r.content).decode("utf-8"),
+                    "content_type": ct,
+                }
             return {
                 "success": False,
                 "error": r.text or str(r.status_code),

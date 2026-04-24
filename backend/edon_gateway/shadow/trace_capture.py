@@ -492,6 +492,31 @@ class TraceStore:
             for r in rows
         ]
 
+    def get_trace(self, trace_id: str) -> Optional["AgentTrace"]:
+        """Return a single trace by trace_id, or None if not found."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM shadow_traces WHERE trace_id = ?",
+                (trace_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AgentTrace(
+            trace_id=row["trace_id"],
+            captured_at=row["captured_at"],
+            agent_id=row["agent_id"],
+            tenant_id=row["tenant_id"],
+            action_type=row["action_type"],
+            action_payload=json.loads(row["action_payload"]),
+            context=json.loads(row["context"]),
+            timestamp=row["timestamp"],
+            intent_id=row["intent_id"],
+            original_verdict=row["original_verdict"],
+            original_reason=row["original_reason"],
+            original_latency_ms=row["original_latency_ms"],
+            original_meta=json.loads(row["original_meta"]),
+        )
+
     def recent_findings(
         self,
         tenant_id: Optional[str] = None,

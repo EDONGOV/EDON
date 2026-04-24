@@ -18,6 +18,9 @@ from fastapi import APIRouter, Request, HTTPException
 from ..schemas.action_result import ActionResultRequest, ActionResultResponse
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
+from ..observation import observe
+from ..fleet_learning import get_fleet_learning_engine
+from ..ai.goal_evaluator import evaluate_goal_achievement
 
 logger = get_logger(__name__)
 
@@ -65,6 +68,125 @@ async def record_action_result(request: Request, req: ActionResultRequest):
     except Exception as exc:
         logger.exception("[action/result] failed to save: %s", exc)
         recorded = False
+
+    # ── Causal chain record ───────────────────────────────────────────────────
+    # Record every executed action in the persistent causal chain so future
+    # requests by this agent carry cross-session context.
+    if recorded:
+        try:
+            from ..causal_chain import get_causal_chain
+            get_causal_chain().record(
+                tenant_id=tenant_id or "",
+                agent_id=req.agent_id,
+                action_id=req.action_id,
+                action_type=req.action_type,
+            )
+        except Exception as _cc_err:
+            logger.debug("[action/result] causal chain record failed: %s", _cc_err)
+
+    # ── Independent Observation Layer ────────────────────────────────────────
+    # Run the VerifierRegistry — agent-independent truth source.
+    # VerificationResult replaces all agent-provided confidence values.
+    # source_type="agent_claim" inputs never update trust.
+    _verification = None
+    if recorded:
+        try:
+            from ..verification import get_verifier_registry
+            from ..trust import get_trust_engine as _get_te
+            _reg = get_verifier_registry()
+            _vt  = _get_te().get_verifier_trusts(tenant_id or "")
+            _verification = _reg.verify(
+                tenant_id=tenant_id or "",
+                action_type=req.action_type,
+                result_payload=req.result_payload,
+                verifier_trusts=_vt,
+            )
+        except Exception as _vr_err:
+            logger.warning("[action/result] verification failed (non-blocking): %s", _vr_err)
+
+    # ── Fleet learning: correlate execution outcome ───────────────────────────
+    if recorded:
+        try:
+            parts = req.action_type.split(".", 1)
+            _tool, _op = parts[0].lower(), (parts[1].lower() if len(parts) > 1 else "")
+            # Prefer verification result; fall back to legacy observe() for fleet labels
+            _verified: bool
+            if _verification is not None:
+                _verified = _verification.verified
+            else:
+                obs = observe(
+                    tool=_tool, op=_op,
+                    execution_result=req.result_payload or {"outcome": req.outcome},
+                    params={}, tenant_id=tenant_id,
+                )
+                _verified = obs.get("verified", True) if obs else True
+            learning_label = "oob" if (req.outcome in ("failure", "partial", "timeout") or not _verified) else "safe"
+            get_fleet_learning_engine().record_feedback(
+                tenant_id=tenant_id,
+                agent_id=req.agent_id,
+                action_tool=_tool,
+                action_op=_op,
+                label=learning_label,
+                source="execution_outcome",
+                notes=f"outcome={req.outcome} verified={_verified}",
+            )
+        except Exception as _obs_err:
+            logger.warning("[action/result] observation/learning failed (non-blocking): %s", _obs_err)
+
+    # ── Trust update via VerificationResult ──────────────────────────────────
+    # Uses record_outcome_from_verification() which enforces epistemic boundary:
+    # agent_claim inputs never contribute to verification_confidence.
+    if recorded:
+        try:
+            from ..trust import get_trust_engine
+            te = get_trust_engine()
+            if _verification is not None:
+                te.record_outcome_from_verification(
+                    tenant_id=tenant_id or "",
+                    agent_id=req.agent_id,
+                    action_type=req.action_type,
+                    outcome=req.outcome,
+                    verification=_verification,
+                    action_id=req.action_id,
+                    schedule_delayed=(_verification.deferred),
+                )
+            else:
+                # No verifier registered — use legacy path with low default confidence
+                te.record_outcome(
+                    tenant_id=tenant_id or "",
+                    agent_id=req.agent_id,
+                    action_type=req.action_type,
+                    outcome=req.outcome,
+                    verification_confidence=0.20,
+                )
+        except Exception as _trust_err:
+            logger.warning("[action/result] trust update failed (non-blocking): %s", _trust_err)
+
+    # Goal achievement scoring — did this action advance the agent's objective?
+    # Requires goal_context in the request; silent no-op if absent.
+    if recorded and req.goal_context:
+        try:
+            parts = req.action_type.split(".", 1)
+            _g_tool = parts[0].lower()
+            _g_op = parts[1].lower() if len(parts) > 1 else ""
+            goal_score = evaluate_goal_achievement(
+                intent_objective=req.goal_context,
+                action_type=req.action_type,
+                action_params=req.result_payload,
+                execution_outcome=req.outcome,
+                result_summary=req.result_summary,
+            )
+            if goal_score is not None:
+                get_fleet_learning_engine().record_goal_score(
+                    tenant_id=tenant_id,
+                    agent_id=req.agent_id,
+                    action_tool=_g_tool,
+                    action_op=_g_op,
+                    score=goal_score,
+                    execution_outcome=req.outcome,
+                )
+        except Exception as _goal_err:
+            logger.warning("[action/result] goal scoring failed (non-blocking): %s", _goal_err)
 
     # Non-blocking: flag to shadow system if outcome contradicts a critical finding
     if recorded and req.outcome == "success":

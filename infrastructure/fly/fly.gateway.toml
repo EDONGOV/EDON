@@ -21,6 +21,12 @@ primary_region = 'iad'
   EDON_WORKERS = '4'
   # Explicit CORS origins — required when allow_credentials=True (no wildcard allowed in prod)
   EDON_CORS_ORIGINS = 'https://edoncore.com,https://www.edoncore.com,https://agent.edoncore.com,https://console.edoncore.com,https://edon-gateway.fly.dev'
+  # Self-healing: autonomous mode deploys governance rules without human approval.
+  # Bounded by EDON_CREAO_AUTO_CONFIDENCE (0.85) and EDON_CREAO_MAX_AUTO_PER_PASS (3).
+  # Set to "assisted" to require human approval before any rule is deployed.
+  EDON_CREAO_MODE = 'autonomous'
+  EDON_HEALING_AUTO_ENABLED = 'true'
+
   # Clerk JWT verification — live production instance JWKS endpoint (public, no auth required)
   # Derived from pk_live_Y2xlcmsuZWRvbmNvcmUuY29tJA → clerk.edoncore.com
   CLERK_JWKS_URL = 'https://clerk.edoncore.com/.well-known/jwks.json'

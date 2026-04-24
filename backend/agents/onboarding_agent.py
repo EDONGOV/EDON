@@ -61,6 +61,38 @@ AGENTS_DIR = Path(__file__).parent
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# ── Intent contract helper ────────────────────────────────────────────────────
+
+def _register_intent(tenant_id: str, name: str) -> str:
+    """Register a scoped IntentContract for this onboarding run."""
+    import uuid
+    intent_id = f"onboarding_{tenant_id}_{uuid.uuid4().hex[:8]}"
+    try:
+        r = requests.post(
+            f"{GATEWAY_URL}/intent/set",
+            headers={"X-EDON-TOKEN": API_TOKEN, "Content-Type": "application/json"},
+            json={
+                "intent_id": intent_id,
+                "objective": f"Provision and onboard new EDON tenant: {name}",
+                "scope": {
+                    "tenant": ["provision"],
+                    "policy": ["apply"],
+                    "compliance": ["activate", "read"],
+                    "email": ["send"],
+                    "message": ["send"],
+                },
+                "constraints": {"max_risk_level": "HIGH"},
+                "risk_level": "medium",
+                "approved_by_user": True,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        return intent_id
+    except Exception as exc:
+        print(f"   ⚠ Intent registration failed (non-fatal): {exc}")
+        return intent_id
+
 PLAN_TO_POLICY_PACK = {
     "hospital":       "hospital",
     "hipaa":          "hospital",
@@ -82,13 +114,52 @@ def _headers(token: str | None = None) -> dict[str, str]:
     }
 
 
+def _scan_response(payload: Any, action_type: str, action_id: str | None = None) -> Any:
+    """Run a gateway response through /v1/output before using it."""
+    try:
+        r = requests.post(
+            f"{GATEWAY_URL}/v1/output",
+            headers=_headers(),
+            json={
+                "agent_id": "onboarding_agent",
+                "action_type": action_type,
+                "action_id": action_id,
+                "response": payload,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        resp = r.json()
+        if resp.get("verdict") == "BLOCK":
+            print(f"   ⚠ Output scan BLOCKED for {action_type} — findings: {resp.get('findings', [])}")
+            return None
+        if resp.get("redacted"):
+            print(f"   ⚠ Output scan redacted sensitive data from {action_type}")
+        return resp.get("payload", payload)
+    except Exception as exc:
+        print(f"   ⚠ Output scan failed (non-fatal): {exc}")
+        return payload
+
+
 def provision_tenant(
     tenant_id: str,
     name: str,
     plan: str,
     email: str,
     token: str,
+    intent_id: str | None = None,
 ) -> dict[str, Any]:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="onboarding_agent",
+        action_type="tenant.provision",
+        parameters={"tenant_id": tenant_id, "plan": plan, "email": email},
+        stated_intent=f"provision new EDON tenant for {name}",
+        context={"intent_id": intent_id} if intent_id else None,
+    )
+    if not decision:
+        raise RuntimeError(f"tenant.provision blocked by governance: {decision.reason}")
+
     r = requests.post(
         f"{GATEWAY_URL}/admin/bootstrap-api-key",
         headers={"X-Bootstrap-Secret": BOOTSTRAP_SECRET, "Content-Type": "application/json"},
@@ -103,10 +174,27 @@ def provision_tenant(
         timeout=15,
     )
     r.raise_for_status()
-    return r.json()
+    result = _scan_response(r.json(), "tenant.provision", decision.action_id)
+    return result or {}
 
 
-def apply_policy_pack(tenant_token: str, pack_name: str, objective: str) -> dict[str, Any]:
+def apply_policy_pack(
+    tenant_token: str,
+    pack_name: str,
+    objective: str,
+    intent_id: str | None = None,
+) -> dict[str, Any]:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="onboarding_agent",
+        action_type="policy.apply",
+        parameters={"pack": pack_name},
+        stated_intent=f"apply {pack_name} policy pack to new tenant",
+        context={"intent_id": intent_id} if intent_id else None,
+    )
+    if not decision:
+        raise RuntimeError(f"policy.apply blocked by governance: {decision.reason}")
+
     r = requests.post(
         f"{GATEWAY_URL}/policy-packs/{pack_name}/apply",
         headers=_headers(tenant_token),
@@ -117,7 +205,22 @@ def apply_policy_pack(tenant_token: str, pack_name: str, objective: str) -> dict
     return r.json()
 
 
-def activate_clinical_safety(tenant_token: str, email: str) -> dict[str, Any]:
+def activate_clinical_safety(
+    tenant_token: str,
+    email: str,
+    intent_id: str | None = None,
+) -> dict[str, Any]:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="onboarding_agent",
+        action_type="compliance.activate",
+        parameters={"module": "clinical-safety", "activated_by": f"onboarding:{email}"},
+        stated_intent="activate clinical safety rules for new healthcare tenant",
+        context={"intent_id": intent_id} if intent_id else None,
+    )
+    if not decision:
+        raise RuntimeError(f"compliance.activate blocked by governance: {decision.reason}")
+
     r = requests.post(
         f"{GATEWAY_URL}/compliance/clinical-safety/activate",
         headers=_headers(tenant_token),
@@ -214,7 +317,19 @@ Return JSON:
 
 # ── Email delivery ────────────────────────────────────────────────────────────
 
-def send_email(to_email: str, subject: str, plain_text: str, html: str) -> bool:
+def send_email(to_email: str, subject: str, plain_text: str, html: str, intent_id: str | None = None) -> bool:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="onboarding_agent",
+        action_type="email.send",
+        parameters={"to": to_email, "subject": subject},
+        stated_intent="send welcome email to new EDON client",
+        context={"intent_id": intent_id} if intent_id else None,
+    )
+    if not decision:
+        print(f"[onboarding] email blocked by governance: {decision.reason}")
+        return False
+
     if not SMTP_USER or not SMTP_PASSWORD:
         print("No SMTP credentials — email not sent. Set SMTP_USER and SMTP_PASSWORD.")
         return False
@@ -251,7 +366,19 @@ def notify_telegram(
     plan: str,
     rules: int,
     email_sent: bool,
+    intent_id: str | None = None,
 ) -> None:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="onboarding_agent",
+        action_type="message.send",
+        parameters={"channel": "telegram", "recipient": TELEGRAM_CHAT_ID, "event": "client_onboarded"},
+        stated_intent="notify founder of new client onboarding via Telegram",
+        context={"intent_id": intent_id} if intent_id else None,
+    )
+    if not decision:
+        print(f"[onboarding] Telegram notification blocked by governance: {decision.reason}")
+        return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     msg = (
@@ -289,14 +416,19 @@ def onboard(
     print(f"EDON Onboarding — {name}")
     print(f"{'='*60}\n")
 
+    # Register intent contract — scopes all downstream gov_check() calls
+    print("0. Registering intent contract…")
+    intent_id = _register_intent(tenant_id, name)
+    print(f"   ✓ Intent: {intent_id}")
+
     # Generate secure token
     token = secrets.token_hex(32)
-    print(f"Generated token: {token[:16]}...")
+    print(f"   Generated token: {token[:16]}...")
 
     # Step 1 — Provision
     print("1. Provisioning tenant…")
     try:
-        prov = provision_tenant(tenant_id, name, plan, email, token)
+        prov = provision_tenant(tenant_id, name, plan, email, token, intent_id=intent_id)
         print(f"   ✓ Tenant '{tenant_id}' created — key_id: {prov.get('key_id', '?')}")
     except Exception as exc:
         print(f"   ✗ Provisioning failed: {exc}")
@@ -306,7 +438,7 @@ def onboard(
     pack = PLAN_TO_POLICY_PACK.get(plan.lower(), "ops_commander")
     print(f"2. Applying policy pack '{pack}'…")
     try:
-        apply_policy_pack(token, pack, f"AI governance for {name} — {use_case}")
+        apply_policy_pack(token, pack, f"AI governance for {name} — {use_case}", intent_id=intent_id)
         print(f"   ✓ Policy pack applied")
     except Exception as exc:
         print(f"   ⚠ Policy pack failed (non-fatal): {exc}")
@@ -314,7 +446,7 @@ def onboard(
     # Step 3 — Clinical safety
     print("3. Activating clinical safety mode…")
     try:
-        cs = activate_clinical_safety(token, email)
+        cs = activate_clinical_safety(token, email, intent_id=intent_id)
         rules_count = cs.get("total_rules", 0)
         print(f"   ✓ {rules_count} clinical safety rules activated")
     except Exception as exc:
@@ -353,10 +485,11 @@ def onboard(
         subject=email_content.get("subject", f"Your EDON account is live — {name}"),
         plain_text=email_content.get("plain_text", ""),
         html=email_content.get("html", ""),
+        intent_id=intent_id,
     )
 
     # Step 7 — Telegram notification
-    notify_telegram(name, tenant_id, token, email, plan, rules_count, email_sent)
+    notify_telegram(name, tenant_id, token, email, plan, rules_count, email_sent, intent_id=intent_id)
 
     # Save full record
     record = {

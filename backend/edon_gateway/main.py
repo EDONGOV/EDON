@@ -42,9 +42,11 @@ from .routes.integrations import get_integration_status as integrations_account_
 from .routes.analytics import router as analytics_router
 from .routes.auth import router as auth_router
 from .routes.v1_action import router as v1_action_router
+from .routes.v1_output import router as v1_output_router
+from .routes.v1_llm import router as v1_llm_router
 from .routes.audit import router as audit_router, router_review as review_router, router_auditors as auditors_router
 from .routes.compliance import router as compliance_router
-from .routes.policy import router as policy_router, router_packs as policy_packs_router
+from .routes.policy import router as policy_router, router_packs as policy_packs_router, router_signing as signing_router
 from .routes.api_keys import router as api_keys_router
 from .routes.admin import router as admin_router
 from .routes.agents import router as agents_router
@@ -66,6 +68,22 @@ from .routes.telegram_bot import router as telegram_bot_router
 from .routes.review_queue import router as review_queue_router
 from .routes.shadow_findings import router as shadow_findings_router
 from .routes.action_result import router as action_result_router
+from .routes.kill_switch import router as kill_switch_router
+from .routes.impact import router as impact_router
+from .routes.hardening import router as hardening_router
+from .routes.healing import router as healing_router
+from .routes.cicd import router as cicd_router
+from .routes.creao import router as creao_router
+from .routes.bootstrap import router as bootstrap_router
+from .routes.proof import router as proof_router
+from .routes.training import router as training_router
+from .routes.jarvis import router as jarvis_router
+from .routes.assistant import router as assistant_router
+from .routes.voice import router as voice_router
+from .routes.autonomous import router as autonomous_router
+from .routes.codex import router as codex_router
+from .routes.proposals import router as proposals_router
+from .routes.onboarding import router as onboarding_router
 
 
 # Setup logging
@@ -132,6 +150,8 @@ app.include_router(integrations_router)
 app.include_router(analytics_router)
 app.include_router(auth_router)
 app.include_router(v1_action_router)
+app.include_router(v1_output_router)
+app.include_router(v1_llm_router)
 app.include_router(execute_router)
 app.include_router(invoke_router)
 app.include_router(intents_router)
@@ -140,6 +160,7 @@ app.include_router(review_router)
 app.include_router(compliance_router)
 app.include_router(policy_router)
 app.include_router(policy_packs_router)
+app.include_router(signing_router)
 app.include_router(api_keys_router)
 app.include_router(admin_router)
 app.include_router(agents_router, prefix="/agents", tags=["agents"])
@@ -159,6 +180,22 @@ app.include_router(webhooks_router)
 app.include_router(live_key_router)
 app.include_router(shadow_findings_router)
 app.include_router(action_result_router)
+app.include_router(kill_switch_router)
+app.include_router(impact_router)
+app.include_router(hardening_router)
+app.include_router(healing_router)
+app.include_router(cicd_router)
+app.include_router(creao_router)
+app.include_router(bootstrap_router)
+app.include_router(proof_router)
+app.include_router(training_router)
+app.include_router(jarvis_router)
+app.include_router(assistant_router)
+app.include_router(voice_router)
+app.include_router(autonomous_router)
+app.include_router(codex_router)
+app.include_router(proposals_router)
+app.include_router(onboarding_router)
 
 # CORS configuration
 # When allow_credentials=True, cannot use wildcard "*" - must specify origins
@@ -288,6 +325,20 @@ except Exception as e:
     import logging
     logging.warning(f"Could not mount UI: {e}")
 
+# Voice meeting UI — always served at /voice
+try:
+    _static_dir = Path(__file__).parent / "static"
+    if _static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+        @app.get("/voice")
+        async def voice_ui():
+            """Serve the EDON Jarvis voice meeting interface."""
+            return FileResponse(str(_static_dir / "voice.html"))
+except Exception as _e:
+    import logging
+    logging.warning(f"Could not mount voice UI: {_e}")
+
 
 # Global state
 from .persistence import get_db
@@ -302,6 +353,52 @@ app.state.db = db  # type: ignore[attr-defined]
 # Initialize app state
 import time
 app.state.start_time = time.time()
+
+# ── EDON Impact background scheduler ──────────────────────────────────────────
+# Start the continuous A→B→C→D risk intelligence loop as a daemon thread.
+# Fails silently if impact package is unavailable (non-blocking to gateway).
+try:
+    from .impact.loop import start_background_scheduler as _start_impact_loop
+    from .shadow.trace_capture import get_trace_store as _get_shadow_store
+    _start_impact_loop(
+        governor=governor,
+        shadow_store=_get_shadow_store(),
+    )
+except Exception as _impact_err:
+    logger.warning("[impact] background scheduler failed to start (non-blocking): %s", _impact_err)
+
+# ── Hardening agents background scheduler ─────────────────────────────────────
+try:
+    from .agents.hardening.runner import start_background_scheduler as _start_hardening
+    _start_hardening(governor=governor)
+except Exception as _hardening_err:
+    logger.warning("[hardening] background scheduler failed to start (non-blocking): %s", _hardening_err)
+
+# ── Internal self-governance tenant ───────────────────────────────────────────
+# Ensures tenant_edon_internal exists so self_govern.py governance checks work.
+# This tenant governs all internal autonomous agents (code_agent, incident_agent, etc.)
+try:
+    import uuid as _uuid
+    _internal_tenant_id = os.getenv("EDON_SELF_GOVERN_TENANT_ID", "tenant_edon_internal")
+    _existing = db.get_tenant(_internal_tenant_id)
+    if not _existing:
+        _internal_user_id = str(_uuid.uuid4())
+        db.create_user(
+            user_id=_internal_user_id,
+            email="internal-agents@edoncore.com",
+            auth_provider="internal",
+            auth_subject="edon_internal_agents",
+            role="admin",
+        )
+        db.create_tenant(
+            tenant_id=_internal_tenant_id,
+            user_id=_internal_user_id,
+        )
+        logger.info("[self_govern] Provisioned internal governance tenant: %s", _internal_tenant_id)
+    else:
+        logger.debug("[self_govern] Internal governance tenant already exists: %s", _internal_tenant_id)
+except Exception as _tenant_err:
+    logger.warning("[self_govern] Internal tenant provisioning failed (non-blocking): %s", _tenant_err)
 
 # WebSocket real-time event streaming (Spec 1.3)
 _ws_connections: list = []
@@ -465,6 +562,13 @@ async def _startup():
         )
     logger.info("EDON Gateway startup complete")
 
+    # Fire recovery alert so you know immediately if the gateway crashed and restarted
+    try:
+        from .alerts import fire_gateway_recovery_alert
+        fire_gateway_recovery_alert()
+    except Exception:
+        pass
+
     import asyncio as _asyncio
 
     async def _daily_audit_cleanup():
@@ -494,6 +598,34 @@ async def _startup():
 
     _asyncio.create_task(_daily_audit_cleanup())
 
+    # Audit mining + policy suggestion background loops
+    try:
+        from .ai.audit_miner import run_audit_mining_loop
+        from .ai.policy_suggester import run_policy_suggestion_loop
+        from .persistence import get_db as _get_db
+        _asyncio.create_task(run_audit_mining_loop(_get_db))
+        _asyncio.create_task(run_policy_suggestion_loop(_get_db))
+        logger.info("Audit mining and policy suggestion loops started")
+    except Exception as _bg_err:
+        logger.warning("Background analysis loops failed to start: %s", _bg_err)
+
+    # Start autonomous governance loop if enabled
+    try:
+        from .autonomous.loop import start_autonomous_loop
+        start_autonomous_loop(governor=governor)
+    except Exception as _ae:
+        logger.warning("Autonomous loop startup error: %s", _ae)
+
+    # Start active adversarial probe scheduler
+    try:
+        probe_enabled = os.getenv("EDON_PROBE_ENABLED", "true").lower() == "true"
+        if probe_enabled:
+            from .impact.active_probe import get_active_probe
+            get_active_probe().start()
+            logger.info("Active adversarial probe scheduler started")
+    except Exception as _probe_err:
+        logger.warning("Active probe startup error: %s", _probe_err)
+
 
 async def _shutdown():
     """Graceful shutdown: drain async audit queue before process exits.
@@ -502,6 +634,16 @@ async def _shutdown():
     governance decisions are lost during rolling deploys or restarts.
     """
     logger.info("EDON Gateway shutting down — flushing in-flight audit events...")
+    try:
+        from .autonomous.loop import stop_autonomous_loop
+        stop_autonomous_loop()
+    except Exception as _ae:
+        logger.debug("Autonomous loop stop error: %s", _ae)
+    try:
+        from .impact.active_probe import get_active_probe
+        get_active_probe().stop()
+    except Exception as _probe_err:
+        logger.debug("Active probe stop error: %s", _probe_err)
     try:
         from .audit_queue import stop_worker as stop_audit_worker
         await stop_audit_worker(timeout_sec=10.0)

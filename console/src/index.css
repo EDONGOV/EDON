@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -101,8 +102,27 @@
   }
 
   .edon-brand {
-    font-family: 'Inter', sans-serif;
-    letter-spacing: 0.08em;
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+  }
+
+  .edon-wordmark {
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .edon-mark-gradient {
+    background: linear-gradient(135deg, #4ade80 0%, #22d3ee 100%);
+  }
+
+  .edon-mark-glow {
+    box-shadow:
+      0 0 0 1px rgba(74, 222, 128, 0.2),
+      0 0 20px rgba(74, 222, 128, 0.12),
+      0 0 40px rgba(34, 211, 238, 0.06);
   }
 
   .dept-select {

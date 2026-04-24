@@ -35,6 +35,8 @@ from typing import Any
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev").rstrip("/")
 API_TOKEN = os.environ.get("EDON_API_TOKEN", "")
@@ -187,6 +189,33 @@ def detect_anomalies(snapshot: dict[str, Any], baseline: dict[str, Any]) -> list
     return anomalies
 
 
+# ── Model tier selection ──────────────────────────────────────────────────────
+# Cost breakdown (per call at ~4K input + 1K output):
+#   Opus 4.6:   $0.135  — reserved for P0 (system down, data at risk)
+#   Sonnet 4.6: $0.027  — P1 with multiple anomalies or security signals
+#   Haiku 4.5:  $0.0072 — single P1 (latency blip, volume dip, minor compliance)
+#
+# At 5 incidents/day: Opus-only = $20/mo, tiered = $1–3/mo.
+# At 50 incidents/day across customers: Opus-only = $200/mo, tiered = $10–15/mo.
+
+_MODEL_OPUS   = "claude-opus-4-6"
+_MODEL_SONNET = "claude-sonnet-4-6"
+_MODEL_HAIKU  = "claude-haiku-4-5-20251001"
+
+
+def _select_model(anomalies: list[dict[str, Any]]) -> str:
+    """Pick the cheapest model that can handle this incident severity."""
+    has_p0       = any(a["severity"] == "P0" for a in anomalies)
+    is_security  = any(a["type"] in ("health_degraded", "compliance_degraded") for a in anomalies)
+    multi_anomaly = len(anomalies) >= 3
+
+    if has_p0 or is_security:
+        return _MODEL_OPUS      # P0 or security signal — need best reasoning
+    if multi_anomaly:
+        return _MODEL_SONNET    # multiple P1s together — moderate complexity
+    return _MODEL_HAIKU         # single P1 (latency blip, volume dip) — Haiku is fine
+
+
 # ── Incident analysis ─────────────────────────────────────────────────────────
 
 def analyse_incident(snapshot: dict[str, Any], anomalies: list[dict[str, Any]]) -> dict[str, Any]:
@@ -194,6 +223,7 @@ def analyse_incident(snapshot: dict[str, Any], anomalies: list[dict[str, Any]]) 
 
     anomaly_summary = "\n".join(f"- [{a['severity']}] {a['type']}: {a['detail']}" for a in anomalies)
     highest_sev = "P0" if any(a["severity"] == "P0" for a in anomalies) else "P1"
+    model = _select_model(anomalies)
 
     health_raw = json.dumps(snapshot["raw"].get("health", {}), indent=2)[:1500]
     decisions_raw = json.dumps(snapshot["raw"].get("recent_decisions", {}), indent=2)[:1000]
@@ -235,8 +265,9 @@ Respond as JSON:
   "runbook": "<which runbook applies, if any>"
 }}"""
 
+    print(f"[incident] Using {model} (P0={highest_sev == 'P0'}, anomalies={len(anomalies)})")
     msg = client.messages.create(
-        model="claude-opus-4-6",
+        model=model,
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -324,6 +355,19 @@ def open_incident_issue(report: dict[str, Any], anomalies: list[dict[str, Any]])
         return existing.get("html_url")
 
     sev = report.get("severity", "P1")
+
+    # Governance check before filing a GitHub issue
+    issue_decision = gov_check(
+        agent_id="incident_agent",
+        action_type="github.issue_create",
+        parameters={"repo": GITHUB_REPO, "severity": sev, "anomaly_types": anomaly_types},
+        stated_intent=f"file {sev} incident report for detected anomalies",
+        context={"anomaly_count": len(anomaly_types), "confidence": report.get("confidence", "")},
+    )
+    if not issue_decision:
+        print(f"[self_govern] GitHub issue creation blocked: {issue_decision.reason}")
+        return None
+
     title = f"[INCIDENT {sev}] {report.get('title', 'Anomaly detected')}"
     actions = "\n".join(f"- {a}" for a in report.get("immediate_actions", []))
     steps = "\n".join(f"- {s}" for s in report.get("investigation_steps", []))
@@ -364,6 +408,15 @@ def fire_webhook(report: dict[str, Any], anomalies: list[dict[str, Any]], issue_
     if not WEBHOOK_URL:
         return
     sev = report.get("severity", "P1")
+    webhook_decision = gov_check(
+        agent_id="incident_agent",
+        action_type="webhook.fire",
+        parameters={"severity": sev, "anomaly_count": len(anomalies)},
+        stated_intent=f"fire {sev} incident alert webhook",
+    )
+    if not webhook_decision:
+        print(f"[self_govern] Webhook blocked: {webhook_decision.reason}")
+        return
     colour = 0xFF0000 if sev == "P0" else 0xFF8C00
 
     # Discord-compatible payload (also works for many other webhooks)

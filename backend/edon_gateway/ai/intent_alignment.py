@@ -11,12 +11,55 @@ the existing keyword-matching logic unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import threading
+import time
 from typing import Optional
 
 from .client import call_advisory_float
 
 logger = logging.getLogger(__name__)
+
+# ── Alignment score cache ─────────────────────────────────────────────────────
+# Keyed by sha256(objective + "|" + tool + "|" + op). Scores are stable for a
+# given (objective, tool, op) triple — no need to call Claude on every action.
+# TTL defaults to 5 minutes; set EDON_AI_ALIGN_CACHE_TTL_SEC=0 to disable.
+
+_CACHE_TTL: float = float(os.getenv("EDON_AI_ALIGN_CACHE_TTL_SEC", "300"))
+_cache: dict[str, tuple[float, float]] = {}  # key → (score, expires_at)
+_cache_lock = threading.Lock()
+
+
+def _cache_key(objective: str, tool: str, op: str) -> str:
+    raw = f"{objective[:300]}|{tool[:64]}|{op[:64]}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _cache_get(key: str) -> Optional[float]:
+    if _CACHE_TTL <= 0:
+        return None
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and time.monotonic() < entry[1]:
+            return entry[0]
+        if entry:
+            del _cache[key]
+    return None
+
+
+def _cache_set(key: str, score: float) -> None:
+    if _CACHE_TTL <= 0:
+        return
+    with _cache_lock:
+        # Evict entries over 1 000 to bound memory
+        if len(_cache) >= 1000:
+            now = time.monotonic()
+            expired = [k for k, (_, exp) in _cache.items() if exp <= now]
+            for k in expired[:200]:
+                del _cache[k]
+        _cache[key] = (score, time.monotonic() + _CACHE_TTL)
 
 _SYSTEM_PROMPT = """\
 You are a governance alignment classifier. You evaluate whether a proposed \
@@ -59,22 +102,28 @@ def score_intent_alignment(
     """
     import json as _json
 
-    # Truncate objective to avoid leaking large agent-controlled blobs
     safe_objective = str(intent_objective)[:300]
+    tool_str = str(action_tool)[:64]
+    op_str = str(action_op)[:64]
+
+    # Cache hit — skip the Claude call entirely
+    ck = _cache_key(safe_objective, tool_str, op_str)
+    cached = _cache_get(ck)
+    if cached is not None:
+        logger.debug("AI intent alignment (cached): tool=%s op=%s score=%.2f", tool_str, op_str, cached)
+        return cached
 
     payload = _json.dumps({
         "intent_objective": safe_objective,
         "intent_scope_tools": [str(t) for t in (intent_scope_tools or [])[:20]],
-        "action_tool": str(action_tool)[:64],
-        "action_op": str(action_op)[:64],
+        "action_tool": tool_str,
+        "action_op": op_str,
     }, separators=(",", ":"))
 
     score = call_advisory_float(_SYSTEM_PROMPT, payload, key="score")
     if score is not None:
-        logger.debug(
-            "AI intent alignment: tool=%s op=%s score=%.2f",
-            action_tool, action_op, score,
-        )
+        logger.debug("AI intent alignment: tool=%s op=%s score=%.2f", tool_str, op_str, score)
+        _cache_set(ck, score)
     return score
 
 

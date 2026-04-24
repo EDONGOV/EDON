@@ -172,6 +172,17 @@ Subject: <subject line>
 
 
 def save_draft(result: dict[str, Any]) -> Path:
+    from .self_govern import gov_check
+    decision = gov_check(
+        agent_id="outbound_agent",
+        action_type="file.write",
+        parameters={"path": str(DRAFTS_DIR), "company": result.get("company", "")},
+        stated_intent="save outbound email draft for founder review",
+    )
+    if not decision:
+        print(f"[outbound] draft save blocked by governance: {decision.reason}")
+        raise PermissionError(f"Governance blocked draft save: {decision.reason}")
+
     slug = _slug(result["company"])
     out_path = DRAFTS_DIR / f"{slug}.md"
     content = f"""# Outbound Draft — {result['company']}

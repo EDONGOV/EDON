@@ -16,7 +16,7 @@ from edon_sdk import EdonClient
 
 edon = EdonClient(
     token=os.environ.get("EDON_API_KEY", "dev-token"),
-    base_url=os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev"),
+    base_url=os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway-prod.fly.dev"),
 )
 
 

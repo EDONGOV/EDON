@@ -34,6 +34,8 @@ from typing import Any
 
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTENT_DIR = REPO_ROOT / "content" / "blog"
@@ -177,7 +179,16 @@ status: draft
     }
 
 
-def save_post(post: dict[str, Any]) -> Path:
+def save_post(post: dict[str, Any]) -> Path | None:
+    decision = gov_check(
+        agent_id="content_agent",
+        action_type="file.write",
+        parameters={"path": f"content/blog/{post['filename']}", "topic": post.get("topic", "")},
+        stated_intent="publish auto-written SEO blog post to content pipeline for human review",
+    )
+    if not decision:
+        print(f"[self_govern] Blog post write blocked: {decision.reason}")
+        return None
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = CONTENT_DIR / post["filename"]
     out_path.write_text(post["content"], encoding="utf-8")
@@ -232,6 +243,9 @@ def main() -> int:
             t["completed_at"] = post["written_at"]
     save_topics(topics)
 
+    if out_path is None:
+        print("[content] Post blocked by governance — not saved.")
+        return 1
     print(f"\n[content] Post written: {out_path}")
     print(f"[content] Title: {post['title']}")
     print(f"[content] Word count: {post['word_count']}")

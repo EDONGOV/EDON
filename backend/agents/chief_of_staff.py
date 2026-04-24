@@ -36,6 +36,8 @@ from typing import Any
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway-prod.fly.dev").rstrip("/")
 API_TOKEN = os.environ.get("EDON_API_TOKEN", "")
@@ -342,8 +344,18 @@ def format_for_webhook(brief: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def send_webhook(message: str) -> None:
+def send_webhook(message: str, overall_status: str = "") -> None:
     if not BRIEFING_WEBHOOK_URL:
+        return
+    webhook_decision = gov_check(
+        agent_id="chief_of_staff",
+        action_type="message.send",
+        parameters={"channel": "slack", "message_length": len(message)},
+        stated_intent="deliver daily operational briefing to founder via Slack",
+        context={"overall_status": overall_status},
+    )
+    if not webhook_decision:
+        print(f"[self_govern] Slack delivery blocked: {webhook_decision.reason}")
         return
     try:
         if "discord" in BRIEFING_WEBHOOK_URL:
@@ -357,9 +369,19 @@ def send_webhook(message: str) -> None:
         print(f"Webhook delivery failed: {exc}")
 
 
-def send_telegram(message: str) -> None:
+def send_telegram(message: str, overall_status: str = "") -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("No TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID — skipping Telegram delivery")
+        return
+    tg_decision = gov_check(
+        agent_id="chief_of_staff",
+        action_type="message.send",
+        parameters={"channel": "telegram", "message_length": len(message)},
+        stated_intent="deliver daily operational briefing to founder via Telegram",
+        context={"overall_status": overall_status},
+    )
+    if not tg_decision:
+        print(f"[self_govern] Telegram delivery blocked: {tg_decision.reason}")
         return
     try:
         # Split into chunks if message exceeds Telegram's 4096 char limit
@@ -416,8 +438,9 @@ def main() -> None:
 
     # Deliver
     message = format_for_webhook(brief)
-    send_webhook(message)
-    send_telegram(message)
+    overall_status = brief.get("overall_status", "")
+    send_webhook(message, overall_status=overall_status)
+    send_telegram(message, overall_status=overall_status)
 
     # Summary
     status = brief.get("overall_status", "unknown")

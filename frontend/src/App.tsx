@@ -29,6 +29,10 @@ import DemoMode from "./pages/DemoMode";
 import PilotKit from "./pages/PilotKit";
 import HGIPanel from "./pages/HGIPanel";
 import ReviewQueue from "./pages/ReviewQueue";
+import Impact from "./pages/Impact";
+import CiCd from "./pages/CiCd";
+import RiskExplorer from "./pages/RiskExplorer";
+import Report from "./pages/Report";
 
 const queryClient = new QueryClient();
 
@@ -98,6 +102,9 @@ const AppRoutes = () => {
       <Route path="/pilot" element={<PilotKit />} />
       <Route path="/hgi" element={<ProtectedRoute min="operator"><HGIPanel /></ProtectedRoute>} />
       <Route path="/review" element={<ProtectedRoute min="operator"><ReviewQueue /></ProtectedRoute>} />
+      <Route path="/impact" element={<ProtectedRoute min="operator"><Impact /></ProtectedRoute>} />
+      <Route path="/cicd" element={<ProtectedRoute min="operator"><CiCd /></ProtectedRoute>} />
+      <Route path="/report" element={<Report />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );

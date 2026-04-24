@@ -198,6 +198,7 @@ export interface MeResponse {
   plan: string
   is_admin: boolean
   is_sandbox: boolean
+  vertical: 'healthcare' | 'banking' | 'general' | null
 }
 
 export interface ShadowSummary {
@@ -260,10 +261,36 @@ export interface ChainStressResponse {
   results: ChainStressResult[]
 }
 
+export interface AssistantMessage {
+  role: 'user' | 'assistant'
+  content: string | unknown[]
+}
+
+export interface AssistantProposal {
+  proposal_id?: string
+  tenant_id?: string
+  type: 'add_policy_rule' | 'enable_rule' | 'disable_rule' | 'set_shadow_mode'
+  description: string
+  impact: string
+  regulation?: string
+  payload: Record<string, unknown>
+}
+
+export interface AssistantChatResponse {
+  answer: string
+  suggestion: AssistantProposal | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
   me: () => request<MeResponse>('/api-keys/me'),
+
+  setVertical: (vertical: 'healthcare' | 'banking' | 'general' | null) =>
+    request<{ vertical: string | null }>('/api-keys/me/vertical', {
+      method: 'PATCH',
+      body: JSON.stringify({ vertical }),
+    }),
 
   health: () => request<HealthResponse>('/health'),
 
@@ -441,6 +468,43 @@ export const api = {
       method: 'POST',
     }),
 
+  // ── Governance Assistant ──────────────────────────────────────────────────
+  assistantChat: (message: string, conversation: AssistantMessage[]) =>
+    request<AssistantChatResponse>('/v1/assistant/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, conversation }),
+    }),
+
+  assistantApply: (proposal: AssistantProposal) =>
+    request<{ applied: boolean; rule_id?: string; name?: string; shadow_mode?: boolean }>(
+      '/v1/assistant/apply',
+      { method: 'POST', body: JSON.stringify({ proposal }) },
+    ),
+
+  // ── Compliance report export ──────────────────────────────────────────────
+  auditReportExport: async (params: {
+    format: 'json' | 'pdf'
+    from_ts?: string
+    to_ts?: string
+    agent_id?: string
+    verdict?: string
+    limit?: number
+  }) => {
+    const auth = getAuth()
+    if (!auth) throw new Error('Not authenticated')
+    const qs = new URLSearchParams({ format: params.format })
+    if (params.from_ts)  qs.set('from_ts',   params.from_ts)
+    if (params.to_ts)    qs.set('to_ts',      params.to_ts)
+    if (params.agent_id) qs.set('agent_id',   params.agent_id)
+    if (params.verdict)  qs.set('verdict',    params.verdict)
+    if (params.limit)    qs.set('limit',      String(params.limit))
+    const res = await fetch(`${auth.gatewayUrl}/audit/report/export?${qs}`, {
+      headers: { 'X-EDON-TOKEN': auth.token },
+    })
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+    return res.blob()
+  },
+
   // ── Live key claim ────────────────────────────────────────────────────────
   checkPendingLiveKey: () =>
     request<{ pending: boolean; created_at?: string }>('/live-key/pending'),
@@ -470,4 +534,181 @@ export const api = {
 
   testWebhook: (id: string) =>
     request<{ ok: boolean; status_code?: number }>(`/webhooks/${id}/test`, { method: 'POST' }),
+
+  // ── Onboarding Copilot ────────────────────────────────────────────────────
+  onboardingSubmitIntake: (body: {
+    org_name: string
+    agent_systems: Array<{
+      name: string; agent_type: string; actions: string[]
+      data_classes: string[]; external_sinks: string[]; description: string
+    }>
+    identity_provider: string
+    environments: string[]
+    compliance_requirements: string[]
+  }) => request<{ profile: OnboardingProfile; next_step: { action: string; description: string } }>(
+    '/v1/onboarding/intake', { method: 'POST', body: JSON.stringify(body) }
+  ),
+
+  onboardingListProfiles: () =>
+    request<{ profiles: OnboardingProfile[]; count: number }>('/v1/onboarding/profiles'),
+
+  onboardingGetProfile: (id: string) =>
+    request<{ profile: OnboardingProfile }>(`/v1/onboarding/profiles/${id}`),
+
+  onboardingGetStatus: (id: string) =>
+    request<OnboardingStatus>(`/v1/onboarding/profiles/${id}/status`),
+
+  onboardingGenerateTopology: (id: string) =>
+    request<{ topology: OnboardingTopology; next_step: { action: string; description: string } }>(
+      `/v1/onboarding/profiles/${id}/topology`, { method: 'POST' }
+    ),
+
+  onboardingBootstrapPolicies: (id: string) =>
+    request<{ policy_bundle: OnboardingPolicyBundle; next_step: { action: string; description: string } }>(
+      `/v1/onboarding/profiles/${id}/bootstrap`, { method: 'POST' }
+    ),
+
+  onboardingGetDeployment: (id: string) =>
+    request<{ deployment_package: OnboardingDeploymentPackage; next_step: { action: string; description: string } }>(
+      `/v1/onboarding/profiles/${id}/deployment`
+    ),
+
+  onboardingSetShadowMode: (id: string, enabled: boolean) =>
+    request<{ shadow_mode: boolean; message: string; next_step?: { action: string; description: string } }>(
+      `/v1/onboarding/profiles/${id}/shadow`, { method: 'POST', body: JSON.stringify({ enabled }) }
+    ),
+
+  onboardingRequestSignoff: (id: string, body: {
+    requested_by: string; enforcement_scope: string[]
+    escalation_rules_accepted: boolean; kill_switch_authority: string; data_classes_governed: string[]
+  }) => request<{ signoff: OnboardingSignoff; instructions: string }>(
+    `/v1/onboarding/profiles/${id}/signoff/request`, { method: 'POST', body: JSON.stringify(body) }
+  ),
+
+  onboardingApproveSignoff: (signoffId: string, resolved_by: string) =>
+    request<{ signoff: OnboardingSignoff; message: string }>(
+      `/v1/onboarding/signoffs/${signoffId}/approve`,
+      { method: 'POST', body: JSON.stringify({ resolved_by }) }
+    ),
+
+  onboardingGetExpansion: (id: string) =>
+    request<{ signals: OnboardingExpansionSignal[]; count: number; high_severity_count: number; expansion_recommended: boolean }>(
+      `/v1/onboarding/profiles/${id}/expansion`
+    ),
+}
+
+// ── Onboarding types ───────────────────────────────────────────────────────
+
+export interface OnboardingProfile {
+  profile_id: string
+  tenant_id: string
+  org_name: string
+  created_at: string
+  stage: string
+  risk_tier: string
+  risk_score: number
+  all_data_classes: string[]
+  all_actions: string[]
+  external_sinks: string[]
+  compliance_requirements: string[]
+  identity_provider: string
+  environments: string[]
+  shadow_mode_enabled: boolean
+  signed_off: boolean
+  signed_off_at?: string
+  signed_off_by?: string
+  agent_systems: Array<{
+    name: string; agent_type: string; actions: string[]
+    data_classes: string[]; external_sinks: string[]; description: string
+  }>
+}
+
+export interface OnboardingStatus {
+  profile_id: string
+  stage: string
+  stage_label: string
+  risk_tier: string
+  shadow_mode: boolean
+  signed_off: boolean
+  signed_off_at?: string
+  steps: Array<{ step: number; name: string; done: boolean }>
+  signoffs: OnboardingSignoff[]
+}
+
+export interface OnboardingTopology {
+  profile_id: string
+  enforcement_points: Array<{
+    point_id: string; label: string; agent_system: string
+    connector_type: string; intercepts: string[]; data_classes_at_risk: string[]
+    is_external_boundary: boolean; priority: string; notes: string
+  }>
+  trust_boundaries: Array<{
+    boundary_id: string; label: string; from_zone: string; to_zone: string
+    data_classes: string[]; crossing_points: string[]; enforcement: string
+  }>
+  required_connectors: string[]
+  deployment_modes: string[]
+  summary: Record<string, number | string | string[]>
+}
+
+export interface OnboardingPolicyBundle {
+  profile_id: string
+  generated_at: string
+  hard_safety: OnboardingPolicy[]
+  operational: OnboardingPolicy[]
+  intent_contracts: OnboardingPolicy[]
+  total_count: number
+}
+
+export interface OnboardingPolicy {
+  policy_id: string
+  layer: string
+  agent_system: string
+  action_pattern: string
+  decision: string
+  reason: string
+  constraints: Record<string, unknown>
+  data_classes: string[]
+  immutable_after_signoff: boolean
+  priority: number
+}
+
+export interface OnboardingDeploymentPackage {
+  profile_id: string
+  deployment_mode: string
+  helm_values: Record<string, unknown>
+  env_vars: Record<string, string>
+  connector_configs: Array<Record<string, unknown>>
+  network_requirements: Record<string, unknown>
+  identity_setup: Record<string, unknown>
+  audit_pipeline: Record<string, unknown>
+  rollback_plan: string[]
+  estimated_setup_h: number
+}
+
+export interface OnboardingSignoff {
+  signoff_id: string
+  profile_id: string
+  tenant_id: string
+  requested_at: string
+  requested_by: string
+  status: string
+  enforcement_scope: string[]
+  data_classes_governed: string[]
+  kill_switch_authority: string
+  policy_count_hard_safety: number
+  policy_count_operational: number
+  policy_count_intent_contracts: number
+  resolved_at?: string
+  resolved_by?: string
+}
+
+export interface OnboardingExpansionSignal {
+  signal_type: string
+  severity: string
+  title: string
+  description: string
+  evidence: Record<string, unknown>
+  recommended_action: string
+  detected_at: string
 }

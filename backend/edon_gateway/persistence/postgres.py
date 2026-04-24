@@ -1102,6 +1102,15 @@ class PostgreSQLDatabase:
     def update_tenant_default_intent(self, tenant_id: str, intent_id: str) -> None:
         self.write_preference(tenant_id, "default_intent_id", intent_id)
 
+    def get_tenant_vertical(self, tenant_id: str) -> Optional[str]:
+        return self.read_preference(tenant_id, "vertical")
+
+    def set_tenant_vertical(self, tenant_id: str, vertical: Optional[str]) -> None:
+        if vertical:
+            self.write_preference(tenant_id, "vertical", vertical)
+        else:
+            self.write_preference(tenant_id, "vertical", "")
+
     def get_integration_status(self, tenant_id: Optional[str], tool_name: str = "clawdbot") -> Dict[str, Any]:
         cred = self.get_credential(f"{tenant_id}_{tool_name}", tool_name, tenant_id) if tenant_id else None
         if not cred:

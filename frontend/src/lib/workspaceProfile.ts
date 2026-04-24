@@ -332,7 +332,8 @@ export const BASE_NAV: NavItem[] = [
   { to: "/audit",     label: "Audit",        iconName: "FileSearch",    minRole: "operator" },
   { to: "/policies",  label: "Policies",     iconName: "ShieldCheck",   minRole: "operator" },
   { to: "/review",    label: "Review Queue", iconName: "ClipboardList", minRole: "operator" },
-  { to: "/hgi",       label: "HGI",          iconName: "ShieldAlert",   minRole: "operator" },
+  { to: "/impact",    label: "Impact",       iconName: "Radar",         minRole: "operator" },
+  { to: "/cicd",      label: "CI/CD Gate",   iconName: "GitBranch",     minRole: "operator" },
   { to: "/settings",  label: "Settings",     iconName: "Settings2" },
 ];
 

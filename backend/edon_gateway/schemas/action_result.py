@@ -59,6 +59,22 @@ class ActionResultRequest(BaseModel):
             "Max 500 chars, enforced server-side."
         ),
     )
+    result_payload: Optional[dict] = Field(
+        None,
+        description=(
+            "Optional structured tool response for observation verification "
+            "(e.g. {\"id\": \"msg_123\"} for email.send). Omit PII and large blobs."
+        ),
+    )
+    goal_context: Optional[str] = Field(
+        None,
+        description=(
+            "Optional description of what success looks like for this action, "
+            "used to score goal achievement. E.g. 'summarise cardiology patients for care team'. "
+            "Max 300 chars."
+        ),
+        max_length=300,
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {

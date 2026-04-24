@@ -397,7 +397,13 @@ class Database:
                 cursor.execute("ALTER TABLE tenants ADD COLUMN default_intent_id TEXT")
                 conn.commit()
             except sqlite3.OperationalError:
-                # Column already exists, ignore
+                pass
+
+            # Migration: Add vertical to tenants table (healthcare, banking, general)
+            try:
+                cursor.execute("ALTER TABLE tenants ADD COLUMN vertical TEXT DEFAULT NULL")
+                conn.commit()
+            except sqlite3.OperationalError:
                 pass
 
             # Migration: Add mag_enabled to tenants table (if not exists)
@@ -2433,6 +2439,22 @@ class Database:
                 """, params)
                 conn.commit()
     
+    def get_tenant_vertical(self, tenant_id: str) -> Optional[str]:
+        """Return the vertical (healthcare, banking, general) for this tenant."""
+        tenant = self.get_tenant(tenant_id)
+        return tenant.get("vertical") if tenant else None
+
+    def set_tenant_vertical(self, tenant_id: str, vertical: str) -> None:
+        """Set the vertical for this tenant."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE tenants SET vertical = ?, updated_at = ? WHERE id = ?",
+                (vertical, now, tenant_id),
+            )
+            conn.commit()
+
     def get_tenant_default_intent(self, tenant_id: str) -> Optional[str]:
         """Get tenant's default intent ID.
         

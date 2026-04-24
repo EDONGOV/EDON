@@ -30,3 +30,6 @@ demos/**/node_modules/
 Thumbs.db
 
 .vercel
+
+# Private strategy — never commit
+EDONroadto100m.md

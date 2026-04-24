@@ -26,6 +26,8 @@ from pathlib import Path
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "EDONGOV/EDON")
@@ -102,6 +104,15 @@ def _load_rule_codes() -> list[str]:
 def _open_github_issue(title: str, body: str) -> str | None:
     if not GITHUB_TOKEN:
         print("[watcher] GITHUB_TOKEN not set — skipping issue", file=sys.stderr)
+        return None
+    issue_decision = gov_check(
+        agent_id="regulatory_watcher",
+        action_type="github.issue_create",
+        parameters={"repo": GITHUB_REPO, "title": title[:120]},
+        stated_intent="file regulatory compliance gap detected from government feed monitoring",
+    )
+    if not issue_decision:
+        print(f"[self_govern] Regulatory issue creation blocked: {issue_decision.reason}", file=sys.stderr)
         return None
     r = requests.post(
         f"https://api.github.com/repos/{GITHUB_REPO}/issues",

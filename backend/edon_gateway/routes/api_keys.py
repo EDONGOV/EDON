@@ -33,15 +33,39 @@ class RotateKeyRequest(BaseModel):
 async def get_me(request: Request):
     """Return identity info for the current API key."""
     tenant_info = getattr(request.state, 'tenant_info', None) or {}
+    tenant_id = tenant_info.get("tenant_id", "")
+    db = get_db()
+    vertical = db.get_tenant_vertical(tenant_id) if tenant_id and hasattr(db, "get_tenant_vertical") else None
     return {
-        "tenant_id": tenant_info.get("tenant_id", ""),
+        "tenant_id": tenant_id,
         "key_id": tenant_info.get("api_key_id", None),
         "key_name": tenant_info.get("key_name", None),
         "role": tenant_info.get("role", "user"),
         "plan": tenant_info.get("plan", ""),
         "is_admin": tenant_info.get("role") == "admin",
         "is_sandbox": tenant_info.get("is_sandbox", False),
+        "vertical": vertical,
     }
+
+
+@router.patch("/me/vertical", status_code=200)
+async def set_vertical(request: Request):
+    """Set the industry vertical for this tenant (admin only)."""
+    tenant_info = getattr(request.state, 'tenant_info', None) or {}
+    if tenant_info.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required to set vertical")
+    tenant_id = tenant_info.get("tenant_id", "")
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    body = await request.json()
+    vertical = body.get("vertical")
+    allowed = {"healthcare", "banking", "general", None}
+    if vertical not in allowed:
+        raise HTTPException(status_code=422, detail=f"vertical must be one of: {', '.join(str(v) for v in allowed if v)}")
+    db = get_db()
+    if hasattr(db, "set_tenant_vertical"):
+        db.set_tenant_vertical(tenant_id, vertical)
+    return {"vertical": vertical}
 
 
 @router.post("/{key_id}/rotate", status_code=201)

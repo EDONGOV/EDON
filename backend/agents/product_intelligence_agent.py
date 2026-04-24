@@ -31,6 +31,8 @@ from typing import Any
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GATEWAY_URL = os.environ.get("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev").rstrip("/")
 API_TOKEN = os.environ.get("EDON_API_TOKEN", "")
@@ -241,6 +243,15 @@ Max 6 insights. Be specific and actionable."""}],
 
 def _open_issue(title: str, body: str) -> str | None:
     if not GITHUB_TOKEN:
+        return None
+    issue_decision = gov_check(
+        agent_id="product_intelligence_agent",
+        action_type="github.issue_create",
+        parameters={"repo": GITHUB_REPO, "title": title[:120]},
+        stated_intent="file product insight issue from weekly decision analysis",
+    )
+    if not issue_decision:
+        print(f"[self_govern] Product issue creation blocked: {issue_decision.reason}")
         return None
     r = requests.post(
         f"https://api.github.com/repos/{GITHUB_REPO}/issues",

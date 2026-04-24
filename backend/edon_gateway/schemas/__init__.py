@@ -111,7 +111,10 @@ class IntentContract:
     risk_level: RiskLevel
     approved_by_user: bool
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    
+    # TTL and revocation — checked on every evaluate call (INV-006-INTENT-FRESH)
+    expires_at: Optional[datetime] = None
+    revoked: bool = False
+
     def allows_tool_op(self, tool: str, op: str) -> bool:
         """Check if tool+op is allowed in scope."""
         if tool not in self.scope:

@@ -55,6 +55,17 @@ class V1ActionRequest(BaseModel):
             "risk_estimate": "low"
         }
     )
+    caused_by: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Declared causal lineage — action IDs that directly caused this action. "
+            "When provided, EDON uses these for precise blame attribution instead of "
+            "heuristic time-window inference. Example: agent read a credential (act_abc) "
+            "and is now sending it externally — supply caused_by=['act_abc'] so the "
+            "governance record names the exact cause rather than inferring from timing."
+        ),
+        example=["act_abc123", "act_def456"],
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -160,6 +171,17 @@ class V1ActionResponse(BaseModel):
         description="True when the tenant has shadow mode enabled — decision was evaluated "
                     "but verdict was overridden to ALLOW. The real verdict is in the audit log.",
         example=True,
+    )
+    intervention: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Co-pilot intervention strategy generated when the action was blocked or degraded. "
+            "type=REWRITE: safer params to use instead. "
+            "type=INJECT: reasoning steps to run before retrying. "
+            "type=REPLAN: alternative tool sequence to achieve the goal. "
+            "type=ACCEPT_BLOCK: no viable alternative exists. "
+            "Advisory only — the agent decides whether to act on this."
+        ),
     )
 
     model_config = ConfigDict(json_schema_extra={

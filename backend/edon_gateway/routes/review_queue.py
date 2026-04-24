@@ -185,6 +185,35 @@ async def get_review_item(decision_id: str, request: Request):
     return record
 
 
+def _feedback_to_governor(record: dict, approved: bool) -> None:
+    """Feed resolution outcome back into session trust and sequence scorer."""
+    try:
+        from ..state.session_trust import get_store as _trust_store
+        agent_id  = record.get("agent_id")
+        tenant_id = record.get("tenant_id")
+        intent_id = (record.get("meta") or {}).get("intent_id") or record.get("intent_id")
+        _trust_store().record_verdict(
+            tenant_id, agent_id, intent_id,
+            verdict="ESCALATE",
+            reason_code="NEED_CONFIRMATION",
+            escalation_resolved_allow=approved,
+        )
+    except Exception as exc:
+        logger.debug("review_queue: trust feedback failed (non-fatal): %s", exc)
+
+    # Approved resolutions partially reset sequence drift so the agent isn't
+    # perpetually flagged for a pattern a human already cleared.
+    if approved:
+        try:
+            from ..state.sequence_scorer import get_scorer
+            agent_id  = record.get("agent_id")
+            tenant_id = record.get("tenant_id")
+            intent_id = (record.get("meta") or {}).get("intent_id") or record.get("intent_id")
+            get_scorer().partial_reset(tenant_id, agent_id, intent_id)
+        except Exception as exc:
+            logger.debug("review_queue: sequence partial_reset failed (non-fatal): %s", exc)
+
+
 @router.post("/{decision_id}/approve")
 async def approve_escalation(decision_id: str, request: Request, body: ReviewDecisionBody):
     """Approve a pending escalation — agent may proceed with this action."""
@@ -207,6 +236,7 @@ async def approve_escalation(decision_id: str, request: Request, body: ReviewDec
         "review_queue: APPROVED decision=%s by=%s tenant=%s",
         decision_id, body.resolved_by, tenant_id,
     )
+    _feedback_to_governor(record, approved=True)
     return {
         "decision_id": decision_id,
         "resolution": "approved",
@@ -238,6 +268,7 @@ async def reject_escalation(decision_id: str, request: Request, body: ReviewDeci
         "review_queue: REJECTED decision=%s by=%s tenant=%s",
         decision_id, body.resolved_by, tenant_id,
     )
+    _feedback_to_governor(record, approved=False)
     return {
         "decision_id": decision_id,
         "resolution": "rejected",

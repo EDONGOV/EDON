@@ -52,6 +52,8 @@ from typing import Any
 import requests
 import anthropic
 
+from .self_govern import gov_check
+
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -113,6 +115,15 @@ def due_follow_ups(tracker: dict[str, Any]) -> list[dict[str, Any]]:
 def send_telegram(message: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("No Telegram config — printing to console only")
+        return
+    tg_decision = gov_check(
+        agent_id="followup_agent",
+        action_type="message.send",
+        parameters={"channel": "telegram", "message_length": len(message)},
+        stated_intent="send daily prospect follow-up reminder to founder via Telegram",
+    )
+    if not tg_decision:
+        print(f"[self_govern] Telegram send blocked: {tg_decision.reason}")
         return
     try:
         chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]

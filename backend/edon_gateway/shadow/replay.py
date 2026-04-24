@@ -423,6 +423,16 @@ async def shadow_run_trace(
                     result.shadow_verdict,
                     result.perturbed_field,
                 )
+                # ── Shadow → CREAO Engine ─────────────────────────────────
+                # Route all critical/advisory findings through the unified
+                # CREAO orchestrator (which wraps fix_pipeline internally).
+                # CREAO also records proposals in meta-governance loop detection.
+                # Fail-open: errors never affect governance.
+                try:
+                    from ..creao.engine import get_creao_engine
+                    get_creao_engine().generate(result, trace)
+                except Exception as _fp_err:
+                    logger.debug("[shadow] creao.generate failed (fail-open): %s", _fp_err)
         except Exception as exc:
             logger.debug(
                 "[shadow] perturbation '%s' errored: %s", perturb.name, exc

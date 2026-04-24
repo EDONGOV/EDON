@@ -38,6 +38,6 @@ sdk/examples/handle_verdicts.py     — all verdict types with handlers
 
 ## Links
 
-- Gateway: https://edon-gateway.fly.dev
-- Dashboard: https://agent.edoncore.com
-- Docs: https://edon-gateway.fly.dev/docs
+- Gateway: https://edon-gateway-prod.fly.dev
+- Dashboard: https://console.edoncore.com
+- Docs: https://edon-gateway-prod.fly.dev/docs

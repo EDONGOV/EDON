@@ -1101,10 +1101,325 @@ class EdonApiClient {
       return null;
     }
   }
+
+  // ── EDON Impact ──────────────────────────────────────────────────────────────
+
+  async getImpactFailureStates(params?: { limit?: number; vulnerability_class?: string; status?: string }) {
+    const q = new URLSearchParams();
+    if (params?.limit) q.set('limit', String(params.limit));
+    if (params?.vulnerability_class) q.set('vulnerability_class', params.vulnerability_class);
+    if (params?.status) q.set('status', params.status);
+    const qs = q.toString();
+    return this.request<{
+      failure_states: ImpactFailureState[];
+      count: number;
+    }>(`/v1/impact/failure-states${qs ? `?${qs}` : ''}`);
+  }
+
+  async getImpactScenarios(params?: { failure_state_id?: string; status?: string; limit?: number }) {
+    const q = new URLSearchParams();
+    if (params?.failure_state_id) q.set('failure_state_id', params.failure_state_id);
+    if (params?.status) q.set('status', params.status);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return this.request<{
+      scenarios: ImpactScenario[];
+      count: number;
+    }>(`/v1/impact/scenarios${qs ? `?${qs}` : ''}`);
+  }
+
+  async getImpactCoverage() {
+    return this.request<{
+      snapshots: ImpactCoverageSnapshot[];
+      latest: ImpactCoverageSnapshot | null;
+    }>('/v1/impact/coverage');
+  }
+
+  async getImpactReport() {
+    return this.request<ImpactReport>('/v1/impact/report');
+  }
+
+  async runImpactCycle(force = false) {
+    return this.request<{ status: string; cycle?: object }>(
+      `/v1/impact/run-cycle${force ? '?force=true' : ''}`,
+      { method: 'POST' }
+    );
+  }
+
+  async getImpactGraph() {
+    return this.request<ImpactGraphData>('/v1/impact/graph');
+  }
+
+  async getProofReport(params?: { tenant_id?: string; top_n?: number; include_mitigated?: boolean; records_at_risk?: number; edon_contract?: number }) {
+    const qs = new URLSearchParams();
+    if (params?.tenant_id)        qs.set('tenant_id', params.tenant_id);
+    if (params?.top_n != null)    qs.set('top_n', String(params.top_n));
+    if (params?.include_mitigated) qs.set('include_mitigated', 'true');
+    if (params?.records_at_risk)  qs.set('records_at_risk', String(params.records_at_risk));
+    if (params?.edon_contract)    qs.set('edon_contract', String(params.edon_contract));
+    const q = qs.toString();
+    return this.request<any>(`/v1/proof/report${q ? `?${q}` : ''}`);
+  }
+
+  // ── Self-Healing ─────────────────────────────────────────────────────────────
+
+  async getHealingStatus() {
+    return this.request<{
+      last_run: HealingResult | null;
+      auto_enabled: boolean;
+      config: Record<string, boolean>;
+    }>('/v1/healing/status');
+  }
+
+  async runHealingPass(force = false) {
+    return this.request<HealingResult>(
+      `/v1/healing/run${force ? '?force=true' : ''}`,
+      { method: 'POST' }
+    );
+  }
+
+  async deployHealingRule(proposalId: string) {
+    return this.request<{
+      deployed: boolean;
+      rule_id: string;
+      proposal_id: string;
+      verification: HealingVerification;
+    }>(`/v1/healing/deploy/${proposalId}`, { method: 'POST' });
+  }
+
+  // ── Fix Proposals ────────────────────────────────────────────────────────────
+
+  async getFixProposals(params?: { status?: string; tenant_id?: string; limit?: number }) {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set('status', params.status);
+    if (params?.tenant_id) qs.set('tenant_id', params.tenant_id);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const q = qs.toString();
+    return this.request<{
+      proposals: FixProposal[];
+      total: number;
+      pending: number;
+      approved: number;
+      rejected: number;
+      applied: number;
+    }>(`/v1/shadow/proposals${q ? `?${q}` : ''}`);
+  }
+
+  async approveFixProposal(proposalId: string, resolvedBy: string, note?: string) {
+    return this.request<FixProposal>(`/v1/shadow/proposals/${proposalId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ resolved_by: resolvedBy, note }),
+    });
+  }
+
+  async rejectFixProposal(proposalId: string, resolvedBy: string, note?: string) {
+    return this.request<FixProposal>(`/v1/shadow/proposals/${proposalId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ resolved_by: resolvedBy, note }),
+    });
+  }
+
+  // ── CI/CD ───────────────────────────────────────────────────────────────────
+
+  async triggerCicdScan(params: {
+    repo?: string;
+    commit_sha?: string;
+    branch?: string;
+    environment?: string;
+    github_token?: string;
+  }) {
+    return this.request<CicdScan>('/v1/cicd/scan', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async getCicdGate(scanId: string) {
+    return this.request<CicdScan>(`/v1/cicd/gate/${scanId}`);
+  }
+
+  async getCicdHistory(params?: { limit?: number; repo?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.repo) qs.set('repo', params.repo);
+    const q = qs.toString();
+    return this.request<{ scans: CicdScan[]; count: number; tenant_id: string | null }>(
+      `/v1/cicd/history${q ? `?${q}` : ''}`
+    );
+  }
 }
 
 export const edonApi = new EdonApiClient();
 export { getBaseUrl, getToken, getAgentId, isMockMode };
+
+// ── EDON Impact types ─────────────────────────────────────────────────────────
+
+export interface ImpactFailureState {
+  id: string;
+  vulnerability_class: string;
+  path: string[];
+  severity_score: number;
+  likelihood: number;
+  blast_radius: number;
+  recoverability_factor: number;
+  exploitability_window: string;
+  status: string;  // unprobed | probed | confirmed | mitigated
+  mitigated_at: string | null;
+  tenant_id: string | null;
+  discovered_at: string;
+  scenario_count?: number;
+}
+
+export interface ImpactScenario {
+  id: string;
+  failure_state_id: string;
+  title: string;
+  description: string;
+  attack_steps: string[];
+  status: string;  // pending | valid | partial | invalid
+  confidence_score: number;
+  validation_notes: string | null;
+  created_at: string;
+}
+
+export interface ImpactCoverageSnapshot {
+  id: string;
+  tenant_id: string | null;
+  total_agents: number;
+  total_tools: number;
+  total_edges: number;
+  failure_states_found: number;
+  scenarios_generated: number;
+  scenarios_validated: number;
+  confirmed_findings: number;
+  coverage_pct: number;
+  cycle_number: number;
+  created_at: string;
+}
+
+export interface ImpactReport {
+  generated_at: string;
+  tenant_id: string | null;
+  summary: {
+    total_failure_states: number;
+    confirmed_findings: number;
+    coverage_pct: number;
+    highest_severity: number;
+    critical_states: number;
+  };
+  failure_states: ImpactFailureState[];
+  top_scenarios: ImpactScenario[];
+  coverage_history: ImpactCoverageSnapshot[];
+}
+
+export interface ImpactGraphNode {
+  agent_id?: string;
+  tool_id?: string;
+  tool_name?: string;
+  agent_type?: string;
+  label?: string;
+}
+
+export interface ImpactGraphEdge {
+  agent_id: string;
+  tool_name: string;
+  operation?: string;
+  call_count?: number;
+  last_seen?: string;
+}
+
+export interface ImpactGraphData {
+  agents: ImpactGraphNode[];
+  tools: ImpactGraphNode[];
+  edges: ImpactGraphEdge[];
+  stats: {
+    agent_count: number;
+    tool_count: number;
+    edge_count: number;
+  };
+}
+
+export interface HealingVerification {
+  verified: number;
+  mitigated: number;
+  mitigated_ids: string[];
+  error?: string;
+}
+
+export interface HealingResult {
+  agent: string;
+  tenant_id: string | null;
+  started_at: string;
+  completed_at?: string;
+  auto_enabled: boolean;
+  rules_deployed: number;
+  deployed_rule_ids: string[];
+  states_verified: number;
+  states_mitigated: number;
+  mitigated_ids: string[];
+  skipped: boolean;
+  reason?: string;
+  errors: string[];
+}
+
+export interface FixProposal {
+  proposal_id: string;
+  trace_id: string;
+  perturbation_name: string;
+  perturbation_type: string;
+  severity: 'critical' | 'advisory';
+  original_verdict: string;
+  shadow_verdict: string;
+  perturbed_field: string | null;
+  suggested_action: 'BLOCK' | 'ESCALATE';
+  condition_tool: string | null;
+  condition_op: string | null;
+  rule_description: string;
+  rationale: string;
+  tenant_id: string | null;
+  agent_id: string;
+  action_type: string;
+  status: 'pending_review' | 'approved' | 'rejected' | 'applied';
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_note: string | null;
+}
+
+export interface CicdFinding {
+  failure_state_id: string;
+  vulnerability_class: string;
+  severity_score: number;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  path_summary: string;
+  mitigated: boolean;
+}
+
+export interface CicdScan {
+  scan_id: string;
+  tenant_id: string | null;
+  repo: string | null;
+  commit_sha: string | null;
+  branch: string | null;
+  environment: string | null;
+  triggered_by: string;
+  status: 'pending' | 'scanning' | 'passed' | 'failed' | 'error';
+  gate_passed: boolean;
+  gate_reason: string;
+  critical_findings: number;
+  high_findings: number;
+  medium_findings: number;
+  total_findings: number;
+  mitigated_count: number;
+  new_since_last: number;
+  scan_duration_ms: number;
+  github_status_posted: boolean;
+  impact_cycle_summary: Record<string, unknown> | null;
+  findings_detail: CicdFinding[];
+  errors: string[];
+  created_at: string;
+  completed_at: string | null;
+}
 
 // Frontend-specific types — reflect actual backend responses (not SDK contract)
 export interface Decision {

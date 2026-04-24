@@ -31,6 +31,9 @@ You receive a JSON object with:
 - "top_reason_codes": top 5 block/escalate reason codes, with counts
 - "agent_ids_analyzed": number of distinct agents
 - "anomaly_rate": fraction of events that had anomaly detections
+- "shadow_findings": list of shadow-mode findings (tool, op, severity, description) \
+  — these are actions that PASSED governance but shadow replay flagged as risky. \
+  High-severity shadow findings are the most important signal.
 
 Based on these patterns, suggest 1–3 specific policy rules that would reduce
 unnecessary blocks OR catch more genuine threats. Each suggestion must include:
@@ -42,12 +45,33 @@ unnecessary blocks OR catch more genuine threats. Each suggestion must include:
 - "rationale": why this pattern warrants this rule (one sentence)
 - "confidence": float 0.0–1.0 (your confidence this is a good suggestion)
 
+Prioritize shadow_findings with severity "critical" or "high" — these represent
+actual policy blind spots confirmed by replay, not just block-rate noise.
+
 Return ONLY a JSON object: {"suggestions": [...]}
 If you see no actionable patterns, return: {"suggestions": []}
 """
 
 
-def _build_stats_payload(events: list) -> dict:
+def _build_shadow_findings_payload(trace_store) -> list:
+    """Pull recent shadow findings from TraceStore and format for the AI prompt."""
+    try:
+        raw = trace_store.recent_findings(limit=20)
+        out = []
+        for f in raw:
+            out.append({
+                "tool": f.get("tool") or f.get("action_tool", "unknown"),
+                "op": f.get("op") or f.get("action_op", "unknown"),
+                "severity": f.get("severity", "unknown"),
+                "description": str(f.get("description") or f.get("finding_type", ""))[:120],
+            })
+        return out
+    except Exception as exc:
+        logger.debug("Shadow findings fetch failed: %s", exc)
+        return []
+
+
+def _build_stats_payload(events: list, shadow_findings: list | None = None) -> dict:
     """Summarize audit events into aggregate statistics for the AI prompt."""
     if not events:
         return {}
@@ -88,10 +112,11 @@ def _build_stats_payload(events: list) -> dict:
         "top_reason_codes": [{"reason": r, "count": c} for r, c in top_reasons],
         "agent_ids_analyzed": len(agent_ids),
         "anomaly_rate": round(anomaly / total, 3) if total else 0,
+        "shadow_findings": shadow_findings or [],
     }
 
 
-def generate_policy_suggestions(events: list) -> list:
+def generate_policy_suggestions(events: list, shadow_findings: list | None = None) -> list:
     """Analyze audit events and return a list of policy suggestions.
 
     Args:
@@ -102,7 +127,7 @@ def generate_policy_suggestions(events: list) -> list:
     """
     import json as _json
 
-    stats = _build_stats_payload(events)
+    stats = _build_stats_payload(events, shadow_findings=shadow_findings)
     if not stats or stats.get("total_events", 0) < 10:
         return []
 
@@ -126,6 +151,7 @@ def generate_policy_suggestions(events: list) -> list:
             action = str(s.get("action", "")).upper()
             if not name or action not in ("BLOCK", "ESCALATE", "ALLOW"):
                 continue
+            confidence = max(0.0, min(1.0, float(s.get("confidence", 0.5))))
             valid.append({
                 "name": name,
                 "description": str(s.get("description", ""))[:200],
@@ -133,10 +159,13 @@ def generate_policy_suggestions(events: list) -> list:
                 "condition_op": s.get("condition_op"),
                 "action": action,
                 "rationale": str(s.get("rationale", ""))[:200],
-                "confidence": max(0.0, min(1.0, float(s.get("confidence", 0.5)))),
+                "confidence": confidence,
                 "source": "ai_policy_suggester",
                 "generated_at": datetime.now(UTC).isoformat(),
                 "status": "pending_review",
+                # auto_escalate=True means this suggestion is shown in the one-click
+                # approval queue — still requires a human click, never auto-applied.
+                "auto_escalate": confidence >= 0.85,
             })
         return valid
 
@@ -164,10 +193,17 @@ async def run_policy_suggestion_loop(db_getter) -> None:
         await asyncio.sleep(_SUGGESTION_INTERVAL_SEC)
         try:
             db = db_getter()
-            # Analyze last 500 audit events
+            # Analyze last 500 audit events + shadow findings
             events = db.query_audit_events(limit=500)
+            shadow_findings: list = []
+            try:
+                from ..shadow.trace_capture import TraceStore
+                ts = TraceStore()
+                shadow_findings = _build_shadow_findings_payload(ts)
+            except Exception as _sf_err:
+                logger.debug("[policy_suggester] Shadow findings unavailable: %s", _sf_err)
             suggestions = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: generate_policy_suggestions(events)
+                None, lambda: generate_policy_suggestions(events, shadow_findings=shadow_findings)
             )
             if suggestions:
                 _suggestion_cache = suggestions
