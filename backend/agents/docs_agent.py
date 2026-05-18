@@ -26,8 +26,6 @@ from pathlib import Path
 
 import anthropic
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_REF_PATH = REPO_ROOT / "docs" / "api-reference.md"
 GOVERNANCE_MODEL_PATH = REPO_ROOT / "docs" / "governance-model.md"
@@ -62,6 +60,10 @@ def _get_diff() -> str:
     return ""
 
 
+def _anthropic_api_key() -> str:
+    return os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+
 # ── Core ──────────────────────────────────────────────────────────────────────
 
 def run(dry_run: bool = False) -> int:
@@ -84,7 +86,12 @@ def run(dry_run: bool = False) -> int:
     current_api_ref = _read(API_REF_PATH)
     clinical_safety_src = _read(CLINICAL_SAFETY_PATH)
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    api_key = _anthropic_api_key()
+    if not api_key:
+        print("[docs] ANTHROPIC_API_KEY is not set — skipping Claude doc sync.")
+        return 0
+
+    client = anthropic.Anthropic(api_key=api_key)
 
     print("[docs] Sending to Claude for doc update...")
 
@@ -119,11 +126,15 @@ Tasks:
 Return the COMPLETE updated `docs/api-reference.md` content.
 Start directly with the markdown — no preamble."""
 
-    msg = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        msg = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.AuthenticationError:
+        print("[docs] Anthropic authentication failed — skipping doc sync. Check ANTHROPIC_API_KEY.")
+        return 0
 
     updated_content = str(getattr(msg.content[0], "text", msg.content[0]))
 
