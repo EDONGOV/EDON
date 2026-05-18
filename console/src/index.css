@@ -190,3 +190,16 @@
 .animate-pulse-dot {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+.cite-ring {
+  outline: 2px solid hsl(var(--primary)) !important;
+  outline-offset: 2px;
+  border-radius: 4px;
+  animation: cite-pulse 2.5s ease-out forwards;
+}
+
+@keyframes cite-pulse {
+  0%   { outline-color: hsl(var(--primary)); }
+  70%  { outline-color: hsl(var(--primary) / 0.5); }
+  100% { outline-color: transparent; }
+}

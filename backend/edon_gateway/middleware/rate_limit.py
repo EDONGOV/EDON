@@ -74,18 +74,23 @@ POLLING_ENDPOINT_LIMITS = {
 }
 
 
-def get_rate_limit_key(agent_id: str, window: str) -> str:
+def get_rate_limit_key(agent_id: str, window: str, tenant_id: Optional[str] = None) -> str:
     """Generate rate limit counter key.
-    
+
+    When tenant_id is provided the key is namespaced under the tenant so that
+    a per-agent rate limit cannot be bypassed by rotating fake agent IDs — the
+    tenant_id is the authoritative primary namespace.
+
     Args:
-        agent_id: Agent identifier
+        agent_id: Agent identifier (or token-derived key / "anonymous")
         window: Time window (minute, hour, day)
-        
+        tenant_id: Authenticated tenant identifier (preferred namespace)
+
     Returns:
         Counter key string
     """
     now = datetime.now(UTC)
-    
+
     if window == "minute":
         time_key = now.strftime("%Y%m%d%H%M")
     elif window == "hour":
@@ -94,7 +99,9 @@ def get_rate_limit_key(agent_id: str, window: str) -> str:
         time_key = now.strftime("%Y%m%d")
     else:
         raise ValueError(f"Invalid window: {window}")
-    
+
+    if tenant_id:
+        return f"rl:{tenant_id}:{agent_id}:{window}:{time_key}"
     return f"rate_limit:{agent_id}:{window}:{time_key}"
 
 
@@ -124,7 +131,7 @@ def _redis_increment_counter(key: str, window: str):
         logger.warning(f"Redis increment failed: {e}")
 
 
-def check_rate_limit(agent_id: str, limits: Optional[dict] = None) -> tuple[bool, Optional[str]]:
+def check_rate_limit(agent_id: str, limits: Optional[dict] = None, tenant_id: Optional[str] = None) -> tuple[bool, Optional[str]]:
     """Check if agent has exceeded rate limits.
 
     Uses Redis if available, otherwise DB counters.
@@ -132,6 +139,8 @@ def check_rate_limit(agent_id: str, limits: Optional[dict] = None) -> tuple[bool
     Args:
         agent_id: Agent identifier
         limits: Custom limits dict (defaults to DEFAULT_LIMITS)
+        tenant_id: Authenticated tenant — used as primary namespace in the key
+                   to prevent spoofing via rotated agent IDs.
 
     Returns:
         Tuple of (allowed, error_message)
@@ -146,7 +155,7 @@ def check_rate_limit(agent_id: str, limits: Optional[dict] = None) -> tuple[bool
         if not window.startswith("per_"):
             continue
         window_name = window.replace("per_", "")
-        counter_key = get_rate_limit_key(agent_id, window_name)
+        counter_key = get_rate_limit_key(agent_id, window_name, tenant_id=tenant_id)
 
         if _redis_client:
             current_count = _redis_get_counter(counter_key)
@@ -160,7 +169,7 @@ def check_rate_limit(agent_id: str, limits: Optional[dict] = None) -> tuple[bool
     return True, None
 
 
-def increment_rate_limit(agent_id: str):
+def increment_rate_limit(agent_id: str, tenant_id: Optional[str] = None):
     """Increment rate limit counters for agent.
 
     Uses Redis if available (INCR + EXPIRE), otherwise DB counters.
@@ -169,7 +178,7 @@ def increment_rate_limit(agent_id: str):
         return
 
     for window in ["minute", "hour", "day"]:
-        counter_key = get_rate_limit_key(agent_id, window)
+        counter_key = get_rate_limit_key(agent_id, window, tenant_id=tenant_id)
         if _redis_client:
             _redis_increment_counter(counter_key, window)
         else:
@@ -272,17 +281,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         pass
             return response
 
-        # Extract agent_id from headers/query params ONLY (no body read for DoS protection)
+        # Resolve authenticated tenant_id from request state (set by AuthMiddleware).
+        # This is the primary namespace for rate limit keys — it cannot be spoofed
+        # because it comes from the verified token, not from request headers.
+        tenant_id: Optional[str] = getattr(request.state, "tenant_id", None)
+
+        # Extract agent_id from headers/query params ONLY (no body read for DoS protection).
+        # agent_id is ONLY used when the request is authenticated (tenant_id is known).
+        # For unauthenticated requests we ignore agent_id entirely to prevent spoofing.
         agent_id = None
-
-        # Try to get from query params first (doesn't require body read)
-        agent_id = request.query_params.get("agent_id")
-
-        # Try to get from headers
-        if not agent_id:
-            agent_id = request.headers.get("X-Agent-ID")
-        if not agent_id:
-            agent_id = request.headers.get("X-EDON-Agent-ID")
+        if tenant_id:
+            agent_id = request.query_params.get("agent_id")
+            if not agent_id:
+                agent_id = request.headers.get("X-Agent-ID")
+            if not agent_id:
+                agent_id = request.headers.get("X-EDON-Agent-ID")
 
         # Fall back to the auth token itself as the rate limit key so that
         # authenticated users (API key or Clerk JWT) are never bucketed as
@@ -312,17 +325,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         else:
             limits_to_use = self.limits
 
-        # Prefer explicit agent_id > token-derived key > "anonymous"
+        # Prefer explicit agent_id > token-derived key > IP-based "anonymous".
+        # When unauthenticated, agent_id is always None (ignored above), so the
+        # key collapses to auth_token_key (if bearer present) or "anonymous".
         rate_limit_key = agent_id or auth_token_key or "anonymous"
-        
+
         # Check rate limit BEFORE processing request
-        allowed, error_msg = check_rate_limit(rate_limit_key, limits_to_use)
-        
+        allowed, error_msg = check_rate_limit(rate_limit_key, limits_to_use, tenant_id=tenant_id)
+
         if not allowed:
             # For anonymous requests, provide more specific error
             if is_anonymous:
                 error_msg = f"{error_msg}. Anonymous requests are heavily rate-limited. Provide agent_id in X-Agent-ID header or query parameter."
-            
+
             # Calculate retry-after based on which limit was hit
             _err = error_msg or ""
             retry_after = "60"  # Default 60 seconds
@@ -332,19 +347,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 retry_after = "3600"  # Wait 1 hour
             elif "per_day" in _err:
                 retry_after = "86400" # Wait 1 day
-            
+
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={"detail": error_msg},
                 headers={"Retry-After": retry_after},
             )
-        
+
         # Process request
         response = await call_next(request)
-        
+
         # Increment counter only on successful requests (2xx status)
         if 200 <= response.status_code < 300:
-            increment_rate_limit(rate_limit_key)
+            increment_rate_limit(rate_limit_key, tenant_id=tenant_id)
             # Only count tenant usage for governance decision endpoints (one decision per call)
             path = request.url.path.rstrip("/")
             if (

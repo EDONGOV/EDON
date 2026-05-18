@@ -4,43 +4,57 @@
 
 ```bash
 npm install @edon/sdk
-# or from this repo:
+# Or from this repo during development:
 npm install ./sdk/javascript
 ```
 
 ## Authentication
 
-Get an API key from the [EDON Console](https://agent.edoncore.com) → Settings → API Keys.
-
-## Basic Usage — Node.js (5 lines)
+Get an API key from the [EDON Console](https://console.edoncore.com) → Settings → API Keys,
+or call `POST /auth/register` to sign up programmatically (see below).
 
 ```typescript
 import { EdonClient } from "@edon/sdk";
 
-const client = new EdonClient({ token: "eak_your_key_here" });
+const client = new EdonClient({ token: process.env.EDON_API_KEY! });
+```
+
+## Basic Usage — 5 Lines
+
+```typescript
+import { EdonClient } from "@edon/sdk";
+
+const client = new EdonClient({ token: process.env.EDON_API_KEY! });
 const result = await client.evaluate({
   actionType: "email.send",
-  agentId: "my-node-agent",
   payload: { recipients: ["user@co.com"], subject: "Hello" },
 });
 
 console.log(result.verdict); // ALLOW, BLOCK, ESCALATE, DEGRADE, PAUSE, or ERROR
 ```
 
-## Complete Node.js Example
+## Verdict Types
+
+| Verdict | Meaning | What to do |
+|---------|---------|------------|
+| `ALLOW` | Action approved | Proceed with the action |
+| `BLOCK` | Action denied | Do not execute. Log and inform user |
+| `ESCALATE` | Needs human review | Queue for human approval; show `escalationQuestion` |
+| `DEGRADE` | Proceed with restrictions | Use `safeAlternative` instead of original params |
+| `PAUSE` | Temporary hold | Retry after a delay |
+| `ERROR` | Governance error | Fail safely |
+
+## Complete Example
 
 ```typescript
 import { EdonClient } from "@edon/sdk";
 
-const edon = new EdonClient({
-  token: process.env.EDON_API_KEY!,
-  baseUrl: process.env.EDON_GATEWAY_URL ?? "https://edon-gateway.fly.dev",
-});
+const edon = new EdonClient({ token: process.env.EDON_API_KEY! });
 
 async function governedAction(
   actionType: string,
   payload: Record<string, unknown>,
-  agentId: string
+  agentId = "my-agent",
 ) {
   const result = await edon.evaluate({ actionType, agentId, payload });
 
@@ -49,17 +63,17 @@ async function governedAction(
       return await executeAction(actionType, payload);
 
     case "BLOCK":
-      throw new Error(`Action blocked: ${result.explanation} (${result.reason_code})`);
+      throw new Error(`Action blocked: ${result.explanation} (${result.reasonCode})`);
 
     case "ESCALATE":
-      return { escalated: true, question: result.escalation_question };
+      return { escalated: true, question: result.escalationQuestion };
 
     case "DEGRADE":
-      return await executeAction(actionType, result.safe_alternative ?? payload);
+      return await executeAction(actionType, result.safeAlternative ?? payload);
 
     case "PAUSE":
-      await sleep(5000);
-      return governedAction(actionType, payload, agentId); // retry
+      await sleep(5_000);
+      return governedAction(actionType, payload, agentId);
 
     default:
       throw new Error(`Governance error: verdict=${result.verdict}`);
@@ -76,53 +90,85 @@ function sleep(ms: number) {
 }
 ```
 
-## Browser Usage
+## Error Handling
+
+The SDK throws typed errors — catch the specific class you care about:
 
 ```typescript
-// Store token securely — never expose in client-side code in production
-// Use URL hash params so the token never reaches the server:
-// https://your-app.com/#token=eak_...
-const token = new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
+import {
+  EdonClient,
+  AuthenticationError,
+  RateLimitError,
+  APITimeoutError,
+  APIConnectionError,
+  EdonError,
+} from "@edon/sdk";
 
-const client = new EdonClient({ token });
+const client = new EdonClient({ token: process.env.EDON_API_KEY! });
+
+try {
+  const result = await client.evaluate({ actionType: "database.query", payload: {} });
+} catch (err) {
+  if (err instanceof AuthenticationError) {
+    console.error("Invalid API key — check EDON_API_KEY starts with 'edon-'");
+
+  } else if (err instanceof RateLimitError) {
+    const wait = (err.retryAfter ?? 5) * 1_000;
+    console.error(`Rate limit — retrying in ${wait}ms`);
+    await sleep(wait);
+
+  } else if (err instanceof APITimeoutError) {
+    console.error("Gateway timed out — safe to retry");
+
+  } else if (err instanceof APIConnectionError) {
+    console.error("Cannot reach EDON gateway — check network / EDON_GATEWAY_URL");
+
+  } else if (err instanceof EdonError) {
+    console.error("SDK error:", err.message);
+  }
+}
 ```
+
+The SDK automatically retries 429 and 5xx responses with exponential backoff (2 retries by default).
 
 ## TypeScript Types
 
 ```typescript
-interface EvaluateRequest {
-  actionType: string;
-  agentId: string;
-  payload?: Record<string, unknown>;
-  estimatedRisk?: "low" | "medium" | "high" | "critical";
-  context?: Record<string, unknown>;
-}
+import type {
+  EvaluateOptions,
+  EvaluateResult,
+  ScanOutputOptions,
+  ScanOutputResult,
+  BeginIntentOptions,
+} from "@edon/sdk";
 
-interface EvaluateResponse {
-  action_id: string;
-  verdict: "ALLOW" | "BLOCK" | "ESCALATE" | "DEGRADE" | "PAUSE" | "ERROR";
-  reason_code: string;
-  explanation: string;
-  safe_alternative?: Record<string, unknown> | null;
-  escalation_question?: string | null;
-  escalation_options?: Array<{ id: string; label: string }>;
-  policy_snapshot_hash: string;
-}
+// EvaluateResult fields (all camelCase):
+// result.verdict           — 'ALLOW' | 'BLOCK' | 'ESCALATE' | 'DEGRADE' | 'PAUSE' | 'ERROR'
+// result.reasonCode        — machine-readable reason string
+// result.explanation       — human-readable explanation
+// result.actionId          — audit trail ID; pass to scanOutput()
+// result.safeAlternative   — (DEGRADE only) modified params
+// result.escalationQuestion — (ESCALATE only) question to show a human
+// result.fallback          — true if gateway was unreachable (fail-open applied)
 ```
 
-## Error Handling
+## Browser Usage
 
 ```typescript
-try {
-  const result = await client.evaluate({ actionType: "http.request", agentId: "agent-1" });
-} catch (error) {
-  if (error instanceof Response && error.status === 401) {
-    console.error("Invalid API key");
-  } else if (error instanceof Response && error.status === 429) {
-    console.error("Rate limit exceeded");
-  } else {
-    // Fail closed — do not proceed with the action
-    console.error("Governance error:", error);
-  }
-}
+// Never expose API keys in client-side bundles.
+// For browser demos, use a backend proxy that injects the key server-side.
+const client = new EdonClient({ token: "edon-..." }); // from your backend session
+```
+
+## Self-Serve Sign-Up (No Console Required)
+
+```typescript
+const resp = await fetch("https://edon-gateway-prod.fly.dev/auth/register", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email: "you@yourhospital.com", password: "secure-password" }),
+});
+const data = await resp.json();
+console.log(data.api_key);   // edon-... — copy this now, shown only once
+console.log(data.tenant_id);
 ```

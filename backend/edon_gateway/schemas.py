@@ -45,6 +45,7 @@ class Tool(str, Enum):
     HTTP = "http"
     # Physical autonomous systems (FedEx / logistics)
     ROBOT = "robot"
+    HUMANOID = "humanoid"
     VEHICLE = "vehicle"
     CONVEYOR = "conveyor"
     FORKLIFT = "forklift"
@@ -104,6 +105,11 @@ class ReasonCode(str, Enum):
     PROMPT_INJECTION = "PROMPT_INJECTION"
     ANOMALY_DETECTED = "ANOMALY_DETECTED"
     SESSION_RISK_EXCEEDED = "SESSION_RISK_EXCEEDED"
+
+    # Physical system safety
+    ESTOP_ACTIVE = "ESTOP_ACTIVE"
+    PHYSICAL_SAFETY_VIOLATION = "PHYSICAL_SAFETY_VIOLATION"
+    ROBOT_UNSTABLE = "ROBOT_UNSTABLE"
 
 
 @dataclass

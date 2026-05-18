@@ -73,8 +73,8 @@ Complete guide to configuring EDON Gateway for production use.
 #### `EDON_DATABASE_PATH`
 - **Type:** String (file path)
 - **Default:** `edon_gateway.db`
-- **Description:** Path to SQLite database file
-- **Production:** Use absolute path, ensure backups
+- **Description:** Path to the SQLite database file used in development/single-node demos
+- **Production:** Not supported for enterprise production. Set `DATABASE_URL` to PostgreSQL instead.
 
 ---
 
@@ -243,9 +243,10 @@ The gateway validates configuration on startup and logs warnings for:
 3. **Restrict CORS** - Never use `*` in production
 4. **Enable strict mode** - Always use `EDON_CREDENTIALS_STRICT=true`
 5. **Use structured logging** - Enable `EDON_JSON_LOGGING=true`
-6. **Store credentials in database** - Never use env vars for production credentials
-7. **Use reverse proxy** - Nginx/Traefik for HTTPS and load balancing
-8. **Enable monitoring** - Set up Prometheus/Grafana or similar
+6. **Use PostgreSQL** - Never run enterprise production on SQLite
+7. **Store credentials in database** - Never use env vars for production credentials
+8. **Use reverse proxy** - Nginx/Traefik for HTTPS and load balancing
+9. **Enable monitoring** - Set up Prometheus/Grafana or similar
 
 ---
 

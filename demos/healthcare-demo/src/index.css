@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -28,7 +29,9 @@
     --radius: 1rem;
 
     --page-bg: linear-gradient(180deg, hsl(220 15% 7%) 0%, hsl(220 14% 6%) 100%);
-    --nav-indicator-bg: rgba(255, 255, 255, 0.15);
+    --nav-indicator-bg: hsl(142 70% 45% / 0.12);
+    --nav-indicator-border: hsl(142 70% 45% / 0.25);
+    --nav-indicator-glow: 0 0 12px hsl(142 70% 45% / 0.18);
   }
 
   .light {
@@ -53,7 +56,9 @@
     --ring: 142 70% 38%;
 
     --page-bg: linear-gradient(180deg, hsl(220 20% 97%) 0%, hsl(220 18% 95%) 100%);
-    --nav-indicator-bg: hsl(142 70% 38% / 0.12);
+    --nav-indicator-bg: hsl(142 70% 38% / 0.1);
+    --nav-indicator-border: hsl(142 70% 38% / 0.2);
+    --nav-indicator-glow: none;
   }
 
   * {
@@ -97,8 +102,16 @@
   }
 
   .edon-brand {
-    font-family: 'Inter', sans-serif;
-    letter-spacing: 0.08em;
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+  }
+
+  .edon-wordmark {
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
   }
 
   .nav-item {
@@ -111,8 +124,32 @@
   }
 
   .nav-item-active {
-    @apply text-foreground;
+    @apply text-primary font-semibold;
     background: var(--nav-indicator-bg);
+    border: 1px solid var(--nav-indicator-border);
+    box-shadow: var(--nav-indicator-glow);
+  }
+
+  .dept-select {
+    background-color: hsl(var(--muted) / 0.5);
+    border-color: hsl(var(--border));
+    color: hsl(var(--foreground));
+    color-scheme: dark;
+  }
+  .dept-select:focus {
+    border-color: hsl(var(--primary));
+  }
+  .dept-select option,
+  .dept-select optgroup {
+    background-color: hsl(220 15% 12%);
+    color: hsl(var(--foreground));
+  }
+  .light .dept-select {
+    color-scheme: light;
+  }
+  .light .dept-select option,
+  .light .dept-select optgroup {
+    background-color: hsl(220 20% 97%);
   }
 }
 
@@ -132,4 +169,17 @@
 
 .animate-pulse-dot {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.cite-ring {
+  outline: 2px solid hsl(var(--primary)) !important;
+  outline-offset: 2px;
+  border-radius: 4px;
+  animation: cite-pulse 2.5s ease-out forwards;
+}
+
+@keyframes cite-pulse {
+  0%   { outline-color: hsl(var(--primary)); }
+  70%  { outline-color: hsl(var(--primary) / 0.5); }
+  100% { outline-color: transparent; }
 }

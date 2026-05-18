@@ -22,6 +22,13 @@ _POLICY_TIMEOUT_SEC: float = float(os.getenv("EDON_POLICY_TIMEOUT_MS", "10000"))
 
 # Fail-safe mode: "block" (safe default) or "allow"/"allow_with_log"
 _POLICY_FAIL_SAFE: str = os.getenv("EDON_POLICY_FAIL_SAFE", "block").strip().lower()
+# Strict fail-closed — must be explicitly disabled to enable allow_with_log.
+_STRICT_FAIL_CLOSED: bool = os.getenv("EDON_STRICT_FAIL_CLOSED", "true").strip().lower() == "true"
+
+# Verdict when no policy rules match (or no rules are configured).
+# Default is ESCALATE so ungoverned actions reach a human reviewer rather than being silently permitted.
+# Override to ALLOW via EDON_UNGOVERNED_VERDICT=ALLOW only in low-assurance / open-enrollment deployments.
+_UNGOVERNED_VERDICT: str = os.getenv("EDON_UNGOVERNED_VERDICT", "ESCALATE").strip().upper()
 
 from .schemas import (
     PolicyRule,
@@ -84,10 +91,15 @@ class PolicyConfig:
                 "mkfs",
                 "dd if=",
                 "chmod 777 /",
-                ":(){:|:&};:",  # fork bomb
+                "chmod -r 777",   # recursive world-writable
+                ":(){:|:&};:",    # fork bomb
                 "curl | bash",
                 "wget | bash",
-                "wget -O- | sh",
+                "wget -o- | sh",  # stored lowercase for case-insensitive comparison
+                "curl -s | sh",
+                "| sh",           # any pipe-to-sh (RCE pattern)
+                "nc -e",          # netcat reverse shell
+                "bash -i",        # interactive bash (reverse shell)
             }
         if self.external_sharing_patterns is None:
             self.external_sharing_patterns = [
@@ -359,8 +371,8 @@ class PolicyEngine:
             return self._apply_fail_safe(reason=str(e))
 
     def _apply_fail_safe(self, reason: str = "") -> "PolicyDecision":
-        """Return a fail-safe PolicyDecision based on _POLICY_FAIL_SAFE setting."""
-        if _POLICY_FAIL_SAFE in ("allow", "allow_with_log"):
+        """Return a fail-safe PolicyDecision. Always BLOCK unless strict fail-closed is explicitly disabled."""
+        if not _STRICT_FAIL_CLOSED and _POLICY_FAIL_SAFE in ("allow", "allow_with_log"):
             return PolicyDecision(verdict="ALLOW_WITH_LOG", reason=reason)
         return PolicyDecision(verdict="BLOCK", reason=reason)
 
@@ -372,7 +384,7 @@ class PolicyEngine:
     ) -> "PolicyDecision":
         """Evaluate action against all rules in the unified PolicyRule cache."""
         if not self.rules_cache:
-            return PolicyDecision(verdict="ALLOW", reason="No policy rules configured")
+            return PolicyDecision(verdict=_UNGOVERNED_VERDICT, reason="No policy rules configured")
 
         eval_context = {
             "action": action,
@@ -396,32 +408,25 @@ class PolicyEngine:
 
                 # Map PolicyAction to Decision / PolicyDecision verdict
                 if rule.action == PolicyAction.BLOCK:
-                    return PolicyDecision(
-                        verdict="BLOCK",
-                        reason=f"{rule.name}: {reason}",
-                        rule_id=rule_id,
-                    )
+                    d = PolicyDecision(verdict="BLOCK", reason=f"{rule.name}: {reason}", rule_id=rule_id)
+                    d.metadata["failure_mode"] = rule.failure_mode
+                    return d
                 elif rule.action == PolicyAction.REQUIRE_APPROVAL:
-                    return PolicyDecision(
-                        verdict="HUMAN_REQUIRED",
-                        reason=f"{rule.name}: {reason}",
-                        rule_id=rule_id,
-                    )
+                    d = PolicyDecision(verdict="HUMAN_REQUIRED", reason=f"{rule.name}: {reason}", rule_id=rule_id)
+                    d.metadata["failure_mode"] = rule.failure_mode
+                    return d
                 elif rule.action == PolicyAction.DEGRADE:
-                    return PolicyDecision(
-                        verdict="DEGRADE",
-                        reason=f"{rule.name}: {reason}",
-                        rule_id=rule_id,
-                    )
+                    d = PolicyDecision(verdict="DEGRADE", reason=f"{rule.name}: {reason}", rule_id=rule_id)
+                    d.metadata["failure_mode"] = rule.failure_mode
+                    return d
                 elif rule.action == PolicyAction.ALLOW:
-                    return PolicyDecision(
-                        verdict="ALLOW",
-                        reason=f"{rule.name}: {reason}",
-                        rule_id=rule_id,
-                    )
+                    d = PolicyDecision(verdict="ALLOW", reason=f"{rule.name}: {reason}", rule_id=rule_id)
+                    d.metadata["failure_mode"] = rule.failure_mode
+                    return d
 
-        # No rules matched — default allow
-        return PolicyDecision(verdict="ALLOW", reason="No matching policy rules - default allow")
+        # No rules matched — verdict controlled by EDON_UNGOVERNED_VERDICT (default ESCALATE).
+        # Override to ALLOW in low-assurance / open-enrollment deployments if needed.
+        return PolicyDecision(verdict=_UNGOVERNED_VERDICT, reason="No matching policy rules")
 
 
     def _evaluate_rule(
@@ -579,7 +584,7 @@ class PolicyEngine:
         """
         error_msg = f"Policy engine error: {str(error)[:200]}"
 
-        if FAIL_SAFE_MODE in ("allow", "allow_with_log"):
+        if not _STRICT_FAIL_CLOSED and FAIL_SAFE_MODE in ("allow", "allow_with_log"):
             logger.error(f"FAIL-SAFE ALLOW: {error_msg}")
             return PolicyDecision(
                 verdict="ALLOW_WITH_LOG",
@@ -601,9 +606,11 @@ class PolicyEngine:
 
     def is_dangerous_command(self, command: str) -> bool:
         """Return True if *command* matches a known-dangerous substring pattern."""
+        if not command:
+            return False
         command_lower = command.lower()
         return any(
-            pattern in command_lower
+            pattern.lower() in command_lower
             for pattern in (self.config.dangerous_shell_commands or set())
         )
 
@@ -655,8 +662,8 @@ class PolicyEngine:
             count = self._rate_store.count_in_window(key, 60.0)
             return count >= self.config.max_actions_per_minute
         cutoff = current_time.timestamp() - 60
-        recent = [e for e in self._action_history if e[0] >= cutoff]
-        return len(recent) >= self.config.max_actions_per_minute
+        self._action_history = [e for e in self._action_history if e[0] >= cutoff]
+        return len(self._action_history) >= self.config.max_actions_per_minute
 
     def detect_loop(
         self,
@@ -679,6 +686,7 @@ class PolicyEngine:
             count = self._rate_store.count_in_window(key, float(self.config.loop_detection_window_seconds))
             return count >= self.config.loop_detection_threshold
         window_start = current_time.timestamp() - self.config.loop_detection_window_seconds
+        self._action_history = [e for e in self._action_history if e[0] >= window_start]
         tool_val = tool.value if hasattr(tool, "value") else str(tool)
         matching = [
             e for e in self._action_history
@@ -725,14 +733,15 @@ class PolicyEngine:
         self.rules_cache.clear()
         logger.info("Policy rules cache cleared")
 
-    def reload_from_storage(self, storage):
-        """Reload all policy rules from storage.
+    def reload_from_storage(self, storage, tenant_id: str = "default"):
+        """Reload policy rules from storage for a specific tenant.
 
         Args:
             storage: PolicyStorage instance
+            tenant_id: Tenant whose rules to load
         """
         self.clear_cache()
-        policy_sets = storage.get_all_policy_sets()
+        policy_sets = storage.get_all_policy_sets(tenant_id)
         for policy_set in policy_sets:
             self.add_policy_set(policy_set)
-        logger.info(f"Reloaded {len(self.rules_cache)} rules from storage")
+        logger.info(f"Reloaded {len(self.rules_cache)} rules from storage for tenant '{tenant_id}'")

@@ -34,6 +34,11 @@ _BLAST_RADIUS_FLOOR: Dict[Tuple[str, str], RiskLevel] = {
     # Physical systems — any actuator op is at least HIGH
     ("robot", "execute"): RiskLevel.HIGH,
     ("robot", "actuate"): RiskLevel.HIGH,
+    ("humanoid", "execute"): RiskLevel.HIGH,
+    ("humanoid", "actuate"): RiskLevel.HIGH,
+    ("humanoid", "grasp"): RiskLevel.HIGH,
+    ("humanoid", "walk"): RiskLevel.MEDIUM,
+    ("humanoid", "navigate"): RiskLevel.MEDIUM,
     ("vehicle", "drive"): RiskLevel.HIGH,
     ("drone", "fly"): RiskLevel.HIGH,
     ("forklift", "lift"): RiskLevel.HIGH,
@@ -44,6 +49,29 @@ _BLAST_RADIUS_FLOOR: Dict[Tuple[str, str], RiskLevel] = {
 }
 
 _RISK_ORDER = [RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL]
+
+# Per-action-type failure mode registry.
+# Overrides the global FAIL_SAFE_ALLOW when the policy engine raises an exception.
+# Wire transfers and financial ops must always fail-closed; emergency clinical access
+# should fail-open (blocking is more dangerous than allowing in a break-glass scenario).
+_FAILURE_MODE_REGISTRY: Dict[Tuple[str, str], str] = {
+    # Wire transfers and financial operations — always fail-closed
+    ("payment", "wire_transfer"): "fail_closed",
+    ("payment", "transfer"): "fail_closed",
+    ("finance", "transfer"): "fail_closed",
+    # Destructive database ops — always fail-closed
+    ("database", "truncate"): "fail_closed",
+    ("database", "drop"): "fail_closed",
+    # Emergency clinical access — fail-open (blocking is more dangerous than allowing)
+    ("ehr", "emergency_access"): "fail_open",
+    ("ehr", "break_glass"): "fail_open",
+}
+
+# Tools that govern physical actuators — e-stop and safety envelope checks apply to these
+_PHYSICAL_TOOLS = frozenset({
+    Tool.ROBOT, Tool.VEHICLE, Tool.DRONE,
+    Tool.FORKLIFT, Tool.CONVEYOR, Tool.GATE, Tool.DOCK,
+})
 
 
 def _max_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel:
@@ -57,7 +85,9 @@ logger = logging.getLogger(__name__)
 # Fail-safe when policy engine throws: "block" (default) or "allow_with_log"
 POLICY_FAIL_SAFE = os.getenv("EDON_POLICY_FAIL_SAFE", "block").strip().lower()
 _IS_PRODUCTION = (os.getenv("ENVIRONMENT") == "production" or os.getenv("EDON_ENV") == "production")
-_STRICT_FAIL_CLOSED = (os.getenv("EDON_STRICT_FAIL_CLOSED", "true" if _IS_PRODUCTION else "false").strip().lower() == "true")
+# Strict fail-closed defaults ON regardless of environment. Must be explicitly opted out via
+# EDON_STRICT_FAIL_CLOSED=false — only appropriate in test harnesses, never in production.
+_STRICT_FAIL_CLOSED = os.getenv("EDON_STRICT_FAIL_CLOSED", "true").strip().lower() == "true"
 FAIL_SAFE_ALLOW = (not _STRICT_FAIL_CLOSED) and POLICY_FAIL_SAFE in ("allow", "allow_with_log")
 
 
@@ -100,42 +130,91 @@ class EDONGovernor:
             approved_by_user=intent_dict.get("approved_by_user", False)
         )
     
+    def _resolve_failure_mode(self, action: Action, context: dict) -> Optional[str]:
+        """Return the effective failure mode for this action: 'fail_open', 'fail_closed', or None (→ global)."""
+        # Per-rule takes precedence (stored by _evaluate_impl after policy engine returns)
+        rule_mode = (context or {}).get("_last_failure_mode")
+        if rule_mode:
+            return rule_mode
+        # Fall back to static registry keyed by (tool, op)
+        tool_str = action.tool.value if hasattr(action.tool, "value") else str(action.tool)
+        return _FAILURE_MODE_REGISTRY.get((tool_str, action.op))
+
     def evaluate(
         self,
         action: Action,
         intent: IntentContract,
         context: Optional[dict] = None,
-        tenant_rules: Optional[List[Dict[str, Any]]] = None
+        tenant_rules: Optional[List[Dict[str, Any]]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Decision:
         """Evaluate action against intent and policies.
-        
-        On policy engine error, applies fail-safe: block (default) or allow_with_log.
-        Never silently drops or undefined behavior (Tier 1).
-        
+
         Args:
             action: Proposed action
             intent: Active intent contract
-            context: Additional context (optional)
-            
+            context: Additional context dict (agent_id, session_id, etc.)
+            tenant_rules: Tenant-specific policy rules
+            tenant_id: Explicit tenant identifier. Takes precedence over context["tenant_id"].
+                       Absence triggers a warning — audit records will lack customer_id.
+
         Returns:
-            Decision with verdict and reasoning
+            Decision with verdict and reasoning. Fail-safe is always BLOCK unless
+            EDON_STRICT_FAIL_CLOSED=false is explicitly set.
         """
         if context is None:
             context = {}
         if tenant_rules is None:
             tenant_rules = []
+        # Explicit tenant_id is authoritative; seed context so all downstream
+        # invariant recording and rate-limiting share a consistent value.
+        if tenant_id is not None:
+            context["tenant_id"] = tenant_id
+        elif "tenant_id" not in context:
+            logger.warning("[governor] evaluate() called without tenant_id — audit records will lack customer_id")
         policy_snapshot_hash = self._compute_policy_snapshot_hash(intent, tenant_rules)
         context["_policy_snapshot_hash"] = policy_snapshot_hash
         context.setdefault("_invariant_results", [])
+        # Hard gate invariants — any "fail" here must produce a non-ALLOW verdict.
+        # Hard gates return early from _evaluate_impl so this check should always
+        # pass; it is a defensive guard against future regressions or custom paths.
+        _HARD_GATE_INVARIANTS = frozenset({
+            "INV-000-ESTOP", "INV-006-INTENT-FRESH", "INV-005-MAG-AUTH",
+            "INV-010-ISO15066", "INV-008-ROBOT-STABILITY",
+        })
+
         try:
             decision = self._evaluate_impl(action, intent, context, tenant_rules)
+            # ML invariant: hard gate failure must never produce ALLOW.
+            _inv_results = context.get("_invariant_results", [])
+            _hard_failures = [
+                r for r in _inv_results
+                if r.get("id") in _HARD_GATE_INVARIANTS and r.get("status") == "fail"
+            ]
+            if _hard_failures and decision.verdict == Verdict.ALLOW:
+                logger.error(
+                    "[governor] ML invariant violation: hard gate(s) %s failed but verdict is ALLOW — reverting to BLOCK",
+                    [r["id"] for r in _hard_failures],
+                )
+                self._record_invariant(
+                    context, "INV-ML-AUTHORIZE-GUARD", "fail",
+                    f"Hard gate override blocked: {[r['id'] for r in _hard_failures]}",
+                )
+                decision = Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.POLICY_ENGINE_ERROR,
+                    explanation="Safety invariant: learned signal cannot override a hard gate failure",
+                )
             reason_code_str = decision.reason_code.value if hasattr(decision.reason_code, "value") else str(decision.reason_code or "")
             verdict_str = decision.verdict.value if hasattr(decision.verdict, "value") else str(decision.verdict)
             self._record_trust_outcome(verdict_str, reason_code_str, context)
             return self._attach_provenance(decision, context, policy_snapshot_hash)
         except Exception as e:
             logger.exception("Policy engine error during evaluate: %s", e)
-            if FAIL_SAFE_ALLOW:
+            # Resolve per-action failure mode: per-rule → static registry → global setting
+            _eff_mode = self._resolve_failure_mode(action, context)
+            _fail_open = (_eff_mode == "fail_open") or (_eff_mode is None and FAIL_SAFE_ALLOW)
+            if _fail_open:
                 decision = Decision(
                     verdict=Verdict.ALLOW,
                     reason_code=ReasonCode.POLICY_ENGINE_ERROR,
@@ -219,16 +298,46 @@ class EDONGovernor:
                 return False
         return True
 
-    def _apply_tenant_rules(self, tenant_rules: list, action: Action) -> Optional[Decision]:
+    def _apply_tenant_rules(self, tenant_rules: list, action: Action, context: Optional[dict] = None) -> Optional[Decision]:
         """Evaluate tenant-defined rules (priority-ordered). Return Decision or None."""
         for rule in tenant_rules:
             if not rule.get("enabled", True):
                 continue
+            rule_id = rule.get("id", rule.get("name", "custom"))
+            # Canary check: if this rule is in canary mode, only apply to the
+            # configured fraction of requests. Record the outcome either way.
+            is_canary = False
+            try:
+                from .healing.canary import should_apply_canary, record_canary_outcome, get_canary
+                canary_state = get_canary(rule_id)
+                if canary_state and canary_state.is_active:
+                    is_canary = True
+                    if not should_apply_canary(rule_id):
+                        continue  # skip this rule for this request
+            except Exception:
+                pass
+
             if not self._match_tenant_rule(rule, action):
+                if is_canary:
+                    try:
+                        from .healing.canary import record_canary_outcome
+                        record_canary_outcome(rule_id, False)
+                    except Exception:
+                        pass
                 continue
             rule_action = rule.get("action", "").upper()
-            rule_name = rule.get("name", rule.get("id", "custom"))
-            rule_id = rule.get("id", rule_name)
+            rule_name = rule.get("name", rule_id)
+            would_block = rule_action in ("BLOCK", "ESCALATE")
+            if is_canary:
+                try:
+                    from .healing.canary import record_canary_outcome
+                    record_canary_outcome(rule_id, would_block)
+                except Exception:
+                    pass
+            # Propagate per-rule failure_mode into context so the exception handler can use it
+            rule_failure_mode = rule.get("failure_mode")
+            if rule_failure_mode and isinstance(context, dict):
+                context["_last_failure_mode"] = rule_failure_mode
             if rule_action == "BLOCK":
                 return Decision(
                     verdict=Verdict.BLOCK,
@@ -266,6 +375,23 @@ class EDONGovernor:
         """Internal evaluation logic (called by evaluate with try/except)."""
         current_time = action.requested_at
 
+        # -2. E-stop check — physical tools only, checked before all other governance.
+        #     If an e-stop is active for this robot, no command gets through.
+        if action.tool in _PHYSICAL_TOOLS:
+            robot_id = (context or {}).get("robot_id")
+            try:
+                from .estop import is_estop_active
+                if is_estop_active(robot_id):
+                    self._record_invariant(context, "INV-000-ESTOP", "fail", f"E-stop active for robot {robot_id}")
+                    return Decision(
+                        verdict=Verdict.BLOCK,
+                        reason_code=ReasonCode.ESTOP_ACTIVE,
+                        explanation=f"E-stop is active for robot '{robot_id}'. Clear the e-stop before issuing commands.",
+                    )
+            except Exception:
+                pass
+            self._record_invariant(context, "INV-000-ESTOP", "pass", "No active e-stop")
+
         # -1. Intent freshness — check before anything else (INV-006-INTENT-FRESH)
         now_utc = datetime.now(UTC)
         if intent.revoked:
@@ -289,7 +415,7 @@ class EDONGovernor:
 
         # 0a. Apply tenant-defined custom rules first (highest priority)
         if tenant_rules:
-            tenant_decision = self._apply_tenant_rules(tenant_rules, action)
+            tenant_decision = self._apply_tenant_rules(tenant_rules, action, context)
             if tenant_decision is not None:
                 self._record_invariant(context, "INV-001-TENANT-RULES", "pass", "Tenant rule override applied")
                 return tenant_decision
@@ -441,7 +567,7 @@ class EDONGovernor:
         if intent_id and self.policy_engine._rate_store is not None:
             try:
                 from .state.rate_store import RateStore
-                intent_key = RateStore.intent_rate_key(intent_id)
+                intent_key = RateStore.intent_rate_key(context.get("tenant_id") if context else None, intent_id)
                 intent_count = self.policy_engine._rate_store.add_and_count(
                     intent_key, 60.0
                 )
@@ -508,6 +634,302 @@ class EDONGovernor:
                         ],
                     )
         
+        # 9.5. Physical safety envelope — applies to all physical tool actions.
+        #      Checks intent constraints: max_joint_torque_nm, max_velocity_ms,
+        #      no_go_zones, require_clearance.  Blocks or escalates on violation.
+        if action.tool in _PHYSICAL_TOOLS:
+            phys_decision = self._check_physical_safety_envelope(action, intent, context)
+            if phys_decision is not None:
+                return phys_decision
+
+        # 9.55. ISO/TS 15066 contact force limits (per body region).
+        #       Applied to all physical tools when iso15066_enabled is set in the intent,
+        #       or when the action explicitly carries contact_force_n / contact_forces.
+        if action.tool in _PHYSICAL_TOOLS:
+            cf_n = action.params.get("contact_force_n")
+            cf_region = action.params.get("target_body_region")
+            cf_dict = action.params.get("contact_forces")
+            if cf_n is not None or cf_dict or intent.constraints.get("iso15066_enabled"):
+                try:
+                    from .physical.iso15066 import check_contact_forces
+                    contact_type = intent.constraints.get("contact_type", "transient")
+                    violations = check_contact_forces(
+                        contact_force_n=cf_n,
+                        target_body_region=cf_region,
+                        contact_forces=cf_dict,
+                        contact_type=contact_type,
+                    )
+                    if violations:
+                        v = violations[0]
+                        self._record_invariant(
+                            context, "INV-010-ISO15066", "fail", str(v)
+                        )
+                        # Fire alert
+                        try:
+                            from .alerts.dispatcher import _dispatch
+                            _dispatch("physical.force_violation", {
+                                "robot_id": (context or {}).get("robot_id", "?"),
+                                "tenant_id": (context or {}).get("tenant_id", "global"),
+                                "violation": str(v),
+                            })
+                        except Exception:
+                            pass
+                        return Decision(
+                            verdict=Verdict.BLOCK,
+                            reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                            explanation=(
+                                f"ISO/TS 15066 contact force violation: {v}. "
+                                "Action blocked to prevent human injury."
+                            ),
+                        )
+                    self._record_invariant(context, "INV-010-ISO15066", "pass", "Contact forces within ISO limits")
+                except Exception as _iso_err:
+                    logger.debug("ISO 15066 check failed (fail-open): %s", _iso_err)
+
+        # 9.60. HRI three-zone safety check.
+        #       If human_proximity_m is in params or context, determine the zone and
+        #       enforce stop / collaborative constraints.
+        if action.tool in _PHYSICAL_TOOLS:
+            human_prox = (
+                action.params.get("human_proximity_m")
+                or (context or {}).get("human_proximity_m")
+            )
+            if human_prox is not None:
+                try:
+                    from .physical.hri_zones import zone_from_intent, HRIZone
+                    zone_result = zone_from_intent(intent.constraints, float(human_prox))
+                    if zone_result is not None:
+                        if context is not None:
+                            context["hri_zone"] = zone_result.zone.value
+                        if zone_result.zone == HRIZone.STOP:
+                            self._record_invariant(
+                                context, "INV-011-HRI-ZONE", "fail",
+                                f"STOP zone: human at {human_prox:.2f}m"
+                            )
+                            degraded = get_degraded_action(action, reason_tags=["hri_stop_zone"])
+                            if degraded is not None:
+                                return Decision(
+                                    verdict=Verdict.DEGRADE,
+                                    reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                                    explanation=zone_result.explanation,
+                                    safe_alternative=degraded,
+                                )
+                            return Decision(
+                                verdict=Verdict.BLOCK,
+                                reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                                explanation=zone_result.explanation,
+                            )
+                        if zone_result.zone == HRIZone.COLLABORATIVE:
+                            # Enforce speed cap if velocity requested exceeds collaborative limit
+                            req_vel = action.params.get("velocity_ms")
+                            max_vel = intent.constraints.get("max_velocity_ms")
+                            if req_vel is not None and max_vel is not None:
+                                collab_max = max_vel * zone_result.speed_factor
+                                if float(req_vel) > collab_max:
+                                    self._record_invariant(
+                                        context, "INV-011-HRI-ZONE", "fail",
+                                        f"COLLAB zone: velocity {req_vel}m/s > collab limit {collab_max:.2f}m/s"
+                                    )
+                                    return Decision(
+                                        verdict=Verdict.ESCALATE,
+                                        reason_code=ReasonCode.NEED_CONFIRMATION,
+                                        explanation=(
+                                            f"{zone_result.explanation} "
+                                            f"Requested velocity {req_vel}m/s exceeds collaborative-zone limit {collab_max:.2f}m/s."
+                                        ),
+                                        required_confirmation=True,
+                                        escalation_question="Reduce speed to collaborative-zone limit and proceed?",
+                                        escalation_options=[
+                                            {"id": "approve_reduced", "label": f"Proceed at {collab_max:.2f}m/s"},
+                                            {"id": "cancel", "label": "Cancel"},
+                                        ],
+                                    )
+                            self._record_invariant(
+                                context, "INV-011-HRI-ZONE", "pass",
+                                f"COLLAB zone: speed/force limits applied ({zone_result.explanation})"
+                            )
+                            if context is not None:
+                                context["hri_speed_factor"] = zone_result.speed_factor
+                                context["hri_force_factor"] = zone_result.force_factor
+                        else:
+                            self._record_invariant(context, "INV-011-HRI-ZONE", "pass", "FREE zone")
+                except Exception as _hri_err:
+                    logger.debug("HRI zone check failed (fail-open): %s", _hri_err)
+
+        # 9.65. Trajectory validation.
+        #       If the action carries a trajectory param, validate all waypoints
+        #       before issuing ALLOW.
+        if action.tool in _PHYSICAL_TOOLS:
+            traj = action.params.get("trajectory")
+            if traj and isinstance(traj, list):
+                try:
+                    from .physical.trajectory import validate_trajectory
+                    human_prox_ctx = (
+                        action.params.get("human_proximity_m")
+                        or (context or {}).get("human_proximity_m")
+                    )
+                    traj_report = validate_trajectory(
+                        trajectory=traj,
+                        constraints=intent.constraints,
+                        action_id=action.id,
+                        robot_id=(context or {}).get("robot_id", ""),
+                        human_proximity_m=float(human_prox_ctx) if human_prox_ctx is not None else None,
+                    )
+                    if not traj_report.valid:
+                        self._record_invariant(
+                            context, "INV-012-TRAJECTORY", "fail",
+                            traj_report.first_violation_summary()
+                        )
+                        block_violations = [v for v in traj_report.violations if v.severity == "block"]
+                        esc_violations   = [v for v in traj_report.violations if v.severity == "escalate"]
+                        if block_violations:
+                            return Decision(
+                                verdict=Verdict.BLOCK,
+                                reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                                explanation=(
+                                    f"Trajectory validation failed ({traj_report.checked_by}): "
+                                    f"{traj_report.first_violation_summary()}"
+                                ),
+                            )
+                        if esc_violations:
+                            return Decision(
+                                verdict=Verdict.ESCALATE,
+                                reason_code=ReasonCode.NEED_CONFIRMATION,
+                                explanation=(
+                                    f"Trajectory has safety warnings ({traj_report.checked_by}): "
+                                    f"{traj_report.first_violation_summary()}"
+                                ),
+                                required_confirmation=True,
+                                escalation_question="Trajectory has warnings. Proceed anyway?",
+                                escalation_options=[
+                                    {"id": "approve", "label": "Approve with warnings"},
+                                    {"id": "cancel", "label": "Cancel"},
+                                ],
+                            )
+                    self._record_invariant(
+                        context, "INV-012-TRAJECTORY", "pass",
+                        f"Trajectory valid ({traj_report.waypoint_count} waypoints, checked by {traj_report.checked_by})"
+                    )
+                except Exception as _traj_err:
+                    logger.debug("Trajectory validation failed (fail-open): %s", _traj_err)
+
+        # 9.70. Multi-robot workspace conflict detection.
+        #       If the action declares a workspace_zone, check if another robot holds it.
+        if action.tool in _PHYSICAL_TOOLS:
+            workspace_zone = action.params.get("workspace_zone")
+            if workspace_zone:
+                try:
+                    from .physical.workspace_registry import try_claim, ConflictResult
+                    tenant_id_ctx = (context or {}).get("tenant_id") or "unknown"
+                    robot_id_ctx = (context or {}).get("robot_id") or action.id
+                    duration_s = action.params.get("estimated_duration_s", 60.0)
+                    max_ttl = float(intent.constraints.get("max_workspace_claim_ttl_s", 300.0))
+                    priority = int(action.params.get("workspace_priority", 0))
+                    conflict_action = intent.constraints.get("workspace_conflict_action", "escalate")
+                    result: ConflictResult = try_claim(
+                        robot_id=robot_id_ctx,
+                        action_id=action.id,
+                        tenant_id=tenant_id_ctx,
+                        zone_name=workspace_zone,
+                        estimated_duration_s=float(duration_s),
+                        max_ttl_s=max_ttl,
+                        priority=priority,
+                    )
+                    if result.conflict and result.holder:
+                        h = result.holder
+                        self._record_invariant(
+                            context, "INV-013-WORKSPACE", "fail",
+                            f"Zone '{workspace_zone}' held by robot '{h.robot_id}' for ~{h.to_dict().get('expires_in_s', '?')}s"
+                        )
+                        if conflict_action == "block":
+                            return Decision(
+                                verdict=Verdict.BLOCK,
+                                reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                                explanation=(
+                                    f"Workspace zone '{workspace_zone}' is currently occupied by robot '{h.robot_id}'. "
+                                    "Action blocked to prevent collision."
+                                ),
+                            )
+                        return Decision(
+                            verdict=Verdict.ESCALATE,
+                            reason_code=ReasonCode.NEED_CONFIRMATION,
+                            explanation=(
+                                f"Workspace zone '{workspace_zone}' is currently occupied by robot '{h.robot_id}' "
+                                f"(expires in ~{h.to_dict().get('expires_in_s', '?')}s). "
+                                "Human coordination required."
+                            ),
+                            required_confirmation=True,
+                            escalation_question=f"Zone '{workspace_zone}' is occupied by '{h.robot_id}'. Proceed anyway?",
+                            escalation_options=[
+                                {"id": "wait", "label": "Wait — retry after zone is free"},
+                                {"id": "proceed", "label": "Proceed — I confirm no collision risk"},
+                                {"id": "cancel", "label": "Cancel"},
+                            ],
+                        )
+                    self._record_invariant(context, "INV-013-WORKSPACE", "pass", f"Zone '{workspace_zone}' claimed")
+                except Exception as _ws_err:
+                    logger.debug("Workspace conflict check failed (fail-open): %s", _ws_err)
+
+        # 9.6. Humanoid / robot real-time stability (richer CAV signal).
+        #      Replace the end-of-pipeline CAV robot stability check with this
+        #      earlier, richer version for humanoid and robot tools.
+        if action.tool in (Tool.ROBOT,) or (hasattr(action.tool, "value") and action.tool.value == "humanoid"):
+            robot_id = (context or {}).get("robot_id")
+            if robot_id:
+                try:
+                    from .cav_client import cav_client
+                    if hasattr(action.tool, "value") and action.tool.value == "humanoid":
+                        stability = cav_client.get_humanoid_stability(robot_id)
+                    else:
+                        stability = cav_client.get_robot_stability(robot_id)
+                    if stability:
+                        # Hard block if not stable
+                        if not stability.get("stable", True):
+                            self._record_invariant(
+                                context, "INV-008-ROBOT-STABILITY", "fail",
+                                f"Robot unstable: {stability.get('warning', 'stability check failed')}"
+                            )
+                            return Decision(
+                                verdict=Verdict.BLOCK,
+                                reason_code=ReasonCode.ROBOT_UNSTABLE,
+                                explanation=f"Robot '{robot_id}' stability check failed: {stability.get('warning', 'unstable state detected')}",
+                            )
+                        # Escalate if balance margin is tight (humanoid-specific)
+                        balance_margin = stability.get("balance_margin")
+                        if balance_margin is not None and balance_margin < 0.05:
+                            self._record_invariant(
+                                context, "INV-008-ROBOT-STABILITY", "fail",
+                                f"Low balance margin: {balance_margin:.3f}m"
+                            )
+                            return Decision(
+                                verdict=Verdict.ESCALATE,
+                                reason_code=ReasonCode.NEED_CONFIRMATION,
+                                explanation=f"Humanoid balance margin is {balance_margin:.3f}m (threshold: 0.05m). Human confirmation required.",
+                                required_confirmation=True,
+                                escalation_question=f"Robot '{robot_id}' has low balance margin ({balance_margin:.3f}m). Proceed with action?",
+                                escalation_options=[
+                                    {"id": "approve", "label": "Approve — I confirm the robot is stable"},
+                                    {"id": "cancel", "label": "Cancel"},
+                                ],
+                            )
+                        # Escalate if payload exceeds limit
+                        payload_kg = stability.get("payload_kg")
+                        payload_limit = stability.get("payload_limit_kg")
+                        if payload_kg is not None and payload_limit is not None and payload_kg > payload_limit:
+                            self._record_invariant(
+                                context, "INV-008-ROBOT-STABILITY", "fail",
+                                f"Payload {payload_kg}kg exceeds limit {payload_limit}kg"
+                            )
+                            return Decision(
+                                verdict=Verdict.BLOCK,
+                                reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                                explanation=f"Robot '{robot_id}' payload {payload_kg}kg exceeds limit {payload_limit}kg.",
+                            )
+                        self._record_invariant(context, "INV-008-ROBOT-STABILITY", "pass",
+                                              f"Stability OK (score={stability.get('stability_score', '?')})")
+                except Exception as _stab_err:
+                    logger.debug("Humanoid stability check failed (fail-open): %s", _stab_err)
+
         # 10. Check risk level and escalation requirements (use computed_risk, not estimated_risk).
         #     Apply session trust multiplier: a drifting agent gets tighter risk gates.
         trust_multiplier = 1.0
@@ -523,10 +945,16 @@ class EDONGovernor:
                 context["trust_multiplier"] = trust_multiplier
         except Exception:
             pass
-        # Below full trust, promote MEDIUM risk to HIGH for escalation check
+        # Below full trust, promote MEDIUM risk to HIGH for escalation check.
+        # ML contract: session trust may only raise effective risk, never lower it.
         effective_risk = computed_risk
         if trust_multiplier < 1.0 and computed_risk == RiskLevel.MEDIUM:
             effective_risk = RiskLevel.HIGH
+        self._record_invariant(
+            context, "INV-ML-TIGHTEN-ONLY", "pass",
+            f"Session trust: multiplier={trust_multiplier:.3f} "
+            f"computed_risk={computed_risk.value} effective_risk={effective_risk.value} (ML may only raise)",
+        )
         if effective_risk in (self.policy_engine.config.escalate_risk_levels or set()):
             if not (intent.approved_by_user and effective_risk == RiskLevel.HIGH):
                 self._record_invariant(context, "INV-003-RISK-GATE", "fail", f"Risk escalated ({computed_risk.value})")
@@ -650,21 +1078,6 @@ class EDONGovernor:
             except Exception as _cav_err:
                 logger.debug("CAV operator state check failed (fail-open): %s", _cav_err)
 
-        # ── CAV Robot Stability Signal ────────────────────────────────────────
-        robot_id = (context or {}).get("robot_id") if context else None
-        if robot_id:
-            try:
-                from .cav_client import cav_client
-                stability = cav_client.get_robot_stability(robot_id)
-                if stability and not stability.get("stable", True):
-                    return Decision(
-                        verdict=Verdict.BLOCK,
-                        reason_code=ReasonCode.SCOPE_VIOLATION,
-                        explanation=f"Robot stability check failed: {stability.get('warning', 'unstable state detected')}",
-                    )
-            except Exception as _cav_rob_err:
-                logger.debug("CAV robot stability check failed (fail-open): %s", _cav_rob_err)
-
         # Build the MAG signal metadata to attach to the final decision
         mag_meta: Dict[str, Any] = {
             "mag_verdict": mag_result.get("verdict") if mag_result else None
@@ -681,7 +1094,33 @@ class EDONGovernor:
                 meta=mag_meta,
             )
 
-        # All checks passed - ALLOW
+        # All checks passed — ALLOW
+        # For physical tools: register execution state and embed comm_loss_posture
+        if action.tool in _PHYSICAL_TOOLS:
+            robot_id_ctx = (context or {}).get("robot_id")
+            tenant_id_ctx = (context or {}).get("tenant_id") or "unknown"
+            if robot_id_ctx:
+                # Register execution state for in-flight telemetry monitoring
+                try:
+                    from .physical.execution_monitor import register_execution
+                    register_execution(
+                        robot_id=robot_id_ctx,
+                        action_id=action.id,
+                        tenant_id=tenant_id_ctx,
+                        constraints=intent.constraints,
+                    )
+                except Exception:
+                    pass
+                # Embed the robot's declared comm_loss_posture in the response meta
+                # so the robot always knows its fallback even if connectivity drops after ALLOW
+                try:
+                    from .physical.heartbeat import get_posture
+                    posture = get_posture(robot_id_ctx)
+                    mag_meta["comm_loss_posture"] = posture
+                    mag_meta["robot_id"] = robot_id_ctx
+                except Exception:
+                    pass
+
         return Decision(
             verdict=Verdict.ALLOW,
             reason_code=ReasonCode.APPROVED,
@@ -725,6 +1164,7 @@ class EDONGovernor:
                 intent_scope_tools=scope_tools,
                 action_tool=tool_val,
                 action_op=action.op,
+                intent_id=(context or {}).get("intent_id"),
             )
             if score is not None:
                 return score > self._AI_ALIGN_BLOCK_THRESHOLD
@@ -745,7 +1185,7 @@ class EDONGovernor:
             Tool.ELEVENLABS: ["voice", "speech", "tts", "read aloud", "storytelling"],
             Tool.GITHUB: ["github", "repo", "issue", "code", "pr"],
             Tool.MEMORY: ["memory", "preference", "remember", "episode", "past task"],
-            Tool.ROBOT: ["move", "navigate", "pick", "place", "execute", "actuate", "robot"],
+            Tool.ROBOT: ["move", "navigate", "pick", "place", "execute", "actuate", "robot", "walk", "grasp", "arm", "hand", "humanoid"],
             Tool.VEHICLE: ["drive", "navigate", "move", "transport", "vehicle"],
             Tool.DRONE: ["fly", "navigate", "move", "drone", "aerial"],
             Tool.CONVEYOR: ["start", "stop", "move", "conveyor", "belt"],
@@ -764,11 +1204,151 @@ class EDONGovernor:
             return True
         return any(kw in objective_lower or kw in scope_lower for kw in keywords)
 
+    # ── Physical safety envelope ──────────────────────────────────────────────
+
+    def _check_physical_safety_envelope(
+        self,
+        action: Action,
+        intent: IntentContract,
+        context: Optional[dict],
+    ) -> Optional[Decision]:
+        """Enforce physical safety constraints declared in the intent.
+
+        Supported constraints:
+          max_joint_torque_nm (float)  — block if action param joint_torque_nm exceeds this
+          max_velocity_ms (float)      — block if action param velocity_ms exceeds this
+          no_go_zones (list[str])      — block/escalate if action param target_zone matches
+          require_clearance (bool)     — escalate if context does not contain clearance_granted=True
+
+        Returns a Decision to block/escalate, or None to continue.
+        All violations record an INV-009-PHYS-SAFETY invariant.
+        """
+        c = intent.constraints
+
+        # max_joint_torque_nm
+        max_torque = c.get("max_joint_torque_nm")
+        if max_torque is not None:
+            requested_torque = action.params.get("joint_torque_nm")
+            if isinstance(requested_torque, (int, float)) and requested_torque > max_torque:
+                self._record_invariant(
+                    context, "INV-009-PHYS-SAFETY", "fail",
+                    f"Joint torque {requested_torque}Nm exceeds limit {max_torque}Nm"
+                )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                    explanation=(
+                        f"Requested joint torque {requested_torque}Nm exceeds safety limit {max_torque}Nm. "
+                        "Action blocked to prevent mechanical damage or injury."
+                    ),
+                )
+            # Also check per-joint dict: {"shoulder": 45.0, "elbow": 30.0, ...}
+            joint_torques = action.params.get("joint_torques")
+            if isinstance(joint_torques, dict):
+                for joint, torque in joint_torques.items():
+                    if isinstance(torque, (int, float)) and torque > max_torque:
+                        self._record_invariant(
+                            context, "INV-009-PHYS-SAFETY", "fail",
+                            f"Joint '{joint}' torque {torque}Nm exceeds limit {max_torque}Nm"
+                        )
+                        return Decision(
+                            verdict=Verdict.BLOCK,
+                            reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                            explanation=(
+                                f"Joint '{joint}' torque {torque}Nm exceeds safety limit {max_torque}Nm."
+                            ),
+                        )
+
+        # max_velocity_ms
+        max_velocity = c.get("max_velocity_ms")
+        if max_velocity is not None:
+            requested_velocity = action.params.get("velocity_ms")
+            if isinstance(requested_velocity, (int, float)) and requested_velocity > max_velocity:
+                self._record_invariant(
+                    context, "INV-009-PHYS-SAFETY", "fail",
+                    f"Velocity {requested_velocity}m/s exceeds limit {max_velocity}m/s"
+                )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                    explanation=(
+                        f"Requested velocity {requested_velocity}m/s exceeds safety limit {max_velocity}m/s. "
+                        "Action blocked."
+                    ),
+                )
+
+        # no_go_zones
+        no_go_zones = c.get("no_go_zones")
+        if no_go_zones and isinstance(no_go_zones, list):
+            target_zone = action.params.get("target_zone") or action.params.get("zone")
+            if target_zone and target_zone in no_go_zones:
+                self._record_invariant(
+                    context, "INV-009-PHYS-SAFETY", "fail",
+                    f"Target zone '{target_zone}' is a no-go zone"
+                )
+                degraded = get_degraded_action(action, reason_tags=["no_go_zone"])
+                if degraded is not None:
+                    return Decision(
+                        verdict=Verdict.DEGRADE,
+                        reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                        explanation=f"Target zone '{target_zone}' is designated no-go. Action degraded.",
+                        safe_alternative=degraded,
+                    )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.PHYSICAL_SAFETY_VIOLATION,
+                    explanation=f"Target zone '{target_zone}' is designated no-go. Action blocked.",
+                )
+
+        # require_clearance — a human operator must have explicitly granted clearance
+        if c.get("require_clearance", False):
+            clearance_granted = (context or {}).get("clearance_granted", False)
+            if not clearance_granted:
+                self._record_invariant(
+                    context, "INV-009-PHYS-SAFETY", "fail",
+                    "Physical clearance not granted"
+                )
+                return Decision(
+                    verdict=Verdict.ESCALATE,
+                    reason_code=ReasonCode.NEED_CONFIRMATION,
+                    explanation="This physical action requires explicit human clearance before execution.",
+                    required_confirmation=True,
+                    escalation_question="Grant physical clearance for this action?",
+                    escalation_options=[
+                        {"id": "grant_clearance", "label": "Grant clearance — I confirm the area is safe"},
+                        {"id": "cancel", "label": "Cancel"},
+                    ],
+                )
+
+        self._record_invariant(context, "INV-009-PHYS-SAFETY", "pass", "Physical safety envelope OK")
+        return None
+
     # ── Contextual blast-radius upgrade ──────────────────────────────────────
 
     _SENSITIVE_PARAM_PATTERNS = frozenset([
-        "password", "secret", "token", "api_key", "private_key",
+        "password", "passwd",
+        "secret",
+        "token",        # substring — matches access_token, auth_token, bearer_token, etc.
+        "api_key",
+        "_key",         # substring — matches signing_key, encryption_key, private_key, etc.
+        "private_key",
         "ssn", "dob", "phi", "pii", "hipaa", "credit_card", "cvv",
+    ])
+
+    _DANGEROUS_PATH_PATTERNS = frozenset([
+        "/etc/", "id_rsa", ".env", "passwd", "shadow",
+        "/.ssh/", "authorized_keys",
+        "/.aws/", ".aws/credentials",
+        "/.gcloud/", "gcloud/credentials",
+        "/proc/", "/sys/class",
+        "auth.log",
+        "/root/",
+        "system32",     # Windows SAM / system hive paths
+    ])
+
+    _DANGEROUS_SQL_PATTERNS = frozenset([
+        "; drop", "; delete", "; truncate", "; update", "; insert",
+        "'; --", "\"; --", "or 1=1", "or '1'='1",
     ])
 
     def _contextual_risk_upgrade(self, action: Action, current_risk: RiskLevel) -> RiskLevel:
@@ -784,16 +1364,26 @@ class EDONGovernor:
                 risk = _max_risk(risk, RiskLevel.HIGH)
 
         # Sensitive param names (keys only — never inspect values to avoid exfil)
+        # Substring matching: "token" matches "access_token", "_key" matches "signing_key"
         param_keys_lower = {k.lower() for k in action.params}
-        if param_keys_lower & self._SENSITIVE_PARAM_PATTERNS:
+        if any(pat in k for k in param_keys_lower for pat in self._SENSITIVE_PARAM_PATTERNS):
             risk = _max_risk(risk, RiskLevel.HIGH)
 
-        # Sensitive path patterns in string param values (file paths, domains)
+        # Sensitive path patterns in string param values
         for v in action.params.values():
             if isinstance(v, str):
                 v_lower = v.lower()
-                if any(pat in v_lower for pat in ("/etc/", "id_rsa", ".env", "passwd", "shadow")):
+                if any(pat in v_lower for pat in self._DANGEROUS_PATH_PATTERNS):
                     risk = RiskLevel.CRITICAL
                     break
+
+        # SQL injection patterns in database query params
+        if action.tool == Tool.DATABASE:
+            for v in action.params.values():
+                if isinstance(v, str):
+                    v_lower = v.lower()
+                    if any(pat in v_lower for pat in self._DANGEROUS_SQL_PATTERNS):
+                        risk = _max_risk(risk, RiskLevel.HIGH)
+                        break
 
         return risk

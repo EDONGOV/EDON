@@ -1,2 +1,21 @@
-export { EdonClient } from "./client";
-export type { EdonConfig, EvaluateRequest, Decision } from "./client";
+export { EdonClient, VERSION } from './client.js'
+export type {
+  EdonClientOptions,
+  BeginIntentOptions,
+  EvaluateOptions,
+  EvaluateResult,
+  ScanOutputOptions,
+  ScanOutputResult,
+} from './client.js'
+export {
+  EdonError,
+  APIError,
+  AuthenticationError,
+  PermissionDeniedError,
+  NotFoundError,
+  UnprocessableEntityError,
+  RateLimitError,
+  GatewayError,
+  APIConnectionError,
+  APITimeoutError,
+} from './errors.js'

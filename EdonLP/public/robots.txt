@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /build
+Disallow: /monitor
+
+# Sitemap
+Sitemap: https://edoncore.com/sitemap.xml

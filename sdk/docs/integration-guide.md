@@ -148,20 +148,25 @@ class GovernedAgent:
 
 ---
 
-## Choosing the Right Policy Pack
+## Choosing the Right Compliance Template
 
-| Policy Pack | Best for |
+Apply a pre-built compliance template to get the right governance baseline in one call:
+
+| Template ID | Best for |
 |-------------|----------|
-| `casual_user` | Low-stakes agents, demos, testing |
-| `market_analyst` | Read-only research agents |
-| `helpdesk` | Customer support bots |
-| `ops_commander` | DevOps/infrastructure automation |
-| `founder_mode` | Trusted agents with broad permissions |
-| `autonomy_mode` | Fully autonomous agents (maximum permissions) |
+| `hipaa` | Healthcare — PHI access control, breach detection, minimum necessary |
+| `clinical_governance` | Clinical AI — PHI minimisation, patient consent, scope enforcement |
+| `joint_commission` | Accredited hospitals — clinical decision support, patient safety |
+| `hitrust` | HITRUST CSF — access control, risk management, incident response |
+| `soc2` | SaaS / general — access control, change management, monitoring |
 
 ```python
-# Apply a policy pack for your tenant
-client.apply_policy("ops_commander")
+import httpx
+
+httpx.post(
+    "https://edon-gateway-prod.fly.dev/policy/templates/hipaa/apply",
+    headers={"X-EDON-TOKEN": os.environ["EDON_API_KEY"]},
+).raise_for_status()
 ```
 
 ---

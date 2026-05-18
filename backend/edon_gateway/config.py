@@ -450,6 +450,57 @@ class Config:
         # Your existing rule, keep it
         return instance._ENVIRONMENT == "production" or (instance.CREDENTIALS_STRICT and instance.AUTH_ENABLED)
 
+    def enterprise_violations(self) -> List[str]:
+        """Return hard blockers for an enterprise production deployment."""
+        violations: List[str] = []
+        if not self.is_production():
+            return violations
+
+        if not self.AUTH_ENABLED:
+            violations.append("EDON_AUTH_ENABLED must be true in production")
+
+        if not self.API_TOKEN or self.API_TOKEN in {
+            "your-secret-token",
+            "your-secret-token-change-me",
+            "production-token-change-me",
+            "change-me",
+        }:
+            violations.append("EDON_API_TOKEN must be set to a non-default value in production")
+
+        if self.ALLOW_ENV_TOKEN_IN_PROD:
+            violations.append("EDON_ALLOW_ENV_TOKEN_IN_PROD must be false in production")
+
+        if not self.RATE_LIMIT_ENABLED:
+            violations.append("EDON_RATE_LIMIT_ENABLED must be true in production")
+
+        if "*" in self.CORS_ORIGINS:
+            violations.append("EDON_CORS_ORIGINS cannot include '*' in production")
+
+        database_url = (os.getenv("DATABASE_URL") or "").strip()
+        if not database_url.startswith(("postgresql://", "postgres://")):
+            violations.append("DATABASE_URL must point to PostgreSQL in production")
+
+        encryption_key = (os.getenv("EDON_DB_ENCRYPTION_KEY") or "").strip()
+        if not encryption_key:
+            violations.append("EDON_DB_ENCRYPTION_KEY must be set in production")
+
+        clerk_configured = any(
+            (os.getenv(name) or "").strip()
+            for name in ("CLERK_SECRET_KEY", "CLERK_PUBLIC_KEY", "CLERK_JWKS_URL")
+        )
+        if clerk_configured:
+            issuer = (os.getenv("CLERK_ISSUER") or "").strip()
+            audience = (os.getenv("CLERK_AUDIENCE") or "").strip()
+            if not issuer or not audience:
+                violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set when Clerk auth is enabled")
+
+        return violations
+
+    def assert_enterprise_ready(self) -> None:
+        violations = self.enterprise_violations()
+        if violations:
+            raise RuntimeError("Enterprise production checks failed: " + "; ".join(violations))
+
 
 # Global config instance (created AFTER .env is loaded)
 config = Config()

@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 ROLE_PERMISSIONS: Dict[str, List[str]] = {
     'admin':     ['*'],                              # All permissions
     'operator':  ['read', 'write', 'action', 'audit', 'api_keys'],
-    'user':      ['action', 'read', 'api_keys', 'audit', 'write'],  # Product default (console + governed actions)
-    'agent':     ['action', 'read', 'api_keys', 'audit', 'write'],  # Backward-compatible alias
+    'user':      ['action', 'read', 'audit', 'write'],  # Product default (console + governed actions)
+    'agent':     ['action', 'read', 'audit', 'write'],  # Backward-compatible alias
     'read_only': ['read', 'audit'],
     'auditor':   ['read', 'audit', 'export'],        # External auditor: read + export evidence, no writes
 }
@@ -25,6 +25,9 @@ ENDPOINT_PERMISSIONS: Dict[str, Optional[str]] = {
     'GET /audit/query':              'audit',
     'POST /decisions/query':         'audit',
     'GET /decisions/{decision_id}':  'read',
+    'GET /settings/kill-switch':     'read',
+    'POST /settings/kill-switch':    'admin',
+    'DELETE /settings/kill-switch':  'admin',
     'POST /auth/signup':             None,
     'POST /auth/session':            None,
     'POST /auth/sync':               None,
@@ -117,8 +120,19 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 "/billing/checkout",  # Public: start checkout (session created server-side)
                 "/admin/bootstrap-api-key",  # Protected by X-Bootstrap-Secret, not tenant auth
                 "/telegram/bot-webhook",     # Protected by X-Telegram-Bot-Api-Secret-Token
+                "/v1/jarvis/ask",
+                "/v1/voice/ask",
+                "/v1/voice/stream",
+                "/v1/autonomous/status",
+                "/v1/autonomous/run",
+                "/v1/autonomous/start",
+                "/v1/autonomous/stop",
+                "/v1/codex/task",
+                "/v1/codex/tasks",
             }
             path = request.url.path.rstrip("/")
+            if any(path == prefix or path.startswith(f"{prefix}/") for prefix in ("/v1/jarvis", "/v1/voice", "/v1/autonomous", "/v1/codex")):
+                return await call_next(request)
             # All /admin/* routes are protected by X-Bootstrap-Secret, not tenant auth
             if path.startswith("/admin/") or path == "/admin":
                 return await call_next(request)

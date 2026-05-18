@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, Component, type ReactNode, type ErrorInfo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, Component, createContext, lazy, Suspense, useContext, type ReactNode, type ErrorInfo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Shield, Activity, FileText, Users, ClipboardList,
@@ -10,10 +10,42 @@ import {
   TimerOff, Filter, TrendingUp, Minus, ShieldAlert,
   ListChecks, FileDown, Bell, Settings, Menu, User,
   BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link, Package, FlaskConical,
+  Stethoscope, Microscope, Building2, GitCompare, Network, ServerCog, Radio,
 } from 'lucide-react'
-import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal } from './api'
+import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal, type Citation } from './api'
+import { ROLE_DEFAULT_TAB, ROLE_LABELS, type ConsoleRole } from './uiModel'
+import { GovernanceStrip } from './shared/enterprise'
 
-// ── Error Boundary ────────────────────────────────────────────────────────────
+const ClinicalSummaryTab = lazy(() => import('./clinical').then(module => ({ default: module.ClinicalSummaryTab })))
+const ClinicalExplainTab = lazy(() => import('./clinical').then(module => ({ default: module.ClinicalExplainTab })))
+const ClinicalActionsTab = lazy(() => import('./clinical').then(module => ({ default: module.ClinicalActionsTab })))
+const ResearchExperimentsTab = lazy(() => import('./research').then(module => ({ default: module.ResearchExperimentsTab })))
+const ShadowSimulationTab = lazy(() => import('./research').then(module => ({ default: module.ShadowSimulationTab })))
+const ReadinessTab = lazy(() => import('./research').then(module => ({ default: module.ReadinessTab })))
+const PolicyDiffViewerTab = lazy(() => import('./policies').then(module => ({ default: module.PolicyDiffViewerTab })))
+const ControlTowerTab = lazy(() => import('./control-tower').then(module => ({ default: module.ControlTowerTab })))
+const SystemRegistryTable = lazy(() => import('./control-tower').then(module => ({ default: module.SystemRegistryTable })))
+const DeploymentGatekeeperTab = lazy(() => import('./control-tower').then(module => ({ default: module.DeploymentGatekeeperTab })))
+const ImpactCenterTab = lazy(() => import('./assurance').then(module => ({ default: module.ImpactCenterTab })))
+
+function cn(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(' ')
+}
+
+// -- Page data store (tabs write here; ChatPanel reads for context) ------------
+
+const _ps: { tab: string; items: Record<string, unknown>[] } = { tab: '', items: [] }
+function _setPS(tab: string, items: Record<string, unknown>[]) {
+  _ps.tab = tab
+  _ps.items = items.slice(0, 40)
+}
+function _getPS() { return { ..._ps } }
+
+// Aside panel context (shared between ChatPanel citation clicks and tab rows)
+interface AsideItem { type: string; id: string }
+const AsideCtx = createContext<{ open: (item: AsideItem) => void }>({ open: () => {} })
+
+// -- Error Boundary ------------------------------------------------------------
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null }
@@ -35,7 +67,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: string |
   }
 }
 
-// ── Logo ─────────────────────────────────────────────────────────────────────
+// -- Logo ---------------------------------------------------------------------
 
 function EdonMark({ size = 40 }: { size?: number }) {
   const id = `em-${size}`
@@ -69,7 +101,7 @@ function EdonMark({ size = 40 }: { size?: number }) {
       {/* Subtle inner highlight */}
       <rect x="1" y="1" width="38" height="10" rx="9" fill="rgba(255,255,255,0.03)" />
 
-      {/* E mark — 3 bars, middle offset to form E + gate metaphor */}
+      {/* E mark - 3 bars, middle offset to form E + gate metaphor */}
       <rect x="10" y="12" width="20" height="3.5" rx="1.75" fill={`url(#${id}-bar)`} />
       <rect x="10" y="18.25" width="14" height="3.5" rx="1.75" fill={`url(#${id}-bar)`} opacity="0.7" />
       <rect x="10" y="24.5" width="20" height="3.5" rx="1.75" fill={`url(#${id}-bar)`} />
@@ -96,23 +128,25 @@ function EdonLogo({ variant = 'default', subtitle = true }: { variant?: 'default
   )
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// -- Auth ----------------------------------------------------------------------
 
 function saveAuth(gatewayUrl: string, token: string) {
-  localStorage.setItem('edon_auth', JSON.stringify({ gatewayUrl, token }))
+  sessionStorage.setItem('edon_auth', JSON.stringify({ gatewayUrl, token }))
+  localStorage.removeItem('edon_auth')
 }
 function clearAuth() {
+  sessionStorage.removeItem('edon_auth')
   localStorage.removeItem('edon_auth')
   localStorage.removeItem('edon_reviewer_name')
   localStorage.removeItem('edon_reviewer_dept')
 }
 function getAuth() {
-  const raw = localStorage.getItem('edon_auth')
+  const raw = sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth')
   if (!raw) return null
   try { return JSON.parse(raw) as { gatewayUrl: string; token: string } } catch { return null }
 }
 
-// ── Session timeout ───────────────────────────────────────────────────────────
+// -- Session timeout -----------------------------------------------------------
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000  // 15 min
 const SESSION_WARN_MS    = 13 * 60 * 1000  // warn at 13 min
@@ -146,7 +180,7 @@ function useSessionTimeout(onTimeout: () => void) {
   return { warning, secondsLeft, extend }
 }
 
-// ── PIN helpers ───────────────────────────────────────────────────────────────
+// -- PIN helpers ---------------------------------------------------------------
 
 const PIN_KEY = 'edon_console_pin_hash'
 
@@ -162,7 +196,7 @@ async function checkPin(pin: string) {
 async function savePin(pin: string) { localStorage.setItem(PIN_KEY, await sha256hex(pin)) }
 const hasPinSet = () => !!localStorage.getItem(PIN_KEY)
 
-// ── Reviewer name ─────────────────────────────────────────────────────────────
+// -- Reviewer name -------------------------------------------------------------
 
 const REVIEWER_KEY = 'edon_reviewer_name'
 const getReviewerName = () => localStorage.getItem(REVIEWER_KEY) || ''
@@ -173,20 +207,28 @@ const getReviewerDept = () => localStorage.getItem(DEPT_KEY) || ''
 const setReviewerDept = (dept: string) => localStorage.setItem(DEPT_KEY, dept)
 
 const ROLE_KEY = 'edon_reviewer_role'
-const CLINICAL_ROLES = ['Nurse', 'Charge Nurse', 'Physician', 'Admin'] as const
-type ClinicalRole = typeof CLINICAL_ROLES[number] | ''
-const getReviewerRole = (): ClinicalRole => (localStorage.getItem(ROLE_KEY) || '') as ClinicalRole
+const ROLES_BY_VERTICAL: Record<string, readonly string[]> = {
+  healthcare: ['Nurse', 'Charge Nurse', 'Physician', 'Admin'],
+  banking:    ['Analyst', 'Risk Manager', 'Compliance Officer', 'Admin'],
+  general:    ['Reviewer', 'Senior Reviewer', 'Manager', 'Admin'],
+}
+const getReviewRoles = (vertical: string | null): readonly string[] =>
+  ROLES_BY_VERTICAL[vertical ?? 'general'] ?? ROLES_BY_VERTICAL.general
+type ReviewerRole = string
+const getReviewerRole = (): ReviewerRole => localStorage.getItem(ROLE_KEY) || ''
 const setReviewerRole = (role: string) => localStorage.setItem(ROLE_KEY, role)
 
-const APPROVAL_TIER: Record<string, ClinicalRole> = {
-  critical: 'Physician',
-  urgent:   'Charge Nurse',
-  routine:  'Nurse',
+const APPROVAL_TIER_BY_VERTICAL: Record<string, Record<string, string>> = {
+  healthcare: { critical: 'Physician',           urgent: 'Charge Nurse',      routine: 'Nurse' },
+  banking:    { critical: 'Compliance Officer',   urgent: 'Risk Manager',      routine: 'Analyst' },
+  general:    { critical: 'Manager',              urgent: 'Senior Reviewer',   routine: 'Reviewer' },
 }
-const ROLE_RANK: Record<string, number> = { Nurse: 1, 'Charge Nurse': 2, Physician: 3, Admin: 4 }
-const canApprove = (role: ClinicalRole, urgency: string) => {
-  const required = APPROVAL_TIER[urgency] ?? 'Nurse'
-  return (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[required] ?? 1)
+const getApprovalTier = (vertical: string | null) =>
+  APPROVAL_TIER_BY_VERTICAL[vertical ?? 'general'] ?? APPROVAL_TIER_BY_VERTICAL.general
+const canApprove = (role: ReviewerRole, urgency: string, vertical: string | null) => {
+  const roles = getReviewRoles(vertical)
+  const required = getApprovalTier(vertical)[urgency] ?? roles[0]
+  return (roles.indexOf(role) ?? -1) >= roles.indexOf(required)
 }
 
 const DEPARTMENTS: Record<string, Record<string, string[]>> = {
@@ -256,7 +298,7 @@ const DEPARTMENTS: Record<string, Record<string, string[]>> = {
   },
 }
 
-// ── SLA helpers ───────────────────────────────────────────────────────────────
+// -- SLA helpers ---------------------------------------------------------------
 
 const SLA_MS: Record<string, number> = {
   critical: 5 * 60 * 1000,
@@ -284,7 +326,7 @@ const URGENCY_CFG = {
 const getUrgency = (item: ReviewItem): 'critical' | 'urgent' | 'routine' => item.meta?.urgency ?? 'routine'
 const getDept = (item: ReviewItem) => String(item.meta?.department ?? item.agent_id.split('-')[0] ?? 'Unknown')
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// -- Shared helpers ------------------------------------------------------------
 
 function VerdictBadge({ verdict }: { verdict: string }) {
   const v = verdict?.toUpperCase()
@@ -337,7 +379,7 @@ function relTime(iso: string) {
   return `${Math.floor(h / 24)}d ago`
 }
 
-// ── SLA Timer ─────────────────────────────────────────────────────────────────
+// -- SLA Timer -----------------------------------------------------------------
 
 function SlaTimer({ item, onExpired }: { item: ReviewItem; onExpired: (item: ReviewItem) => void }) {
   const urgency = getUrgency(item)
@@ -368,7 +410,7 @@ function SlaTimer({ item, onExpired }: { item: ReviewItem; onExpired: (item: Rev
   )
 }
 
-// ── PIN Modal ─────────────────────────────────────────────────────────────────
+// -- PIN Modal -----------------------------------------------------------------
 
 function PinModal({ mode, onSuccess, onCancel }: { mode: 'verify' | 'setup'; onSuccess: () => void; onCancel: () => void }) {
   const [pin, setPin] = useState(''), [confirm, setConfirm] = useState(''), [show, setShow] = useState(false)
@@ -434,7 +476,7 @@ function PinModal({ mode, onSuccess, onCancel }: { mode: 'verify' | 'setup'; onS
   )
 }
 
-// ── Notifications Bell ────────────────────────────────────────────────────────
+// -- Notifications Bell --------------------------------------------------------
 
 interface Notif { id: string; verdict: string; tool: string; agent_id: string; reason_code: string; timestamp: string }
 const NOTIF_SEEN_KEY = 'edon_console_notifs_seen'
@@ -452,9 +494,9 @@ function NotificationsBell() {
       const mapped: Notif[] = res.events.map(e => ({
         id: e.action_id || e.id || Math.random().toString(36).slice(2),
         verdict: e.decision_verdict,
-        tool: e.tool_name || '—',
+        tool: e.tool_name || '-',
         agent_id: e.agent_id,
-        reason_code: e.decision_reason_code || '—',
+        reason_code: e.decision_reason_code || '-',
         timestamp: e.timestamp,
       }))
       setNotifs(mapped)
@@ -518,7 +560,7 @@ function NotificationsBell() {
                       <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0 mt-1" />
                       <div className="min-w-0">
                         <p className="text-xs font-mono font-medium truncate">{n.tool}</p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">{n.reason_code} · {n.agent_id}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">{n.reason_code} / {n.agent_id}</p>
                       </div>
                     </div>
                     <span className="text-[10px] text-muted-foreground/60 shrink-0">{relTime(n.timestamp)}</span>
@@ -527,7 +569,7 @@ function NotificationsBell() {
               ))}
             </div>
             <div className="px-4 py-2.5 border-t border-border">
-              <p className="text-[10px] text-muted-foreground">Showing last 20 blocked actions · refreshes every 30s</p>
+              <p className="text-[10px] text-muted-foreground">Showing last 20 blocked actions / refreshes every 30s</p>
             </div>
           </motion.div>
         )}
@@ -536,13 +578,110 @@ function NotificationsBell() {
   )
 }
 
-// ── Chat Panel ────────────────────────────────────────────────────────────────
+// -- Citation helpers ----------------------------------------------------------
+
+const CITE_RE = /\[ref:(DECISION|AGENT|RULE):([^\]]+)\]/g
+
+const CITE_COLORS: Record<string, string> = {
+  decision: 'bg-amber-500/20 border-amber-500/40 text-amber-300 hover:bg-amber-500/30',
+  agent:    'bg-blue-500/20  border-blue-500/40  text-blue-300  hover:bg-blue-500/30',
+  rule:     'bg-purple-500/20 border-purple-500/40 text-purple-300 hover:bg-purple-500/30',
+}
+
+function highlightCite(id: string) {
+  const el = document.querySelector(`[data-cite-id="${id}"]`)
+  if (!el) return
+  el.classList.remove('cite-ring')
+  void (el as HTMLElement).offsetWidth  // force reflow to restart animation
+  el.classList.add('cite-ring')
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  setTimeout(() => el.classList.remove('cite-ring'), 2600)
+}
+
+function CitedMessage({ text, onCite }: { text: string; onCite: (type: string, id: string) => void }) {
+  const parts: ReactNode[] = []
+  let last = 0
+  CITE_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = CITE_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    const type = m[1].toLowerCase()
+    const id = m[2]
+    const color = CITE_COLORS[type] ?? 'bg-primary/20 border-primary/40 text-primary hover:bg-primary/30'
+    parts.push(
+      <button key={m.index} onClick={() => onCite(type, id)}
+        title={`${type}: ${id} - click to highlight in page`}
+        className={`inline-flex items-center gap-1 mx-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border cursor-pointer transition-colors ${color}`}>
+        {type === 'decision' ? 'DEC' : type === 'agent' ? 'AGT' : 'RULE'} {id.slice(0, 14)}{id.length > 14 ? '...' : ''}
+      </button>
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return <span>{parts}</span>
+}
+
+// -- Aside Panel ---------------------------------------------------------------
+
+function AsidePanel({ type, id, onClose }: { type: string; id: string; onClose: () => void }) {
+  const [explanation, setExplanation] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setErr(''); setExplanation('')
+    api.assistantExplain(type, id)
+      .then(r => { if (!cancelled) setExplanation(r.explanation) })
+      .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed to load') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [type, id])
+
+  const typeLabel = type === 'decision' ? 'Decision' : type === 'agent' ? 'Agent' : 'Rule'
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[102] bg-transparent" onClick={onClose} aria-hidden />
+      <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+        transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+        className="fixed top-0 right-0 bottom-0 z-[103] w-80 flex flex-col border-l border-white/10 bg-background/98 backdrop-blur-xl shadow-2xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
+              <Bot size={13} className="text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">AI Reasoning</p>
+              <p className="text-[10px] text-muted-foreground">{typeLabel} / <span className="font-mono">{id.slice(0, 16)}{id.length > 16 ? '...' : ''}</span></p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1"><X size={15} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <RefreshCw size={11} className="animate-spin" /> Analysing...
+            </div>
+          ) : err ? (
+            <p className="text-xs text-destructive">{err}</p>
+          ) : (
+            <p className="text-[13px] leading-relaxed text-foreground/85 whitespace-pre-wrap">{explanation}</p>
+          )}
+        </div>
+      </motion.div>
+    </>
+  )
+}
+
+// -- Chat Panel ----------------------------------------------------------------
 
 interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   content: string
   suggestion?: AssistantProposal | null
+  citations?: Citation[]
   appliedOk?: boolean
 }
 
@@ -553,21 +692,44 @@ const SUGGESTION_LABELS: Record<string, string> = {
   set_shadow_mode:  'Shadow Mode',
 }
 
-function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void; tab: string }) {
+function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void; tab: string; }) {
+  const { open: openAside } = useContext(AsideCtx)
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const [thinkingLabel, setThinkingLabel] = useState('')
   const [applying, setApplying] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  const [conversationId, setConversationId] = useState<string | undefined>()
+  const [pastConvs, setPastConvs] = useState<{ id: string; title: string; updated_at: string }[]>([])
+  const [memoryCount, setMemoryCount] = useState(0)
+  const [showHistory, setShowHistory] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const GREETING = 'Ask me anything - block rates, agent activity, pending reviews, policy rules, compliance status, or request a change.'
+
+  const startNewConversation = () => {
+    setMessages([{ id: 'g', role: 'assistant', content: GREETING }])
+    setDismissed(new Set())
+    setConversationId(undefined)
+    setShowHistory(false)
+    setTimeout(() => inputRef.current?.focus(), 80)
+  }
+
+  // On open: load past conversations + memory count, start fresh conversation
   useEffect(() => {
     if (!open) return
-    setMessages([{ id: 'g', role: 'assistant', content: 'Hi! Ask me anything about your governance setup, your agents, or request a change.' }])
-    setDismissed(new Set())
-    setTimeout(() => inputRef.current?.focus(), 120)
-  }, [open, tab])
+    startNewConversation()
+    api.assistantConversations().then(r => setPastConvs(r.conversations ?? [])).catch(() => {})
+    api.assistantMemories().then(r => setMemoryCount(r.count ?? 0)).catch(() => {})
+  }, [open])
+
+  // Refocus input when user switches tabs without wiping the conversation
+  useEffect(() => {
+    if (open) setTimeout(() => inputRef.current?.focus(), 50)
+  }, [tab])
 
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages])
 
@@ -576,30 +738,78 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
 
   const send = async () => {
     const text = input.trim()
-    if (!text || loading) return
+    if (!text || loading || streaming) return
     setInput('')
+    const history = conversationHistory(messages)
     const userMsg: ChatMsg = { id: `u-${Date.now()}`, role: 'user', content: text }
-    setMessages(prev => {
-      const next = [...prev, userMsg]
-      sendToApi(text, conversationHistory(next.slice(0, -1)))
-      return next
-    })
+    setMessages(prev => [...prev, userMsg])
+    sendToApi(text, history)
   }
 
   const sendToApi = async (text: string, history: { role: string; content: string }[]) => {
+    const contextMsg = tab !== 'dashboard' ? `[User is on the ${tab} tab] ${text}` : text
+    const ps = _getPS()
+    const page_context = ps.items.length > 0 ? { tab: ps.tab, items: ps.items } as Record<string, unknown> : undefined
+
+    const aiId = `a-${Date.now()}`
+    let full = ''
+    let firstChunk = true
+    let rafId: ReturnType<typeof requestAnimationFrame> | null = null
+
     setLoading(true)
-    try {
-      const contextMsg = tab !== 'dashboard' ? `[User is on the ${tab} tab] ${text}` : text
-      const res = await api.assistantChat(contextMsg, history as never)
-      setMessages(prev => [...prev, {
-        id: `a-${Date.now()}`, role: 'assistant', content: res.answer, suggestion: res.suggestion,
-      }])
-    } catch (e) {
-      setMessages(prev => [...prev, {
-        id: `err-${Date.now()}`, role: 'assistant',
-        content: e instanceof Error ? e.message : 'Something went wrong — try again.',
-      }])
-    } finally { setLoading(false) }
+    setStreaming(true)
+    setThinkingLabel('')
+
+    const flush = () => {
+      rafId = null
+      setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full } : m))
+    }
+
+    await api.assistantChatStream(
+      contextMsg,
+      history as never,
+      page_context,
+      (chunk) => {
+        if (firstChunk) {
+          firstChunk = false
+          setLoading(false)
+          setThinkingLabel('')
+          setMessages(prev => [...prev, { id: aiId, role: 'assistant', content: '' }])
+        }
+        full += chunk
+        if (rafId === null) rafId = requestAnimationFrame(flush)
+      },
+      (suggestion, citations, returnedConvId) => {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
+        setLoading(false)
+        setStreaming(false)
+        setThinkingLabel('')
+        if (returnedConvId) setConversationId(returnedConvId)
+        if (firstChunk) {
+          setMessages(prev => [...prev, { id: aiId, role: 'assistant', content: '(no response)', suggestion: suggestion ?? undefined, citations: citations ?? [] }])
+        } else {
+          setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: full, suggestion: suggestion ?? undefined, citations: citations ?? [] } : m))
+        }
+      },
+      (errMsg) => {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
+        setLoading(false)
+        setStreaming(false)
+        setThinkingLabel('')
+        if (firstChunk) {
+          setMessages(prev => [...prev, { id: `err-${Date.now()}`, role: 'assistant', content: errMsg }])
+        } else {
+          setMessages(prev => prev.map(m => m.id === aiId ? { ...m, content: errMsg } : m))
+        }
+      },
+      (label) => { setThinkingLabel(label) },
+      conversationId,
+    )
+  }
+
+  const handleCite = (type: string, id: string) => {
+    highlightCite(id)
+    openAside({ type, id })
   }
 
   const apply = async (msg: ChatMsg) => {
@@ -619,15 +829,16 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
   if (!open) return null
 
   const PROMPTS: Record<string, string[]> = {
-    dashboard:  ['Block rate this week?', "Compliance status?", 'Top blocked agents?'],
-    decisions:  ['What does SCOPE_VIOLATION mean?', 'Show recent blocks'],
-    agents:     ['What is agent X doing?', 'Why is it blocked?', 'Block shell commands'],
-    audit:      ['Explain this decision', 'Hash chain?'],
-    policies:   ['Add a block rule', 'What rules are active?'],
-    review:     ['How to approve?', 'What triggered this?'],
+    dashboard:  ['Block rate this week?', 'Any agents spiking?', 'What needs my attention?'],
+    decisions:  ['What does SCOPE_VIOLATION mean?', 'Show recent blocks', 'Which agent blocks most?'],
+    agents:     ['Which agents are risky?', 'What is this agent doing?', 'Show agents by department'],
+    audit:      ['Explain this decision', 'Why was this blocked?', 'Block trend last 7 days?'],
+    policies:   ['What rules are active?', 'Add a block rule', 'Which rules fire most?'],
+    review:     ['What is pending review?', 'What triggered this escalation?'],
     settings:   ['Enable shadow mode?', 'What is a kill switch?'],
-    report:     ['Compliance summary', 'Block trend?'],
+    report:     ['Compliance summary', 'Block trend?', 'How many blocks this month?'],
   }
+  const FALLBACK_PROMPTS = ['Block rate this week?', 'What needs attention?', 'Which agents are risky?']
 
   return (
     <>
@@ -642,14 +853,53 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
             </div>
             <div>
               <p className="text-sm font-semibold">Governance AI</p>
-              <p className="text-[10px] text-muted-foreground capitalize">{tab} context</p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-[10px] text-muted-foreground">Your agents / policies / audit log</p>
+                {memoryCount > 0 && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-primary/80">
+                    {memoryCount} memories
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1"><X size={15} /></button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setShowHistory(h => !h)} title="Conversation history"
+              className={`p-1.5 rounded-lg transition ${showHistory ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground'}`}>
+              <Clock size={13} />
+            </button>
+            <button onClick={startNewConversation} title="New conversation"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground transition">
+              <Plus size={13} />
+            </button>
+            <button onClick={onClose} className="p-1.5 text-muted-foreground hover:text-foreground transition"><X size={15} /></button>
+          </div>
         </div>
-        {(PROMPTS[tab] ?? []).length > 0 && (
+        {showHistory && (
+          <div className="border-b border-white/[0.08] max-h-48 overflow-y-auto shrink-0">
+            {pastConvs.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-4 py-3">No past conversations yet.</p>
+            ) : pastConvs.map(c => (
+              <button key={c.id} onClick={async () => {
+                try {
+                  const full = await api.assistantConversation(c.id)
+                  const msgs: ChatMsg[] = full.messages
+                    .filter((m: { role: string; content: string }) => m.role !== 'system')
+                    .map((m: { role: string; content: string }, i: number) => ({ id: `h-${i}`, role: m.role as 'user' | 'assistant', content: m.content }))
+                  setMessages([{ id: 'g', role: 'assistant', content: GREETING }, ...msgs])
+                  setConversationId(c.id)
+                  setShowHistory(false)
+                } catch { /* ignore */ }
+              }} className="w-full text-left px-4 py-2.5 hover:bg-white/[0.04] transition border-b border-white/[0.04] last:border-0">
+                <p className="text-xs text-foreground/80 truncate">{c.title || 'Conversation'}</p>
+                <p className="text-[10px] text-muted-foreground">{new Date(c.updated_at).toLocaleDateString()}</p>
+              </button>
+            ))}
+          </div>
+        )}
+        {(PROMPTS[tab] ?? FALLBACK_PROMPTS).length > 0 && (
           <div className="flex gap-2 px-4 py-2 border-b border-white/[0.06] overflow-x-auto shrink-0">
-            {(PROMPTS[tab] ?? []).map(p => (
+            {(PROMPTS[tab] ?? FALLBACK_PROMPTS).map(p => (
               <button key={p} onClick={() => { setInput(p); setTimeout(() => inputRef.current?.focus(), 50) }}
                 className="shrink-0 text-[10px] px-2.5 py-1 rounded-lg border border-white/10 bg-white/[0.03] text-muted-foreground hover:text-foreground hover:border-white/20 transition-colors whitespace-nowrap">
                 {p}
@@ -658,11 +908,17 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
           </div>
         )}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" ref={scrollRef}>
-          {messages.map(m => (
+          {messages.map(m => {
+            const display = m.role === 'assistant' ? m.content.replace(/\*\*/g, '').replace(/\*/g, '') : m.content
+            return (
             <div key={m.id}>
               <div className={`rounded-xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap ${
                 m.role === 'user' ? 'ml-6 bg-primary/15 border border-primary/25 text-foreground' : 'mr-2 bg-white/[0.04] border border-white/[0.08] text-foreground/85'
-              }`}>{m.content}</div>
+              }`}>
+                {m.role === 'assistant' && (m.citations?.length ?? 0) > 0
+                  ? <CitedMessage text={display} onCite={handleCite} />
+                  : display}
+              </div>
               {m.suggestion && !dismissed.has(m.id) && (
                 <div className={`mr-2 mt-2 rounded-xl border p-3 space-y-1.5 text-[12px] ${m.appliedOk ? 'border-green-500/30 bg-green-500/5' : 'border-primary/25 bg-primary/5'}`}>
                   <div className="flex items-center gap-1.5">
@@ -687,21 +943,24 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
                 </div>
               )}
             </div>
-          ))}
+          )})}
           {loading && (
             <div className="mr-2 rounded-xl px-3.5 py-2.5 bg-white/[0.04] border border-white/[0.08]">
-              <div className="flex gap-1 items-center">
-                {[0, 150, 300].map(d => <span key={d} className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: `${d}ms` }} />)}
+              <div className="flex gap-2 items-center">
+                <div className="flex gap-1 items-center">
+                  {[0, 150, 300].map(d => <span key={d} className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: `${d}ms` }} />)}
+                </div>
+                {thinkingLabel && <span className="text-[11px] text-muted-foreground">{thinkingLabel}...</span>}
               </div>
             </div>
           )}
         </div>
         <div className="px-4 py-3 border-t border-white/10 shrink-0">
           <form onSubmit={e => { e.preventDefault(); send() }} className="flex gap-2">
-            <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} disabled={loading}
-              placeholder="Ask about this page…"
+            <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} disabled={loading || streaming}
+              placeholder="Ask anything about your governance..."
               className="flex-1 bg-white/[0.04] border border-white/15 rounded-xl px-3.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40" />
-            <button type="submit" disabled={loading || !input.trim()}
+            <button type="submit" disabled={loading || streaming || !input.trim()}
               className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/20 border border-primary/40 text-primary hover:bg-primary/30 disabled:opacity-40 disabled:pointer-events-none transition-colors">
               <Send size={14} />
             </button>
@@ -712,9 +971,9 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
   )
 }
 
-// ── Login Screen ──────────────────────────────────────────────────────────────
+// -- Login Screen --------------------------------------------------------------
 
-const DEFAULT_GATEWAY = 'https://edon-gateway-prod.fly.dev'
+const DEFAULT_GATEWAY = import.meta.env.VITE_GATEWAY ?? 'https://edon-gateway-prod.fly.dev'
 
 const LOGIN_VERTICALS = [
   {
@@ -723,8 +982,8 @@ const LOGIN_VERTICALS = [
     icon: Heart,
     color: 'text-rose-400',
     activeBorder: 'border-rose-500/50 bg-rose-500/8',
-    desc: 'Hospitals · Clinics · Health Systems',
-    trustBadge: 'HIPAA · HITRUST · Joint Commission',
+    desc: 'Hospitals / Clinics / Health Systems',
+    trustBadge: 'HIPAA / HITRUST / Joint Commission',
   },
   {
     key: 'banking' as const,
@@ -732,8 +991,8 @@ const LOGIN_VERTICALS = [
     icon: Database,
     color: 'text-amber-400',
     activeBorder: 'border-amber-500/50 bg-amber-500/8',
-    desc: 'Banks · Fintechs · Credit Unions',
-    trustBadge: 'SR 11-7 · FFIEC · AML / BSA',
+    desc: 'Banks / Fintechs / Credit Unions',
+    trustBadge: 'SR 11-7 / FFIEC / AML / BSA',
   },
   {
     key: 'general' as const,
@@ -741,15 +1000,15 @@ const LOGIN_VERTICALS = [
     icon: Shield,
     color: 'text-primary',
     activeBorder: 'border-primary/50 bg-primary/8',
-    desc: 'Enterprise · SaaS · Other',
-    trustBadge: 'SOC 2 · ISO 27001',
+    desc: 'Enterprise / SaaS / Other',
+    trustBadge: 'SOC 2 / ISO 27001',
   },
 ]
 
 const LOGIN_VALUE_PROPS: Record<string, Array<{ icon: typeof Shield; title: string; body: string }>> = {
   healthcare: [
     { icon: Shield,        title: 'HIPAA-grade governance',    body: 'Every AI action logged, scored, and escalated before it touches patient data.' },
-    { icon: ClipboardList, title: 'Clinical approval workflows', body: 'Nurse → Physician tiered sign-off built in. Joint Commission and HITRUST presets ready on day one.' },
+    { icon: ClipboardList, title: 'Clinical approval workflows', body: 'Nurse -> Physician tiered sign-off built in. Joint Commission and HITRUST presets ready on day one.' },
     { icon: Activity,      title: 'Real-time patient safety',   body: 'Critical-urgency blocks page on-call in seconds. Zero trust for medication and care-plan AI.' },
   ],
   banking: [
@@ -759,7 +1018,7 @@ const LOGIN_VALUE_PROPS: Record<string, Array<{ icon: typeof Shield; title: stri
   ],
   general: [
     { icon: Shield,        title: 'AI governance layer',    body: 'Drop-in proxy between your AI agents and the world. Policy engine evaluates every action before execution.' },
-    { icon: ClipboardList, title: 'Human-in-the-loop',      body: 'Escalation queues, approval workflows, and red team replay — for any team, any stack.' },
+    { icon: ClipboardList, title: 'Human-in-the-loop',      body: 'Escalation queues, approval workflows, and red team replay - for any team, any stack.' },
     { icon: Activity,      title: 'Full audit trail',       body: 'Every decision logged with verdict, reason code, and reviewer signature. SOC 2 ready.' },
   ],
 }
@@ -770,12 +1029,17 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
   const [sector, setSector] = useState<'healthcare' | 'banking' | 'general'>(
     () => (localStorage.getItem(SECTOR_KEY) as 'healthcare' | 'banking' | 'general') || 'healthcare'
   )
+  const [authMode, setAuthMode] = useState<'key' | 'register' | 'emaillogin'>('key')
   const [token, setToken] = useState('')
   const [name, setName] = useState('')
   const [dept, setDept] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [showToken, setShowToken] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [newKey, setNewKey] = useState('')  // shown once after register
 
   const deptGroups = DEPARTMENTS[sector] ?? {}
 
@@ -785,27 +1049,73 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
     localStorage.setItem(SECTOR_KEY, s)
   }
 
+  async function _finalizeLogin(rawToken: string) {
+    saveAuth(DEFAULT_GATEWAY, rawToken)
+    await api.health()
+    if (name.trim()) setReviewerName(name.trim())
+    if (dept.trim()) setReviewerDept(dept.trim())
+    const me = await api.me()
+    if (!me.vertical && me.is_admin) {
+      try { await api.setVertical(sector) } catch { /* non-fatal */ }
+      onLogin({ ...me, vertical: sector })
+    } else {
+      if (me.vertical) localStorage.setItem(SECTOR_KEY, me.vertical)
+      onLogin(me)
+    }
+  }
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault(); setError(''); setLoading(true)
-    saveAuth(DEFAULT_GATEWAY, token.trim())
     try {
-      await api.health()
-      if (name.trim()) setReviewerName(name.trim())
-      if (dept.trim()) setReviewerDept(dept.trim())
-
-      // Fetch identity — use DB vertical if already set, otherwise seed from login choice
-      const me = await api.me()
-      if (!me.vertical && me.is_admin) {
-        try { await api.setVertical(sector) } catch { /* non-fatal */ }
-        onLogin({ ...me, vertical: sector })
-      } else {
-        // Sync local sector pref to whatever the DB says
-        if (me.vertical) localStorage.setItem(SECTOR_KEY, me.vertical)
-        onLogin(me)
-      }
+      await _finalizeLogin(token.trim())
     } catch (err) {
       clearAuth()
       setError(err instanceof Error ? err.message : 'Connection failed')
+    } finally { setLoading(false) }
+  }
+
+  async function handleRegister(e: React.FormEvent) {
+    e.preventDefault(); setError(''); setLoading(true)
+    try {
+      const res = await fetch(`${DEFAULT_GATEWAY}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || `Registration failed (${res.status})`)
+      }
+      const data = await res.json()
+      setNewKey(data.api_key)
+      // Auto-login with the new key
+      await _finalizeLogin(data.api_key)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Registration failed')
+    } finally { setLoading(false) }
+  }
+
+  async function handleEmailLogin(e: React.FormEvent) {
+    e.preventDefault(); setError(''); setLoading(true)
+    try {
+      const res = await fetch(`${DEFAULT_GATEWAY}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || `Login failed (${res.status})`)
+      }
+      const data = await res.json()
+      if (data.api_key) {
+        setNewKey(data.api_key)
+        await _finalizeLogin(data.api_key)
+      } else {
+        throw new Error('No API key returned. Use your existing key on the API Key tab.')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed')
     } finally { setLoading(false) }
   }
 
@@ -814,7 +1124,7 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">
-      {/* ── Left panel: value prop ── */}
+      {/* -- Left panel: value prop -- */}
       <div className="hidden lg:flex flex-col justify-between w-[46%] min-h-screen p-12 border-r border-white/[0.06] bg-gradient-to-br from-black via-[#0a0a0f] to-[#050510] relative overflow-hidden">
         {/* Background glow */}
         <div className="absolute inset-0 pointer-events-none">
@@ -835,7 +1145,7 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
                   AI governance for<br />the industries that<br />can't get it wrong.
                 </h2>
                 <p className="text-sm text-muted-foreground mt-4 leading-relaxed max-w-sm">
-                  Every AI action governed, logged, and auditable — before it reaches a patient, a customer, or a regulator.
+                  Every AI action governed, logged, and auditable - before it reaches a patient, a customer, or a regulator.
                 </p>
               </div>
 
@@ -866,7 +1176,7 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
         </div>
       </div>
 
-      {/* ── Right panel: form ── */}
+      {/* -- Right panel: form -- */}
       <div className="flex-1 flex items-center justify-center p-6 lg:p-12">
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md space-y-7">
           {/* Mobile logo */}
@@ -875,8 +1185,18 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
           </div>
 
           <div>
-            <h1 className="text-xl font-bold">Access your console</h1>
-            <p className="text-sm text-muted-foreground mt-1">Connect your API key to start governing AI in your organisation.</p>
+            <h1 className="text-xl font-bold">AI Governance Console</h1>
+            <p className="text-sm text-muted-foreground mt-1">Govern every AI agent action - before it reaches a patient, customer, or regulator.</p>
+          </div>
+
+          {/* Auth mode tabs */}
+          <div className="flex rounded-xl border border-border bg-muted/20 p-1 gap-0.5">
+            {([['register', 'Sign Up'], ['emaillogin', 'Log In'], ['key', 'API Key']] as const).map(([mode, label]) => (
+              <button key={mode} type="button" onClick={() => { setAuthMode(mode); setError('') }}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition ${authMode === mode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+                {label}
+              </button>
+            ))}
           </div>
 
           {/* Sector picker */}
@@ -896,60 +1216,134 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
             <p className="text-[11px] text-muted-foreground/60">{activeVertical.desc}</p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            {/* API key */}
-            <div>
-              <label className="text-xs text-muted-foreground mb-1.5 block font-medium">API Key</label>
-              <div className="relative">
-                <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
-                  className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                  placeholder="edon_live_…" required />
-                <button type="button" onClick={() => setShowToken(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
+          {/* -- Sign Up form -- */}
+          {authMode === 'register' && (
+            <form onSubmit={handleRegister} className="space-y-4">
               <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Your Name</label>
-                <input type="text" value={name} onChange={e => setName(e.target.value)}
+                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Work Email</label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"
                   className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                  placeholder="Full name" required />
+                  placeholder="you@company.com" />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Department</label>
+                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Password</label>
                 <div className="relative">
-                  <select value={dept} onChange={e => setDept(e.target.value)}
-                    className="dept-select w-full pl-3 pr-8 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer bg-muted/40"
-                    required>
-                    <option value="" disabled>Select…</option>
-                    {Object.entries(deptGroups).map(([group, depts]) => (
-                      <optgroup key={group} label={group}>
-                        {depts.map(d => <option key={d} value={d}>{d}</option>)}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="new-password"
+                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    placeholder="8+ characters" />
+                  <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Your Name</label>
+                  <input type="text" value={name} onChange={e => setName(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Full name" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Department</label>
+                  <div className="relative">
+                    <select value={dept} onChange={e => setDept(e.target.value)}
+                      className="dept-select w-full pl-3 pr-8 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer bg-muted/40">
+                      <option value="">Select...</option>
+                      {Object.entries(deptGroups).map(([group, depts]) => (
+                        <optgroup key={group} label={group}>{depts.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+                      ))}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                  </div>
+                </div>
+              </div>
+              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
+              <button type="submit" disabled={loading}
+                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
+                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
+                {loading ? 'Creating account...' : 'Create Account'}
+              </button>
+              <p className="text-[11px] text-muted-foreground text-center">Your API key will be generated automatically and shown once.</p>
+            </form>
+          )}
+
+          {/* -- Email Login form -- */}
+          {authMode === 'emaillogin' && (
+            <form onSubmit={handleEmailLogin} className="space-y-4">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Work Email</label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"
+                  className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  placeholder="you@company.com" />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Password</label>
+                <div className="relative">
+                  <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password"
+                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Your password" />
+                  <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
+              <button type="submit" disabled={loading}
+                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
+                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
+                {loading ? 'Logging in...' : 'Log In'}
+              </button>
+            </form>
+          )}
+
+          {/* -- API Key form (original) -- */}
+          {authMode === 'key' && (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">API Key</label>
+                <div className="relative">
+                  <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
+                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+                    placeholder="edon-..." required />
+                  <button type="button" onClick={() => setShowToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Your Name</label>
+                  <input type="text" value={name} onChange={e => setName(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Full name" required />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Department</label>
+                  <div className="relative">
+                    <select value={dept} onChange={e => setDept(e.target.value)}
+                      className="dept-select w-full pl-3 pr-8 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer bg-muted/40" required>
+                      <option value="" disabled>Select...</option>
+                      {Object.entries(deptGroups).map(([group, depts]) => (
+                        <optgroup key={group} label={group}>{depts.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+                      ))}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                  </div>
+                </div>
+              </div>
+              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
+              <button type="submit" disabled={loading}
+                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2 mt-1">
+                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
+                {loading ? 'Connecting...' : 'Connect to Gateway'}
+              </button>
+            </form>
+          )}
+
+          {newKey && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 p-3 space-y-2">
+              <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5"><AlertTriangle size={12} /> Save your API key - shown once</p>
+              <p className="text-[11px] font-mono text-foreground break-all bg-black/20 rounded px-2 py-1.5">{newKey}</p>
+              <button onClick={() => { navigator.clipboard.writeText(newKey); }} className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center gap-1"><Copy size={10} /> Copy to clipboard</button>
             </div>
-
-            {error && (
-              <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20">
-                <AlertCircle size={12} />{error}
-              </p>
-            )}
-
-            <button type="submit" disabled={loading}
-              className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2 mt-1">
-              {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
-              {loading ? 'Connecting…' : 'Connect to Gateway'}
-            </button>
-          </form>
+          )}
 
           <p className="text-[11px] text-muted-foreground/50 text-center">
             {activeVertical.trustBadge}
@@ -960,9 +1354,9 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
   )
 }
 
-// ── Settings Tab ──────────────────────────────────────────────────────────────
+// -- Settings Tab --------------------------------------------------------------
 
-function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange }: { onReconnect: () => void; isAdmin: boolean; vertical: string | null; onVerticalChange: (v: string | null) => void }) {
+function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange, onTabChange }: { onReconnect: () => void; isAdmin: boolean; vertical: string | null; onVerticalChange: (v: string | null) => void; onTabChange: (t: string) => void }) {
   const auth = getAuth()
   const [url, setUrl] = useState(auth?.gatewayUrl || '')
   const [token, setToken] = useState(auth?.token || '')
@@ -978,7 +1372,7 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange }: { onR
     saveAuth(url.replace(/\/$/, ''), token.trim())
     try {
       const h = await api.health()
-      setTestResult({ ok: true, msg: `Connected · v${h.version} · ${h.ok ? 'Healthy' : 'Degraded'}` })
+      setTestResult({ ok: true, msg: `Connected / v${h.version} / ${h.ok ? 'Healthy' : 'Degraded'}` })
       onReconnect()
     } catch (e) {
       setTestResult({ ok: false, msg: e instanceof Error ? e.message : 'Connection failed' })
@@ -1006,7 +1400,7 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange }: { onR
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        {/* ── Left column: core settings ── */}
+        {/* -- Left column: core settings -- */}
         <div className="space-y-5">
           {/* Gateway connection */}
           <div className="glass-card p-5 space-y-4">
@@ -1094,13 +1488,29 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange }: { onR
           <SsoLdapCard />
         </div>
 
-        {/* ── Right column: security & ops cards ── */}
+        {/* -- Right column: security & ops cards -- */}
         <div className="space-y-5">
           <ApiKeyRotationCard />
           <ConsoleLinkCard />
           <IpAllowlistCard />
           <WebhookAlertsCard />
           <SettingsQuickReferenceCard />
+
+          {/* Advanced Tools */}
+          <div className="glass-card p-5 space-y-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><FlaskConical size={13} className="text-purple-400" /> Advanced Tools</h3>
+            <p className="text-xs text-muted-foreground">Experimental and ops-only features. Not needed for day-to-day governance.</p>
+            <button onClick={() => onTabChange('redteam')}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-purple-500/25 bg-purple-500/8 text-purple-400 text-xs font-medium hover:bg-purple-500/15 transition-colors text-left">
+              <FlaskConical size={12} /> Red Team Simulation
+              <span className="ml-auto text-purple-400/50 text-[10px]">-&gt;</span>
+            </button>
+            <button onClick={() => onTabChange('audit')}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-border bg-muted/20 text-muted-foreground text-xs font-medium hover:text-foreground hover:bg-muted/40 transition-colors text-left">
+              <FileText size={12} /> Audit Hash Chain
+              <span className="ml-auto text-muted-foreground/50 text-[10px]">-&gt;</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1138,7 +1548,7 @@ function ShadowModeCard() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="font-semibold text-sm">Shadow Mode</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">Log all decisions without blocking — use during trial periods</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Log all decisions without blocking - use during trial periods</p>
         </div>
         <button onClick={toggle} disabled={loading || saving}
           className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${enabled ? 'bg-amber-500' : 'bg-muted/50 border border-border'}`}>
@@ -1147,7 +1557,7 @@ function ShadowModeCard() {
       </div>
       {enabled && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
-          <span className="text-base">⚠</span>
+          <span className="text-base">!</span>
           Governance is in observe-only mode. No actions are being blocked.
         </div>
       )}
@@ -1227,14 +1637,17 @@ function BaaStatusCard() {
     <div className="glass-card p-5 space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold flex items-center gap-2"><FileText size={13} className="text-primary" /> Business Associate Agreement</h3>
-        <button onClick={() => setEditing(v => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">{editing ? 'Cancel' : 'Edit'}</button>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium">Stored locally</span>
+          <button onClick={() => setEditing(v => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">{editing ? 'Cancel' : 'Edit'}</button>
+        </div>
       </div>
       <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${cfg.border} ${cfg.bg}`}>
         <cfg.Icon size={13} className={cfg.color} />
         <span className={`text-xs font-medium ${cfg.color}`}>BAA: {cfg.label}</span>
         {signingDate && status === 'active' && <span className="text-xs text-muted-foreground ml-auto">Signed {signingDate}</span>}
       </div>
-      <p className="text-xs text-muted-foreground">HIPAA §164.308(b)(1) requires a signed BAA with any Business Associate handling PHI.</p>
+      <p className="text-xs text-muted-foreground">HIPAA Section 164.308(b)(1) requires a signed BAA with any Business Associate handling PHI.</p>
       {editing && (
         <div className="space-y-3 pt-1">
           <div>
@@ -1284,7 +1697,7 @@ function SsoLdapCard() {
   const testSso = async () => {
     setTesting(true); setTestResult(null)
     await new Promise(r => setTimeout(r, 1200))
-    setTestResult({ ok: false, msg: 'SSO test requires live IdP configuration — save URL first and contact support.' })
+    setTestResult({ ok: false, msg: 'SSO test requires live IdP configuration - save URL first and contact support.' })
     setTesting(false)
   }
 
@@ -1292,7 +1705,10 @@ function SsoLdapCard() {
     <div className="glass-card p-5 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold flex items-center gap-2"><KeyRound size={13} className="text-primary" /> SSO / Identity Provider</h3>
-        {isConfigured && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium">Configured</span>}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium">Stored locally - not enforced</span>
+          {isConfigured && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium">Configured</span>}
+        </div>
       </div>
       <p className="text-xs text-muted-foreground">Connect your hospital's identity provider (Active Directory, Okta, Azure AD) to replace PIN-only auth.</p>
       <div>
@@ -1369,7 +1785,7 @@ function ApiKeyRotationCard() {
     <div className="glass-card p-5 space-y-4">
       <h3 className="text-sm font-semibold flex items-center gap-2"><RefreshCw size={13} className="text-primary" /> API Key Rotation</h3>
       <p className="text-xs text-muted-foreground">Rotate your key with zero downtime. The old key stays valid during the overlap window.</p>
-      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       {keys.map(k => (
         <div key={k.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3">
           <div className="flex-1 min-w-0">
@@ -1392,7 +1808,7 @@ function ApiKeyRotationCard() {
       ))}
       {newKey && (
         <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
-          <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5"><Check size={13} /> New key — copy it now, shown once only</p>
+          <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5"><Check size={13} /> New key - copy it now, shown once only</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 text-xs font-mono bg-black/30 rounded px-3 py-2 break-all">{newKey}</code>
             <button onClick={() => copy(newKey)} className="p-2 rounded border border-border hover:bg-muted/50 transition-colors">
@@ -1407,8 +1823,9 @@ function ApiKeyRotationCard() {
 
 function ConsoleLinkCard() {
   const [copied, setCopied] = useState(false)
-  const auth = (() => { try { return JSON.parse(localStorage.getItem('edon_auth') || '{}') } catch { return {} } })()
-  const url = `${window.location.origin}/#token=${auth.token || ''}&base=${encodeURIComponent(auth.gatewayUrl || '')}`
+  const auth = (() => { try { return JSON.parse(sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth') || '{}') } catch { return {} } })()
+  const baseHash = auth.gatewayUrl ? `#base=${encodeURIComponent(auth.gatewayUrl)}` : ''
+  const url = `${window.location.origin}/${baseHash}`
 
   const copy = () => {
     navigator.clipboard.writeText(url)
@@ -1418,14 +1835,14 @@ function ConsoleLinkCard() {
   return (
     <div className="glass-card p-5 space-y-3">
       <h3 className="text-sm font-semibold flex items-center gap-2"><Link size={13} className="text-primary" /> Console Access Link</h3>
-      <p className="text-xs text-muted-foreground">Share with your team. Token is in the URL hash — never sent to servers or logged.</p>
+      <p className="text-xs text-muted-foreground">Share the console location without credentials. Each user signs in with their own key.</p>
       <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2.5">
         <code className="flex-1 text-xs font-mono text-muted-foreground truncate">{url}</code>
         <button onClick={copy} className="p-1.5 rounded border border-border hover:bg-muted/50 transition-colors shrink-0">
           {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} className="text-muted-foreground" />}
         </button>
       </div>
-      <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1"><Shield size={11} /> #token= hash fragment — never transmitted to or stored by servers</p>
+      <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1"><Shield size={11} /> No auth token is embedded in generated links.</p>
     </div>
   )
 }
@@ -1470,10 +1887,10 @@ function IpAllowlistCard() {
       <p className="text-xs text-muted-foreground">Restrict API access to specific IPs. Once any entry is added, all other IPs are blocked. <strong className="text-foreground/70">Add your IP first.</strong></p>
       {cidrs.length > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-xs text-yellow-400">
-          <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Allowlist active — requests from unlisted IPs are rejected.
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Allowlist active - requests from unlisted IPs are rejected.
         </div>
       )}
-      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       <div className="space-y-2">
         {cidrs.map(cidr => (
           <div key={cidr} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
@@ -1499,7 +1916,7 @@ function IpAllowlistCard() {
   )
 }
 
-// ── Webhook Alerts Card ───────────────────────────────────────────────────────
+// -- Webhook Alerts Card -------------------------------------------------------
 
 function WebhookAlertsCard() {
   const [webhooks, setWebhooks] = useState<Array<{ id: string; url: string; events: string[]; enabled: boolean }>>([])
@@ -1548,7 +1965,7 @@ function WebhookAlertsCard() {
         {webhooks.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">{webhooks.length} active</span>}
       </h3>
       <p className="text-xs text-muted-foreground">Get notified when decisions are blocked, escalated, or flagged as high-risk. Signed with HMAC-SHA256.</p>
-      {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       <div className="space-y-2">
         {webhooks.map(w => (
           <div key={w.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
@@ -1558,12 +1975,12 @@ function WebhookAlertsCard() {
             </div>
             {testResult[w.id] && (
               <span className={`text-[10px] font-medium ${testResult[w.id] === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>
-                {testResult[w.id] === 'ok' ? '✓ sent' : '✗ fail'}
+                {testResult[w.id] === 'ok' ? 'OK sent' : 'fail'}
               </span>
             )}
             <button onClick={() => test(w.id)} disabled={testing === w.id}
               className="text-xs px-2 py-1 rounded border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
-              {testing === w.id ? '…' : 'Test'}
+              {testing === w.id ? '...' : 'Test'}
             </button>
             <button onClick={() => remove(w.id)} className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
               <Trash2 size={13} />
@@ -1585,7 +2002,7 @@ function WebhookAlertsCard() {
   )
 }
 
-// ── Settings Quick Reference Card ────────────────────────────────────────────
+// -- Settings Quick Reference Card --------------------------------------------
 
 function SettingsQuickReferenceCard() {
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number; components: Record<string, { status: string }> } | null>(null)
@@ -1636,7 +2053,7 @@ function SettingsQuickReferenceCard() {
             ))}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">Fetching status…</p>
+          <p className="text-xs text-muted-foreground">Fetching status...</p>
         )}
       </div>
 
@@ -1683,7 +2100,7 @@ function SettingsQuickReferenceCard() {
   )
 }
 
-// ── Dashboard Tab ─────────────────────────────────────────────────────────────
+// -- Dashboard Tab -------------------------------------------------------------
 
 function DashboardTab() {
   const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([])
@@ -1705,6 +2122,16 @@ function DashboardTab() {
   }, [])
 
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv) }, [load])
+
+  useEffect(() => {
+    if (timeseries.length === 0 && !health) return
+    const tot = timeseries.reduce((a, p) => ({ allow: a.allow + p.allowed, block: a.block + p.blocked, confirm: a.confirm + p.confirm }), { allow: 0, block: 0, confirm: 0 })
+    const total = tot.allow + tot.block + tot.confirm
+    _setPS('dashboard', [
+      { type: 'summary', total_decisions_7d: total, allowed_7d: tot.allow, blocked_7d: tot.block, escalated_7d: tot.confirm, block_rate_pct: total > 0 ? +((tot.block / total) * 100).toFixed(1) : 0, compliance_status: health?.overall ?? 'unknown', top_block_reasons: blockReasons.slice(0, 6).map(r => ({ reason: r.reason, count: r.count })) },
+      ...recent.slice(0, 8).map(e => ({ type: 'recent_decision', id: e.action_id || e.id, agent: e.agent_id, verdict: e.decision_verdict, reason: e.decision_reason_code, ts: e.timestamp })),
+    ])
+  }, [timeseries, health, blockReasons, recent])
 
   if (loading) return <Spinner />
   if (error) return <ErrorMsg message={error} onRetry={load} />
@@ -1805,7 +2232,7 @@ function DashboardTab() {
               <div key={e.action_id || e.id || i} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0 text-sm">
                 <VerdictBadge verdict={e.decision_verdict} />
                 <span className="text-muted-foreground font-mono text-xs flex-1 truncate">{e.agent_id}</span>
-                <span className="text-xs text-muted-foreground hidden sm:block">{e.tool_name || '—'}</span>
+                <span className="text-xs text-muted-foreground hidden sm:block">{e.tool_name || '-'}</span>
                 <span className="text-xs text-muted-foreground">{relTime(e.timestamp)}</span>
               </div>
             ))}
@@ -1816,32 +2243,78 @@ function DashboardTab() {
   )
 }
 
-// ── Decisions Tab ─────────────────────────────────────────────────────────────
+// -- Decisions Tab -------------------------------------------------------------
+
+// -- Incident helpers ----------------------------------------------------------
+
+const INCIDENT_KEY = 'edon_incidents'
+interface Incident { id: string; action_id: string; agent_id: string; reason: string; ts: string; resolved: boolean }
+const getIncidents = (): Incident[] => { try { return JSON.parse(localStorage.getItem(INCIDENT_KEY) || '[]') } catch { return [] } }
+const saveIncidents = (inc: Incident[]) => localStorage.setItem(INCIDENT_KEY, JSON.stringify(inc))
+const openIncident = (event: AuditEvent): Incident => {
+  const inc: Incident = { id: crypto.randomUUID(), action_id: event.action_id || event.id || '', agent_id: event.agent_id, reason: event.decision_reason_code || 'BLOCK', ts: event.timestamp, resolved: false }
+  saveIncidents([...getIncidents(), inc])
+  return inc
+}
+const resolveIncident = (incidentId: string) => {
+  saveIncidents(getIncidents().map(i => i.id === incidentId ? { ...i, resolved: true } : i))
+}
 
 function DecisionsTab() {
   const [events, setEvents] = useState<AuditEvent[]>([])
+  const [outcomeStats, setOutcomeStats] = useState<import('./api').ActionResultStats | null>(null)
+  const [selectedReceipt, setSelectedReceipt] = useState<import('./api').ActionResult | null>(null)
+  const [receiptError, setReceiptError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [verdict, setVerdict] = useState('')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<AuditEvent | null>(null)
+  const [incidents, setIncidents] = useState<Incident[]>(getIncidents)
+  const [liveStatus, setLiveStatus] = useState<'polling' | 'refreshing'>('polling')
+
+  const refreshIncidents = () => setIncidents(getIncidents())
 
   const load = useCallback(async () => {
-    setError('')
     try {
-      const res = await api.auditQuery({ verdict: verdict || undefined, limit: 200 })
+      const [res, stats] = await Promise.all([
+        api.auditQuery({ verdict: verdict || undefined, limit: 200 }),
+        api.actionResultStats().catch(() => null),
+      ])
       setEvents(res.events)
+      setOutcomeStats(stats)
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load') }
     finally { setLoading(false) }
   }, [verdict])
 
-  useEffect(() => { load(); const iv = setInterval(load, 3000); return () => clearInterval(iv) }, [load])
+  useEffect(() => {
+    const actionId = selected?.action_id || selected?.id || ''
+    setSelectedReceipt(null); setReceiptError('')
+    if (!actionId) return
+    api.actionResult(actionId)
+      .then(setSelectedReceipt)
+      .catch(e => setReceiptError(e instanceof Error ? e.message : 'No execution receipt recorded'))
+  }, [selected])
+
+  useEffect(() => {
+    load()
+    const iv = setInterval(() => {
+      setLiveStatus('refreshing')
+      load().finally(() => setLiveStatus('polling'))
+    }, 5000)
+    return () => clearInterval(iv)
+  }, [load])
+
+  useEffect(() => {
+    if (events.length > 0) _setPS('decisions', events.map(e => ({ id: e.action_id || e.id, agent: e.agent_id, verdict: e.decision_verdict, reason: e.decision_reason_code, tool: e.tool_name, ts: e.timestamp })) as Record<string, unknown>[])
+  }, [events])
 
   const filtered = events.filter(e =>
     !search || (e.agent_id + (e.tool_name || '') + (e.decision_reason_code || '')).toLowerCase().includes(search.toLowerCase())
   )
   const counts = { ALLOW: 0, BLOCK: 0, ESCALATE: 0 }
   events.forEach(e => { const v = e.decision_verdict?.toUpperCase() as keyof typeof counts; if (v in counts) counts[v]++ })
+  const openIncidentCount = incidents.filter(i => !i.resolved).length
 
   return (
     <div className="space-y-4">
@@ -1856,18 +2329,44 @@ function DecisionsTab() {
             {c.label} <span className="font-mono font-bold">{counts[c.key as keyof typeof counts]}</span>
           </button>
         ))}
+        {openIncidentCount > 0 && (
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-xs font-medium">
+            <AlertCircle size={12} /> {openIncidentCount} open incident{openIncidentCount > 1 ? 's' : ''}
+          </span>
+        )}
       </div>
+      {outcomeStats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            ['Executed', outcomeStats.total, 'text-foreground'],
+            ['Succeeded', outcomeStats.outcomes.success, 'text-emerald-400'],
+            ['Failed', outcomeStats.outcomes.failure, 'text-red-400'],
+            ['Timed out', outcomeStats.outcomes.timeout, 'text-amber-400'],
+          ].map(([label, value, color]) => (
+            <div key={String(label)} className="glass-card p-3">
+              <p className="text-[11px] text-muted-foreground">{String(label)}</p>
+              <p className={`text-lg font-semibold ${String(color)}`}>{String(value)}</p>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search agent, tool…"
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search agent, tool..."
             className="pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary w-52" />
         </div>
         <span className="text-xs text-muted-foreground">{filtered.length} decisions</span>
-        <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-          <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"/></span>
-          Live
-        </span>
+        {liveStatus === 'refreshing' ? (
+          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+            <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"/></span>
+            Refreshing
+          </span>
+        ) : liveStatus === 'polling' ? (
+          <span className="text-xs text-amber-400/70">Polling</span>
+        ) : (
+          <span className="text-xs text-muted-foreground/50">Connecting...</span>
+        )}
         <button onClick={load} className={`ml-auto text-muted-foreground hover:text-foreground transition ${loading ? 'animate-spin' : ''}`}><RefreshCcw size={14} /></button>
       </div>
       {loading ? <Spinner /> : error ? <ErrorMsg message={error} onRetry={load} /> : filtered.length === 0 ? <Empty message="No decisions found" /> : (
@@ -1885,50 +2384,100 @@ function DecisionsTab() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((e, i) => (
-                <tr key={e.action_id || e.id || i} className="border-b border-border/30 last:border-0 hover:bg-muted/20 cursor-pointer transition-colors" onClick={() => setSelected(e)}>
-                  <td className="py-2.5 px-4"><VerdictBadge verdict={e.decision_verdict} /></td>
-                  <td className="py-2.5 px-4 font-mono text-xs truncate max-w-[130px]">{e.agent_id}</td>
-                  <td className="py-2.5 px-4 text-muted-foreground hidden md:table-cell text-xs">{e.tool_name || '—'}</td>
-                  <td className="py-2.5 px-4 text-muted-foreground hidden lg:table-cell text-xs">{e.decision_reason_code || '—'}</td>
-                  <td className="py-2.5 px-4 hidden lg:table-cell">
-                    {e.risk_score != null && <span className={`text-xs font-mono ${e.risk_score > 0.7 ? 'text-red-400' : e.risk_score > 0.4 ? 'text-amber-400' : 'text-muted-foreground'}`}>{e.risk_score.toFixed(2)}</span>}
-                  </td>
-                  <td className="py-2.5 px-4 text-muted-foreground text-xs">{relTime(e.timestamp)}</td>
-                  <td className="py-2.5 px-4"><ChevronRight size={14} className="text-muted-foreground" /></td>
-                </tr>
-              ))}
+              {filtered.map((e, i) => {
+                const eventId = e.action_id || e.id || ''
+                const hasIncident = incidents.some(inc => inc.action_id === eventId && !inc.resolved)
+                return (
+                  <tr key={eventId || i} data-cite-id={eventId || undefined} className="border-b border-border/30 last:border-0 hover:bg-muted/20 cursor-pointer transition-colors" onClick={() => setSelected(e)}>
+                    <td className="py-2.5 px-4">
+                      <div className="flex items-center gap-1.5">
+                        <VerdictBadge verdict={e.decision_verdict} />
+                        {hasIncident && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" title="Open incident" />}
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-xs truncate max-w-[130px]">{e.agent_id}</td>
+                    <td className="py-2.5 px-4 text-muted-foreground hidden md:table-cell text-xs">{e.tool_name || '-'}</td>
+                    <td className="py-2.5 px-4 text-muted-foreground hidden lg:table-cell text-xs">{e.decision_reason_code || '-'}</td>
+                    <td className="py-2.5 px-4 hidden lg:table-cell">
+                      {e.risk_score != null && <span className={`text-xs font-mono ${e.risk_score > 0.7 ? 'text-red-400' : e.risk_score > 0.4 ? 'text-amber-400' : 'text-muted-foreground'}`}>{e.risk_score.toFixed(2)}</span>}
+                    </td>
+                    <td className="py-2.5 px-4 text-muted-foreground text-xs">{relTime(e.timestamp)}</td>
+                    <td className="py-2.5 px-4"><ChevronRight size={14} className="text-muted-foreground" /></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       )}
       <AnimatePresence>
-        {selected && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end" onClick={() => setSelected(null)}>
-            <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="w-full max-w-md bg-card border-l border-border h-full overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="font-semibold">Decision Detail</h3>
-                <button onClick={() => setSelected(null)}><X size={16} className="text-muted-foreground hover:text-foreground" /></button>
-              </div>
-              <div className="space-y-4 text-sm">
-                <VerdictBadge verdict={selected.decision_verdict} />
-                {[['Action ID', selected.action_id || selected.id], ['Agent', selected.agent_id], ['Tool', selected.tool_name], ['Reason Code', selected.decision_reason_code], ['Risk Score', selected.risk_score?.toFixed(3)], ['Policy Version', selected.policy_version], ['Timestamp', fmtTs(selected.timestamp)]].map(([label, value]) => value != null && (
-                  <div key={String(label)}><p className="text-xs text-muted-foreground mb-1">{label}</p><p className="font-mono text-xs break-all">{String(value)}</p></div>
-                ))}
-                {selected.explanation && <div><p className="text-xs text-muted-foreground mb-1">Explanation</p><p className="text-xs leading-relaxed">{selected.explanation}</p></div>}
-              </div>
+        {selected && (() => {
+          const eventId = selected.action_id || selected.id || ''
+          const existingIncident = incidents.find(inc => inc.action_id === eventId && !inc.resolved)
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end" onClick={() => setSelected(null)}>
+              <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+                transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+                className="w-full max-w-md bg-card border-l border-border h-full overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-semibold">Decision Detail</h3>
+                  <button onClick={() => setSelected(null)}><X size={16} className="text-muted-foreground hover:text-foreground" /></button>
+                </div>
+                <div className="space-y-4 text-sm">
+                  <VerdictBadge verdict={selected.decision_verdict} />
+                  {[['Action ID', selected.action_id || selected.id], ['Agent', selected.agent_id], ['Tool', selected.tool_name], ['Reason Code', selected.decision_reason_code], ['Risk Score', selected.risk_score?.toFixed(3)], ['Policy Version', selected.policy_version], ['Timestamp', fmtTs(selected.timestamp)]].map(([label, value]) => value != null && (
+                    <div key={String(label)}><p className="text-xs text-muted-foreground mb-1">{label}</p><p className="font-mono text-xs break-all">{String(value)}</p></div>
+                  ))}
+                  {selected.explanation && <div><p className="text-xs text-muted-foreground mb-1">Explanation</p><p className="text-xs leading-relaxed">{selected.explanation}</p></div>}
+                  <div className="pt-2 border-t border-border/50">
+                    <p className="text-xs text-muted-foreground mb-2">Execution Receipt</p>
+                    {selectedReceipt ? (
+                      <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                        {[['Outcome', selectedReceipt.outcome], ['Latency', `${selectedReceipt.latency_ms}ms`], ['Executed At', fmtTs(selectedReceipt.executed_at)], ['Summary', selectedReceipt.result_summary], ['Error', selectedReceipt.error]].map(([label, value]) => value && (
+                          <div key={String(label)}>
+                            <p className="text-[10px] text-muted-foreground uppercase">{label}</p>
+                            <p className="font-mono text-xs break-all">{String(value)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">{receiptError || 'Loading receipt...'}</p>
+                    )}
+                  </div>
+
+                  {/* Incident controls */}
+                  {selected.decision_verdict?.toUpperCase() === 'BLOCK' && (
+                    <div className="pt-2 border-t border-border/50">
+                      {existingIncident ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 text-xs text-red-400">
+                            <AlertCircle size={12} /> Open incident - requires investigation
+                          </div>
+                          <button onClick={() => { resolveIncident(existingIncident.id); refreshIncidents() }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors">
+                            <CheckCircle2 size={11} /> Mark Resolved
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { openIncident(selected); refreshIncidents() }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-colors">
+                          <AlertCircle size={11} /> Open Incident
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
+          )
+        })()}
       </AnimatePresence>
     </div>
   )
 }
 
-// ── Agents Tab ────────────────────────────────────────────────────────────────
+// -- Agents Tab ----------------------------------------------------------------
 
 function getBlockTrend(agent: Agent): 'stable' | 'rising' | 'spiked' {
   const rate = agent.block_rate ?? (agent.decisions_total && agent.decisions_blocked ? agent.decisions_blocked / agent.decisions_total : 0)
@@ -1940,11 +2489,41 @@ const TREND_CFG = {
   spiked: { label: 'Spiked', icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20' },
 }
 
+function AgentCard({ a }: { a: Agent }) {
+  const trend = getBlockTrend(a); const tCfg = TREND_CFG[trend]; const TrendIcon = tCfg.icon
+  const blockPct = a.decisions_total && a.decisions_blocked ? ((a.decisions_blocked / a.decisions_total) * 100).toFixed(1) : null
+  return (
+    <div key={a.agent_id} data-cite-id={a.agent_id} className="glass-card-hover p-4">
+      <div className="flex items-start justify-between mb-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium truncate">{a.name || a.agent_id}</p>
+          <p className="text-xs text-muted-foreground font-mono truncate">{a.agent_id}</p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {(() => { const r = a.block_rate ?? 0; return <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${r > 0.3 ? 'bg-red-500/10 border-red-500/20 text-red-400' : r > 0.1 ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>Risk {r > 0.3 ? 'High' : r > 0.1 ? 'Med' : 'Low'}</span> })()}
+          <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tCfg.bg} ${tCfg.color}`}><TrendIcon size={9} />{tCfg.label}</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.status === 'active' ? 'bg-emerald-500/15 text-emerald-400' : a.status === 'paused' ? 'bg-amber-500/15 text-amber-400' : 'bg-muted text-muted-foreground'}`}>{a.status || 'unknown'}</span>
+        </div>
+      </div>
+      {a.description && <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{a.description}</p>}
+      <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+        {a.decisions_total != null && <span><span className="text-foreground font-medium">{a.decisions_total}</span> decisions</span>}
+        {blockPct && <span><span className={tCfg.color + ' font-medium'}>{blockPct}%</span> blocked</span>}
+        {a.policy_pack && <span className="text-primary">{a.policy_pack}</span>}
+        {a.department && <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-medium">{a.department}</span>}
+        {a.last_seen && <span className="ml-auto">{relTime(a.last_seen)}</span>}
+      </div>
+    </div>
+  )
+}
+
 function AgentsTab() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [deptFilter, setDeptFilter] = useState<string | null>(null)
+  const [groupByDept, setGroupByDept] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -1957,9 +2536,34 @@ function AgentsTab() {
 
   useEffect(() => { load() }, [load])
 
-  const filtered = agents.filter(a => !search || (a.agent_id + (a.name || '') + (a.agent_type || '')).toLowerCase().includes(search.toLowerCase()))
+  useEffect(() => {
+    if (agents.length > 0) _setPS('agents', agents.map(a => ({ id: a.agent_id, name: a.name, type: a.agent_type, status: a.status, department: a.department, decisions: a.decisions_total, block_rate: a.block_rate })) as Record<string, unknown>[])
+  }, [agents])
+
+  const departments = useMemo(() => {
+    const depts = [...new Set(agents.map(a => a.department).filter(Boolean) as string[])]
+    return depts.sort()
+  }, [agents])
+
+  const filtered = agents.filter(a => {
+    if (search && !(a.agent_id + (a.name || '') + (a.agent_type || '') + (a.department || '')).toLowerCase().includes(search.toLowerCase())) return false
+    if (deptFilter && a.department !== deptFilter) return false
+    return true
+  })
+
   const spiked = filtered.filter(a => getBlockTrend(a) === 'spiked').length
   const rising = filtered.filter(a => getBlockTrend(a) === 'rising').length
+
+  const grouped = useMemo(() => {
+    if (!groupByDept) return null
+    const map: Record<string, Agent[]> = {}
+    for (const a of filtered) {
+      const key = a.department || 'Uncategorized'
+      if (!map[key]) map[key] = []
+      map[key].push(a)
+    }
+    return Object.entries(map).sort(([a], [b]) => a === 'Uncategorized' ? 1 : b === 'Uncategorized' ? -1 : a.localeCompare(b))
+  }, [filtered, groupByDept])
 
   if (loading) return <Spinner />
   if (error) return <ErrorMsg message={error} onRetry={load} />
@@ -1969,53 +2573,62 @@ function AgentsTab() {
       {(spiked > 0 || rising > 0) && (
         <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-sm ${spiked > 0 ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-amber-500/30 bg-amber-500/10 text-amber-400'}`}>
           <AlertTriangle size={15} className="shrink-0" />
-          {spiked > 0 ? `${spiked} agent${spiked > 1 ? 's' : ''} with spiked block rate — investigate` : `${rising} agent${rising > 1 ? 's' : ''} with rising block rate`}
+          {spiked > 0 ? `${spiked} agent${spiked > 1 ? 's' : ''} with spiked block rate - investigate` : `${rising} agent${rising > 1 ? 's' : ''} with rising block rate`}
         </div>
       )}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 max-w-xs">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search agents…"
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search agents..."
             className="w-full pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
         </div>
         <span className="text-xs text-muted-foreground">{filtered.length} agents</span>
+        {departments.length > 0 && (
+          <button onClick={() => setGroupByDept(g => !g)}
+            className={`text-xs px-2.5 py-1 rounded-lg border transition ${groupByDept ? 'bg-primary/15 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            By Department
+          </button>
+        )}
         <button onClick={load} className="ml-auto text-muted-foreground hover:text-foreground transition"><RefreshCcw size={14} /></button>
       </div>
-      {filtered.length === 0 ? <Empty message="No agents registered yet" /> : (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.map(a => {
-            const trend = getBlockTrend(a); const tCfg = TREND_CFG[trend]; const TrendIcon = tCfg.icon
-            const blockPct = a.decisions_total && a.decisions_blocked ? ((a.decisions_blocked / a.decisions_total) * 100).toFixed(1) : null
-            return (
-              <div key={a.agent_id} className="glass-card-hover p-4">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{a.name || a.agent_id}</p>
-                    <p className="text-xs text-muted-foreground font-mono truncate">{a.agent_id}</p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {(() => { const r = a.block_rate ?? 0; return <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${r > 0.3 ? 'bg-red-500/10 border-red-500/20 text-red-400' : r > 0.1 ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>Risk {r > 0.3 ? 'High' : r > 0.1 ? 'Med' : 'Low'}</span> })()}
-                    <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tCfg.bg} ${tCfg.color}`}><TrendIcon size={9} />{tCfg.label}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.status === 'active' ? 'bg-emerald-500/15 text-emerald-400' : a.status === 'paused' ? 'bg-amber-500/15 text-amber-400' : 'bg-muted text-muted-foreground'}`}>{a.status || 'unknown'}</span>
-                  </div>
-                </div>
-                {a.description && <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{a.description}</p>}
-                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                  {a.decisions_total != null && <span><span className="text-foreground font-medium">{a.decisions_total}</span> decisions</span>}
-                  {blockPct && <span><span className={tCfg.color + ' font-medium'}>{blockPct}%</span> blocked</span>}
-                  {a.policy_pack && <span className="text-primary">{a.policy_pack}</span>}
-                  {a.last_seen && <span className="ml-auto">{relTime(a.last_seen)}</span>}
-                </div>
+      {departments.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => setDeptFilter(null)}
+            className={`text-xs px-2.5 py-1 rounded-full border transition ${!deptFilter ? 'bg-primary/15 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            All
+          </button>
+          {departments.map(d => (
+            <button key={d} onClick={() => setDeptFilter(deptFilter === d ? null : d)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition ${deptFilter === d ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-400' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+      {filtered.length === 0 ? <Empty message="No agents registered yet" /> : grouped ? (
+        <div className="space-y-6">
+          {grouped.map(([dept, deptAgents]) => (
+            <div key={dept}>
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 normal-case tracking-normal text-[11px]">{dept}</span>
+                <span>{deptAgents.length} agent{deptAgents.length !== 1 ? 's' : ''}</span>
+              </h3>
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {deptAgents.map(a => <AgentCard key={a.agent_id} a={a} />)}
               </div>
-            )
-          })}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {filtered.map(a => <AgentCard key={a.agent_id} a={a} />)}
         </div>
       )}
     </div>
   )
 }
 
-// ── Audit Tab ─────────────────────────────────────────────────────────────────
+// -- Audit Tab -----------------------------------------------------------------
 
 async function buildChain(events: AuditEvent[]): Promise<string[]> {
   const hashes: string[] = []; let prev = '0000000000000000'
@@ -2027,8 +2640,8 @@ async function buildChain(events: AuditEvent[]): Promise<string[]> {
 }
 
 function exportAuditPdf(events: AuditEvent[], hashes: string[]) {
-  const rows = events.map((e, i) => `<tr><td>${i + 1}</td><td>${e.decision_verdict}</td><td>${e.agent_id}</td><td>${e.tool_name || '—'}</td><td>${e.decision_reason_code || '—'}</td><td>${new Date(e.timestamp).toLocaleString()}</td><td style="font-family:monospace;font-size:10px">${hashes[i] || '—'}</td></tr>`).join('')
-  const html = `<!DOCTYPE html><html><head><title>EDON Audit Chain</title><style>body{font-family:sans-serif;font-size:12px;padding:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f5f5f5}h1{font-size:16px}p{color:#666;font-size:11px}</style></head><body><h1>EDON Audit Chain Export</h1><p>Generated: ${new Date().toLocaleString()} · ${events.length} records</p><table><thead><tr><th>#</th><th>Verdict</th><th>Agent</th><th>Tool</th><th>Reason</th><th>Timestamp</th><th>Hash</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
+  const rows = events.map((e, i) => `<tr><td>${i + 1}</td><td>${e.decision_verdict}</td><td>${e.agent_id}</td><td>${e.tool_name || '-'}</td><td>${e.decision_reason_code || '-'}</td><td>${new Date(e.timestamp).toLocaleString()}</td><td style="font-family:monospace;font-size:10px">${hashes[i] || '-'}</td></tr>`).join('')
+  const html = `<!DOCTYPE html><html><head><title>EDON Audit Chain</title><style>body{font-family:sans-serif;font-size:12px;padding:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f5f5f5}h1{font-size:16px}p{color:#666;font-size:11px}</style></head><body><h1>EDON Audit Chain Export</h1><p>Generated: ${new Date().toLocaleString()} / ${events.length} records</p><table><thead><tr><th>#</th><th>Verdict</th><th>Agent</th><th>Tool</th><th>Reason</th><th>Timestamp</th><th>Hash</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
   const w = window.open('', '_blank')
   if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 300) }
 }
@@ -2055,6 +2668,10 @@ function AuditTab() {
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    if (events.length > 0) _setPS('audit', events.slice(0, 40).map(e => ({ id: e.action_id || e.id, agent: e.agent_id, verdict: e.decision_verdict, reason: e.decision_reason_code, tool: e.tool_name, ts: e.timestamp })))
+  }, [events])
+
   const filtered = events.filter(e => !search || (e.agent_id + (e.tool_name || '') + (e.decision_reason_code || '')).toLowerCase().includes(search.toLowerCase()))
 
   return (
@@ -2062,7 +2679,7 @@ function AuditTab() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
             className="pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary w-48" />
         </div>
         <select value={verdict} onChange={e => setVerdict(e.target.value)}
@@ -2076,7 +2693,7 @@ function AuditTab() {
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setShowChain(v => !v)}
             className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${showChain ? 'border-primary/40 text-primary bg-primary/10' : 'border-border text-muted-foreground hover:text-foreground'}`}>
-            <Shield size={12} /> Chain{hashes.length > 0 ? ` · ${hashes.length}` : ''}
+            <Shield size={12} /> Chain{hashes.length > 0 ? ` / ${hashes.length}` : ''}
           </button>
           {hashes.length > 0 && (
             <button onClick={() => exportAuditPdf(events, hashes)}
@@ -2091,7 +2708,7 @@ function AuditTab() {
       {showChain && hashes.length > 0 && (
         <div className="glass-card p-4">
           <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
-            <Shield size={11} /> Hash Chain · tip: <span className="font-mono text-primary">{hashes[hashes.length - 1]}</span>
+            <Shield size={11} /> Hash Chain / tip: <span className="font-mono text-primary">{hashes[hashes.length - 1]}</span>
           </p>
           <div className="max-h-32 overflow-y-auto space-y-0.5">
             {hashes.map((h, i) => (
@@ -2125,8 +2742,8 @@ function AuditTab() {
                   <tr key={e.action_id || e.id || i} className="border-b border-border/30 last:border-0 hover:bg-muted/20 cursor-pointer transition-colors" onClick={() => setSelected(e)}>
                     <td className="py-2.5 px-4"><VerdictBadge verdict={e.decision_verdict} /></td>
                     <td className="py-2.5 px-4 font-mono text-xs truncate max-w-[150px]">{e.agent_id}</td>
-                    <td className="py-2.5 px-4 text-muted-foreground hidden md:table-cell text-xs">{e.tool_name || '—'}</td>
-                    <td className="py-2.5 px-4 text-muted-foreground hidden lg:table-cell text-xs">{e.decision_reason_code || '—'}</td>
+                    <td className="py-2.5 px-4 text-muted-foreground hidden md:table-cell text-xs">{e.tool_name || '-'}</td>
+                    <td className="py-2.5 px-4 text-muted-foreground hidden lg:table-cell text-xs">{e.decision_reason_code || '-'}</td>
                     <td className="py-2.5 px-4 hidden lg:table-cell">
                       {e.risk_score != null && <span className={`text-xs font-mono ${e.risk_score > 0.7 ? 'text-red-400' : e.risk_score > 0.4 ? 'text-amber-400' : 'text-muted-foreground'}`}>{e.risk_score.toFixed(2)}</span>}
                     </td>
@@ -2169,7 +2786,7 @@ function AuditTab() {
   )
 }
 
-// ── Policy Template Packs ─────────────────────────────────────────────────────
+// -- Policy Template Packs -----------------------------------------------------
 
 function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
   const [templates, setTemplates] = useState<Array<{ id: string; name: string; description?: string; regulation?: string; rule_count?: number }>>([])
@@ -2218,7 +2835,7 @@ function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
               {t.description && <p className="text-[11px] opacity-80 leading-relaxed">{t.description}</p>}
               <button onClick={() => apply(t.id)} disabled={applying === t.id}
                 className="w-full text-xs py-1.5 rounded-lg border border-current/30 hover:bg-current/10 font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                {applied === t.id ? <><Check size={12} /> Applied</> : applying === t.id ? 'Applying…' : 'Apply Pack'}
+                {applied === t.id ? <><Check size={12} /> Applied</> : applying === t.id ? 'Applying...' : 'Apply Pack'}
               </button>
             </div>
           )
@@ -2237,7 +2854,7 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
       iconColor: 'text-rose-400',
       packs: [
         { id: 'joint_commission',   name: 'Joint Commission',        description: 'AI governance for JC-accredited hospitals (NPSG.15.01.01 et al.)', color: 'text-rose-400 border-rose-500/20 bg-rose-500/5',   rules: 5 },
-        { id: 'clinical_governance',name: 'Clinical AI Governance',  description: 'PHI minimization, patient consent & clinical scope (HIPAA §164.312)', color: 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5',   rules: 4 },
+        { id: 'clinical_governance',name: 'Clinical AI Governance',  description: 'PHI minimization, patient consent & clinical scope (HIPAA Section 164.312)', color: 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5',   rules: 4 },
       ],
     },
     {
@@ -2246,7 +2863,7 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
       icon: Shield,
       iconColor: 'text-amber-400',
       packs: [
-        { id: 'bank_model_risk',     name: 'SR 11-7 Model Risk',      description: 'Federal Reserve model risk controls — validation gates, output review, inventory logging', color: 'text-amber-400 border-amber-500/20 bg-amber-500/5',  rules: 5 },
+        { id: 'bank_model_risk',     name: 'SR 11-7 Model Risk',      description: 'Federal Reserve model risk controls - validation gates, output review, inventory logging', color: 'text-amber-400 border-amber-500/20 bg-amber-500/5',  rules: 5 },
         { id: 'bank_aml_compliance', name: 'AML / BSA Compliance',    description: 'AML alert escalation, SAR filing review, GLBA data protection, FFIEC audit trail', color: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5', rules: 5 },
       ],
     },
@@ -2290,7 +2907,7 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
                 <p className="text-[11px] opacity-80 leading-relaxed">{pack.description}</p>
                 <button onClick={() => apply(pack.id)} disabled={applying === pack.id || applied.has(pack.id)}
                   className="w-full text-xs py-1.5 rounded-lg border border-current/30 hover:bg-current/10 font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                  {applied.has(pack.id) ? <><Check size={12} /> Applied</> : applying === pack.id ? 'Applying…' : 'Apply Preset'}
+                  {applied.has(pack.id) ? <><Check size={12} /> Applied</> : applying === pack.id ? 'Applying...' : 'Apply Preset'}
                 </button>
               </div>
             ))}
@@ -2301,7 +2918,7 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
   )
 }
 
-// ── Policies Tab ──────────────────────────────────────────────────────────────
+// -- Policies Tab --------------------------------------------------------------
 
 function PoliciesTab({ vertical }: { vertical: string | null }) {
   const [rules, setRules] = useState<PolicyRule[]>([])
@@ -2309,6 +2926,18 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [sandboxRuleId, setSandboxRuleId] = useState<string | null>(null)
+  const [sandboxResult, setSandboxResult] = useState<{ sample_size: number; changed: number; unchanged: number; false_positive_rate: number } | null>(null)
+  const [sandboxLoading, setSandboxLoading] = useState(false)
+
+  const testRule = async (rule: PolicyRule) => {
+    setSandboxRuleId(rule.rule_id); setSandboxResult(null); setSandboxLoading(true)
+    try {
+      const r = await api.policySandboxTest({ rule_id: rule.rule_id, name: rule.name, action: rule.action, tool: rule.tool, op: rule.op, enabled: true } as Record<string, unknown>)
+      setSandboxResult(r)
+    } catch { setSandboxResult(null) }
+    finally { setSandboxLoading(false) }
+  }
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -2324,6 +2953,10 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (rules.length > 0) _setPS('policies', rules.map(r => ({ id: r.rule_id, name: r.name, action: r.action, enabled: r.enabled, regulation: r.regulation })) as Record<string, unknown>[])
+  }, [rules])
 
   if (loading) return <Spinner />
   if (error) return <ErrorMsg message={error} onRetry={load} />
@@ -2371,7 +3004,7 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
             {overallOk ? 'Compliance posture: Healthy' : 'Compliance posture: Needs attention'}
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {activeRules} of {totalRules} rules enforced across {knownRegs.length} framework{knownRegs.length !== 1 ? 's' : ''} · Rules are locked to regulatory standards
+            {activeRules} of {totalRules} rules enforced across {knownRegs.length} framework{knownRegs.length !== 1 ? 's' : ''} / Rules are locked to regulatory standards
           </p>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
@@ -2384,7 +3017,7 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
         <PolicyTemplatePacks onApplied={load} />
       )}
 
-      {/* Industry presets — filtered by tenant vertical */}
+      {/* Industry presets - filtered by tenant vertical */}
       <IndustryPolicyPresetsCard onApplied={load} vertical={vertical} />
 
       {/* Regulation cards */}
@@ -2434,7 +3067,7 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
               {isExpanded && (
                 <div className="border-t border-current/10 px-5 py-3 space-y-1">
                   {regRules.map(rule => (
-                    <div key={rule.rule_id} className="flex items-start gap-3 py-2.5 border-b border-white/5 last:border-0">
+                    <div key={rule.rule_id} data-cite-id={rule.rule_id} className="flex items-start gap-3 py-2.5 border-b border-white/5 last:border-0">
                       <div className={`mt-0.5 shrink-0 ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/40'}`}>
                         <CheckCircle2 size={13} />
                       </div>
@@ -2444,6 +3077,10 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
                       </div>
                       <div className="shrink-0 flex items-center gap-1.5">
                         {!isCustom && <span className="text-[10px] text-muted-foreground/50 flex items-center gap-0.5"><Lock size={9} /> Required</span>}
+                        <button onClick={e => { e.stopPropagation(); testRule(rule) }} disabled={sandboxLoading && sandboxRuleId === rule.rule_id}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-purple-500/25 text-purple-400 bg-purple-500/8 hover:bg-purple-500/15 transition-colors disabled:opacity-50 flex items-center gap-0.5">
+                          {sandboxLoading && sandboxRuleId === rule.rule_id ? '...' : <><FlaskConical size={9} /> Test</>}
+                        </button>
                         <span className={`text-[10px] font-medium ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
                           {rule.enabled ? 'Active' : 'Inactive'}
                         </span>
@@ -2463,13 +3100,45 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
           <Lock size={10} /> Regulatory rules (HIPAA, HITRUST, SOC 2) are enforced as healthcare standards and cannot be disabled.
         </p>
       )}
+
+      {/* Sandbox result modal */}
+      <AnimatePresence>
+        {sandboxResult && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => { setSandboxResult(null); setSandboxRuleId(null) }}>
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              className="glass-card max-w-sm w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold flex items-center gap-2"><FlaskConical size={14} className="text-purple-400" /> Sandbox Result</h3>
+                <button onClick={() => { setSandboxResult(null); setSandboxRuleId(null) }}><X size={15} className="text-muted-foreground hover:text-foreground" /></button>
+              </div>
+              <p className="text-xs text-muted-foreground">Dry-run against last {sandboxResult.sample_size} decisions. Rule was NOT deployed.</p>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Changed', value: sandboxResult.changed, color: sandboxResult.changed > 0 ? 'text-amber-400' : 'text-emerald-400' },
+                  { label: 'Unchanged', value: sandboxResult.unchanged, color: 'text-muted-foreground' },
+                  { label: 'False Pos.', value: `${(sandboxResult.false_positive_rate * 100).toFixed(1)}%`, color: sandboxResult.false_positive_rate > 0.05 ? 'text-red-400' : 'text-emerald-400' },
+                ].map(m => (
+                  <div key={m.label} className="glass-card p-3 text-center space-y-1">
+                    <p className={`text-xl font-bold ${m.color}`}>{m.value}</p>
+                    <p className="text-[10px] text-muted-foreground">{m.label}</p>
+                  </div>
+                ))}
+              </div>
+              {sandboxResult.false_positive_rate > 0.05 && (
+                <p className="text-xs text-red-400 flex items-center gap-1.5"><AlertTriangle size={11} /> High false positive rate - reconsider rule scope before deploying.</p>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
 
-// ── Review Queue Tab ──────────────────────────────────────────────────────────
+// -- Review Queue Tab ----------------------------------------------------------
 
-function ReviewTab() {
+function ReviewTab({ vertical }: { vertical: string | null }) {
   const [pending, setPending] = useState<ReviewItem[]>([])
   const [resolved, setResolved] = useState<ReviewItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -2482,7 +3151,9 @@ function ReviewTab() {
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
   const [reviewerName, setReviewerNameLocal] = useState(getReviewerName)
   const [editingName, setEditingName] = useState(!getReviewerName())
-  const [reviewerRole, setReviewerRoleLocal] = useState<ClinicalRole>(getReviewerRole)
+  const [reviewerRole, setReviewerRoleLocal] = useState<ReviewerRole>(getReviewerRole)
+  const reviewRoles = getReviewRoles(vertical)
+  const approvalTier = getApprovalTier(vertical)
   const [escalatingId, setEscalatingId] = useState<string | null>(null)
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000) }
@@ -2502,6 +3173,14 @@ function ReviewTab() {
   }, [])
 
   useEffect(() => { load(); const iv = setInterval(load, 15000); return () => clearInterval(iv) }, [load])
+
+  useEffect(() => {
+    _setPS('review', [
+      { type: 'summary', pending_count: pending.length, resolved_count: resolved.length },
+      ...pending.slice(0, 10).map(r => ({ type: 'pending', id: r.decision_id, agent: r.agent_id, action: r.action_type, question: r.escalation_question, urgency: r.meta?.urgency ?? 'routine' })),
+      ...resolved.slice(0, 5).map(r => ({ type: 'resolved', id: r.decision_id, agent: r.agent_id, action: r.action_type, resolution: r.resolution, resolved_by: r.resolved_by })),
+    ])
+  }, [pending, resolved])
 
   const handleExpired = useCallback(async (item: ReviewItem) => {
     try {
@@ -2536,7 +3215,7 @@ function ReviewTab() {
     setEscalatingId(item.decision_id)
     await new Promise(r => setTimeout(r, 800))
     setEscalatingId(null)
-    showToast(`On-call paged: ${item.action_type}${item.meta?.patient_id ? ` · ${item.meta.patient_id}` : ''}`, 'ok')
+    showToast(`On-call paged: ${item.action_type}${item.meta?.patient_id ? ` / ${item.meta.patient_id}` : ''}`, 'ok')
   }
 
   const allDepts = Array.from(new Set(pending.map(getDept))).sort()
@@ -2551,7 +3230,7 @@ function ReviewTab() {
         <User size={12} className={reviewerName ? 'text-muted-foreground' : 'text-amber-400'} />
         {editingName ? (
           <form className="flex items-center gap-2 flex-1" onSubmit={e => { e.preventDefault(); const v = (e.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim(); if (v) saveName(v) }}>
-            <input name="name" defaultValue={reviewerName} autoFocus placeholder="Your name for review signatures…"
+            <input name="name" defaultValue={reviewerName} autoFocus placeholder="Your name for review signatures..."
               className="flex-1 bg-transparent border-b border-primary/40 text-sm focus:outline-none text-foreground pb-0.5" />
             <button type="submit" className="text-primary text-xs font-semibold hover:underline">Save</button>
           </form>
@@ -2561,7 +3240,7 @@ function ReviewTab() {
             <span className="font-medium text-foreground">{reviewerName}</span>
             {getReviewerDept() && (
               <>
-                <span className="text-border">·</span>
+                <span className="text-border">/</span>
                 <span className="text-muted-foreground">{getReviewerDept()}</span>
               </>
             )}
@@ -2569,10 +3248,10 @@ function ReviewTab() {
         )}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-muted-foreground">Role:</span>
-          <select value={reviewerRole} onChange={e => { const r = e.target.value as ClinicalRole; setReviewerRoleLocal(r); setReviewerRole(r) }}
+          <select value={reviewerRole} onChange={e => { const r = e.target.value; setReviewerRoleLocal(r); setReviewerRole(r) }}
             className="bg-muted/50 border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary">
-            <option value="">— select —</option>
-            {CLINICAL_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+            <option value="">- select -</option>
+            {reviewRoles.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
       </div>
@@ -2600,8 +3279,8 @@ function ReviewTab() {
           {['all', ...allDepts].map(d => (
             <button key={d} onClick={() => setDeptFilter(d)}
               className={`text-xs px-2.5 py-1 rounded-lg border transition-all ${deptFilter === d ? 'bg-primary/20 border-primary/40 text-primary' : 'border-white/10 text-muted-foreground hover:text-foreground hover:border-white/20'}`}>
-              {d === 'all' ? `All · ${pending.length}` : d}
-              {d !== 'all' && <span className="ml-1 text-muted-foreground/60">· {pending.filter(i => getDept(i) === d).length}</span>}
+              {d === 'all' ? `All / ${pending.length}` : d}
+              {d !== 'all' && <span className="ml-1 text-muted-foreground/60">/ {pending.filter(i => getDept(i) === d).length}</span>}
             </button>
           ))}
         </div>
@@ -2644,9 +3323,9 @@ function ReviewTab() {
                               <User size={9} /> {String(item.meta.patient_id)}
                             </span>
                           )}
-                          {!canApprove(reviewerRole, urgency) && (
+                          {!canApprove(reviewerRole, urgency, vertical) && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/25 text-amber-400 font-medium">
-                              {APPROVAL_TIER[urgency]} required
+                              {approvalTier[urgency]} required
                             </span>
                           )}
                         </div>
@@ -2658,7 +3337,7 @@ function ReviewTab() {
                           {escalatingId === item.decision_id ? <div className="w-3.5 h-3.5 border border-rose-400/30 border-t-rose-400 rounded-full animate-spin" /> : <Bell size={11} />}
                         </button>
                       )}
-                      <button disabled={busy || !canApprove(reviewerRole, urgency)} onClick={() => handleAction(item, 'approved')} title={canApprove(reviewerRole, urgency) ? 'Approve' : `Requires ${APPROVAL_TIER[urgency]}`}
+                      <button disabled={busy || !canApprove(reviewerRole, urgency, vertical)} onClick={() => handleAction(item, 'approved')} title={canApprove(reviewerRole, urgency, vertical) ? 'Approve' : `Requires ${approvalTier[urgency]}`}
                         className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-40 transition-colors">
                         {busy ? <div className="w-3.5 h-3.5 border border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" /> : <ThumbsUp size={11} />}
                       </button>
@@ -2686,7 +3365,7 @@ function ReviewTab() {
                 <span className="font-mono flex-1 truncate">{item.action_type}</span>
                 <span className="text-muted-foreground truncate hidden sm:block">{item.agent_id}</span>
                 <span className={item.resolved_by === 'SYSTEM' ? 'text-muted-foreground' : item.resolution === 'approved' ? 'text-emerald-400' : 'text-red-400'}>
-                  {item.resolution === 'approved' ? 'Approved' : 'Rejected'}{item.resolved_by ? ` · ${item.resolved_by}` : ''}
+                  {item.resolution === 'approved' ? 'Approved' : 'Rejected'}{item.resolved_by ? ` / ${item.resolved_by}` : ''}
                 </span>
                 {item.resolved_at && <span className="text-muted-foreground/60 hidden md:block">{relTime(item.resolved_at)}</span>}
               </div>
@@ -2733,7 +3412,7 @@ function ReviewTab() {
                 <User size={11} /> Signed as <span className="text-foreground font-medium">{reviewerName}</span>
               </p>
               {confirmItem.action === 'rejected' && (
-                <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Rejection note (optional)…"
+                <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Rejection note (optional)..."
                   className="w-full bg-white/[0.04] border border-white/15 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none" />
               )}
               <div className="flex gap-3">
@@ -2751,7 +3430,7 @@ function ReviewTab() {
   )
 }
 
-// ── Red Team Tab ─────────────────────────────────────────────────────────
+// -- Red Team Tab ---------------------------------------------------------
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'text-red-400 bg-red-500/10 border-red-500/30',
@@ -2834,7 +3513,7 @@ function RedTeamTab() {
           <h2 className="text-sm font-semibold flex items-center gap-2">
             <FlaskConical size={14} className="text-primary" /> Red Team
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Adversarial shadow execution — continuous governance testing</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Adversarial shadow execution - continuous governance testing</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load} className="p-2 rounded-lg border border-border bg-muted/40 text-muted-foreground hover:text-foreground transition">
@@ -2842,7 +3521,7 @@ function RedTeamTab() {
           </button>
           <button onClick={handleExport} disabled={exporting}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-muted/40 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition disabled:opacity-50">
-            <FileDown size={13} />{exporting ? 'Exporting…' : 'Export CSV'}
+            <FileDown size={13} />{exporting ? 'Exporting...' : 'Export CSV'}
           </button>
         </div>
       </div>
@@ -2867,7 +3546,7 @@ function RedTeamTab() {
         ))}
       </div>
 
-      {/* Confirmed bypasses — top priority */}
+      {/* Confirmed bypasses - top priority */}
       {bypasses.length > 0 && (
         <div className="glass-card border-red-500/30 p-4 space-y-3">
           <div className="flex items-center gap-2">
@@ -2878,24 +3557,24 @@ function RedTeamTab() {
             </span>
           </div>
           <p className="text-xs text-muted-foreground">
-            These bypasses are not theoretical — the perturbation bypassed the governor AND the agent executed successfully.
+            These bypasses are not theoretical - the perturbation bypassed the governor AND the agent executed successfully.
           </p>
           <div className="space-y-2">
             {bypasses.map(b => (
               <div key={b.id} className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-xs space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono text-muted-foreground">{b.agent_id}</span>
-                  <span className="text-border">·</span>
+                  <span className="text-border">/</span>
                   <span className="font-medium">{b.action_type}</span>
-                  <span className="text-border">·</span>
+                  <span className="text-border">/</span>
                   <span className="text-red-400/80">{PERTURB_LABEL[b.perturbation_type] ?? b.perturbation_type}</span>
                   <span className="ml-auto text-muted-foreground/60">{b.confirmed_at.slice(0, 10)}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="px-1.5 py-0.5 rounded border border-red-500/30 text-red-400 font-mono">{b.original_verdict}</span>
-                  <span className="text-muted-foreground">→</span>
+                  <span className="text-muted-foreground">-&gt;</span>
                   <span className="px-1.5 py-0.5 rounded border border-emerald-500/30 text-emerald-400 font-mono">{b.shadow_verdict}</span>
-                  <span className="text-muted-foreground mx-1">·</span>
+                  <span className="text-muted-foreground mx-1">/</span>
                   <span className="text-emerald-400">Real execution: {b.real_outcome}</span>
                 </div>
               </div>
@@ -2922,7 +3601,7 @@ function RedTeamTab() {
           <div className="flex flex-col items-center py-10 gap-3 text-center">
             <CheckCircle2 size={28} className="text-emerald-400 opacity-40" />
             <p className="text-sm text-muted-foreground">
-              {filter === 'all' ? 'No findings yet — traces are being sampled.' : `No ${filter} findings.`}
+              {filter === 'all' ? 'No findings yet - traces are being sampled.' : `No ${filter} findings.`}
             </p>
           </div>
         ) : (
@@ -2936,10 +3615,10 @@ function RedTeamTab() {
                     <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${SEVERITY_COLOR[f.severity]}`}>
                       {f.severity}
                     </span>
-                    <span className="font-medium truncate">{f.action_type ?? '—'}</span>
+                    <span className="font-medium truncate">{f.action_type ?? '-'}</span>
                     <span className="text-muted-foreground/70 shrink-0">{PERTURB_LABEL[f.perturbation_type] ?? f.perturbation_type}</span>
                     <span className="text-muted-foreground/50 mx-1 shrink-0">
-                      {f.trace_original_verdict} → {f.shadow_verdict}
+                      {f.trace_original_verdict} -&gt; {f.shadow_verdict}
                     </span>
                     <ChevronRight size={12} className={`ml-auto shrink-0 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
                   </button>
@@ -2954,7 +3633,7 @@ function RedTeamTab() {
                           {f.policy_recommendation}
                         </div>
                       )}
-                      <p className="text-muted-foreground/40">{f.created_at?.slice(0, 19).replace('T', ' ')} · field: {f.perturbed_field ?? '—'}</p>
+                      <p className="text-muted-foreground/40">{f.created_at?.slice(0, 19).replace('T', ' ')} / field: {f.perturbed_field ?? '-'}</p>
                     </div>
                   )}
                 </div>
@@ -2962,7 +3641,7 @@ function RedTeamTab() {
             })}
             {visible.length > 50 && (
               <p className="text-center text-xs text-muted-foreground py-2">
-                Showing 50 of {visible.length} findings — export CSV for full report
+                Showing 50 of {visible.length} findings - export CSV for full report
               </p>
             )}
           </div>
@@ -2991,7 +3670,7 @@ function RedTeamTab() {
               <button onClick={handleChainStress} disabled={chainRunning || !sessionId.trim()}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary/15 border border-primary/30 text-primary text-xs font-semibold hover:bg-primary/25 transition disabled:opacity-40">
                 {chainRunning ? <RefreshCw size={12} className="animate-spin" /> : <Zap size={12} />}
-                {chainRunning ? 'Running…' : 'Run'}
+                {chainRunning ? 'Running...' : 'Run'}
               </button>
             </div>
             {chainError && <p className="text-xs text-red-400">{chainError}</p>}
@@ -3018,12 +3697,12 @@ function RedTeamTab() {
                       <div key={i} className={`rounded-lg border p-3 text-xs ${SEVERITY_COLOR[r.severity]}`}>
                         <div className="flex items-center gap-2">
                           <span className="font-bold uppercase">{r.severity}</span>
-                          <span>Step {r.injection_step} → {r.cascade_count} cascade{r.cascade_count !== 1 ? 's' : ''}</span>
+                          <span>Step {r.injection_step} -&gt; {r.cascade_count} cascade{r.cascade_count !== 1 ? 's' : ''}</span>
                           <span className="text-muted-foreground ml-1">{PERTURB_LABEL[r.perturbation_type] ?? r.perturbation_type}</span>
                         </div>
                         {r.cascade_verdicts.map((cv, j) => (
                           <div key={j} className="mt-1.5 pl-2 border-l border-current/20 text-muted-foreground">
-                            Step {cv.step} · {cv.action_type} · {cv.original} → {cv.shadow}
+                            Step {cv.step} / {cv.action_type} / {cv.original} -&gt; {cv.shadow}
                           </div>
                         ))}
                       </div>
@@ -3039,15 +3718,15 @@ function RedTeamTab() {
   )
 }
 
-// ── Compliance Report Tab ─────────────────────────────────────────────────────
+// -- Compliance Report Tab -----------------------------------------------------
 
 const REPORT_REGULATION_MAP: Record<string, string> = {
-  'ALLOW':    'HIPAA §164.308(a)(4) Minimum Necessary',
-  'BLOCK':    'HIPAA §164.308(a)(1); SOC2 CC6.1',
+  'ALLOW':    'HIPAA Section 164.308(a)(4) Minimum Necessary',
+  'BLOCK':    'HIPAA Section 164.308(a)(1); SOC2 CC6.1',
   'ESCALATE': 'FDA SaMD Human Oversight; Joint Commission NPSG.15.01.01',
-  'DEGRADE':  'ISO 14971 §6 — Safe Alternative Applied',
-  'PAUSE':    'HIPAA §164.308(a)(1)(ii)(D) Activity Review',
-  'ERROR':    'HIPAA §164.308(a)(1) Security Management',
+  'DEGRADE':  'ISO 14971 Section 6 - Safe Alternative Applied',
+  'PAUSE':    'HIPAA Section 164.308(a)(1)(ii)(D) Activity Review',
+  'ERROR':    'HIPAA Section 164.308(a)(1) Security Management',
 }
 
 function ComplianceReportTab() {
@@ -3095,6 +3774,14 @@ function ComplianceReportTab() {
     }
     return [...seen]
   }, [preview])
+
+  useEffect(() => {
+    if (preview.length === 0) return
+    _setPS('report', [
+      { type: 'stats', ...stats, regulations },
+      ...preview.slice(0, 20).map(e => ({ id: e.action_id || e.id, agent: e.agent_id, verdict: e.decision_verdict, reason: e.decision_reason_code, ts: e.timestamp })),
+    ])
+  }, [stats, regulations, preview])
 
   const download = async (format: 'json' | 'pdf') => {
     setExporting(format)
@@ -3240,7 +3927,7 @@ function ComplianceReportTab() {
         <div className="glass-card overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Decision Preview</p>
-            <p className="text-xs text-muted-foreground">{preview.length} records shown — download for full report</p>
+            <p className="text-xs text-muted-foreground">{preview.length} records shown - download for full report</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -3258,10 +3945,10 @@ function ComplianceReportTab() {
                   <tr key={e.action_id || e.id || i} className="border-b border-border/30 last:border-0 hover:bg-muted/10 transition-colors">
                     <td className="py-2 px-4"><VerdictBadge verdict={e.decision_verdict} /></td>
                     <td className="py-2 px-4 font-mono text-xs truncate max-w-[140px]">{e.agent_id}</td>
-                    <td className="py-2 px-4 text-xs text-muted-foreground hidden md:table-cell">{e.tool_name || '—'}</td>
+                    <td className="py-2 px-4 text-xs text-muted-foreground hidden md:table-cell">{e.tool_name || '-'}</td>
                     <td className="py-2 px-4 hidden lg:table-cell">
                       <span className="text-[10px] text-muted-foreground leading-tight">
-                        {REPORT_REGULATION_MAP[e.decision_verdict] || '—'}
+                        {REPORT_REGULATION_MAP[e.decision_verdict] || '-'}
                       </span>
                     </td>
                     <td className="py-2 px-4 text-xs text-muted-foreground">{fmtTs(e.timestamp)}</td>
@@ -3276,24 +3963,9 @@ function ComplianceReportTab() {
   )
 }
 
-// ── Tabs config ───────────────────────────────────────────────────────────────
+// -- Tabs config ---------------------------------------------------------------
 
-// ── Onboarding Screen (pre-console gate) ──────────────────────────────────────
-
-type OBPhase = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-
-const OB_PHASES: { id: OBPhase; label: string; subtitle: string }[] = [
-  { id: 0, label: 'Access Request',       subtitle: 'Organisation + context' },
-  { id: 1, label: 'Environment Discovery',subtitle: 'Agents, tools, data, identity' },
-  { id: 2, label: 'Action Surface',       subtitle: 'What your AI can do' },
-  { id: 3, label: 'Risk Topology',        subtitle: 'Where risk actually exists' },
-  { id: 4, label: 'Policy Generation',    subtitle: 'Governance rules (auto-generated)' },
-  { id: 5, label: 'Deployment Bundle',    subtitle: 'Architecture + install config' },
-  { id: 6, label: 'Trust Agreement',      subtitle: 'Security & control confirmation' },
-  { id: 7, label: 'Shadow Simulation',    subtitle: 'What EDON would have blocked' },
-  { id: 8, label: 'Generate Package',     subtitle: 'Executable deployment bundle' },
-  { id: 9, label: 'Go-Live Signoff',      subtitle: 'Unlock production console' },
-]
+// -- Onboarding Screen (pre-console gate) --------------------------------------
 
 type OBStep = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
@@ -3414,7 +4086,7 @@ function OBStepNav({ current, maxReached, onSelect }: { current: OBStep; maxReac
           }`}>
           <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
             s < current ? 'bg-emerald-500/40 text-emerald-300' : s === current ? 'bg-emerald-500/60 text-white' : 'bg-muted/30 text-muted-foreground'
-          }`}>{s < current ? '✓' : s}</span>
+          }`}>{s < current ? 'OK' : s}</span>
           {STEP_LABELS[s]}
         </button>
       ))}
@@ -3474,12 +4146,12 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
       1: 'What organization is this governance boundary for?',
       2: 'List the AI systems or agents currently in use. Even partial descriptions are fine.',
       3: 'Let\'s map actual capabilities. What can your agents access and do?',
-      4: 'Do any systems send data outside your organization — vendors, APIs, external cloud models?',
+      4: 'Do any systems send data outside your organization - vendors, APIs, external cloud models?',
       5: `I'll generate governance rules for your system. Do you want strict enforcement (recommended for ${domain}) or balanced?`,
       6: 'Where should EDON run? AWS VPC, cloud proxy, or hybrid gateway?',
       7: 'I\'ll simulate how EDON would have governed your system. Run shadow simulation?',
       8: 'Review and confirm each control below. Legal and security sign-off attaches here.',
-      9: 'Generating your EDON deployment package — runtime gateway, identity bindings, audit pipeline, enforcement engine.',
+      9: 'Generating your EDON deployment package - runtime gateway, identity bindings, audit pipeline, enforcement engine.',
       10:'Once activated, EDON enforces governance in real time. Review below, then activate.',
     }
     let t1: ReturnType<typeof setTimeout>
@@ -3543,7 +4215,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
     }).catch(() => {})
   }, [onComplete]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Send message handler ──────────────────────────────────────────────────
+  // -- Send message handler --------------------------------------------------
   const sendDirect = async (text: string) => {
     if (!text || isTyping || busy) return
     setMsgs(p => [...p, { role: 'user', text, id: ++idRef.current }])
@@ -3569,14 +4241,14 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
           return { name: phi ? `clinical-agent-${i+1}` : `agent-${i+1}`, type:'llm_agent', phi, autonomous:true, actions:[] }
         })
         setAgentDrafts(extracted)
-        const list = extracted.map((a,i) => `${i+1}. ${a.name}${a.phi ? '  — PHI risk tag applied' : ''}`).join('\n')
+        const list = extracted.map((a,i) => `${i+1}. ${a.name}${a.phi ? '  - PHI risk tag applied' : ''}`).join('\n')
         await addCopilot(`I've identified ${extracted.length} agent type${extracted.length !== 1 ? 's' : ''}:\n\n${list}`)
         await addCopilot('Do these operate autonomously or require human approval?', 650)
       } else {
         const auto = /autonom|mostly|auto|no human|independent/i.test(text)
         setAgentDrafts(p => p.map(a => ({ ...a, autonomous:auto })))
         await addCopilot(auto
-          ? 'Understood. Classifying as autonomous agents — elevated governance scope applied.'
+          ? 'Understood. Classifying as autonomous agents - elevated governance scope applied.'
           : 'Understood. Human-in-loop agents will have lighter escalation thresholds.')
         setCtaReady(true)
       }
@@ -3594,14 +4266,14 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
         } else if (write) {
           await addCopilot('Understood. Write-paths into production systems flagged as high-risk operations.')
         } else {
-          await addCopilot('Read-only access pattern. Lower inherent risk — operational policies still apply.')
+          await addCopilot('Read-only access pattern. Lower inherent risk - operational policies still apply.')
         }
         await addCopilot('Does any agent have access to credentials or API keys?', 800)
       } else {
         const hasCreds = /yes|credential|token|key|secret|auth/i.test(text)
         if (hasCreds) {
           setAgentDrafts(p => p.map(a => ({ ...a, actions:[...a.actions,'credential-read'] })))
-          await addCopilot('Credential access paths flagged — ESCALATE policy applied to all credential operations.')
+          await addCopilot('Credential access paths flagged - ESCALATE policy applied to all credential operations.')
         } else {
           await addCopilot('No direct credential access. Action surface mapping complete.')
         }
@@ -3648,7 +4320,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
         await api.onboardingGenerateTopology(r.profile.profile_id)
         const boot = await api.onboardingBootstrapPolicies(r.profile.profile_id)
         setBundle(boot.policy_bundle)
-        await addCopilot(`Policy Pack v1 ready — ${boot.policy_bundle.total_count} rules across 3 layers.`, 300)
+        await addCopilot(`Policy Pack v1 ready - ${boot.policy_bundle.total_count} rules across 3 layers.`, 300)
       } catch (e) {
         setApiErr(e instanceof Error ? e.message : 'Failed')
         await addCopilot('Policy generation encountered an issue. Continuing with preview mode.', 300)
@@ -3658,7 +4330,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
     else if (screen === 6) {
       const mode: typeof deployMode = /vpc|aws|private/i.test(text) ? 'vpc' : /cloud|proxy/i.test(text) ? 'cloud_proxy' : 'hybrid'
       setDeployMode(mode)
-      const desc = { vpc:'VPC-native with private routing and no external exposure.', cloud_proxy:'Cloud proxy with managed TLS and rate limiting.', hybrid:'Hybrid gateway — on-prem enforcement + cloud audit.' }
+      const desc = { vpc:'VPC-native with private routing and no external exposure.', cloud_proxy:'Cloud proxy with managed TLS and rate limiting.', hybrid:'Hybrid gateway - on-prem enforcement + cloud audit.' }
       await addCopilot(`I will generate a ${desc[mode]}`)
       if (profile) {
         setBusy(true)
@@ -3691,7 +4363,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
     sendDirect(text)
   }
 
-  // ── Screen CTA handler ────────────────────────────────────────────────────
+  // -- Screen CTA handler ----------------------------------------------------
   const handleCTA = async () => {
     if (screen < 10) { setScreen(s => s + 1); return }
     setBusy(true)
@@ -3731,14 +4403,14 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
     7:  { title:'Shadow Simulation',           sub:'Observe governance before enforcement goes live' },
     8:  { title:'Trust Boundary Agreement',    sub:'Explicit control confirmation' },
     9:  { title:'Generate Deployment Bundle',  sub:'Executable Helm chart + VPC config + runbook' },
-    10: { title:'Activate Production Mode',    sub:'Enforcement boundary goes live — console unlocks' },
+    10: { title:'Activate Production Mode',    sub:'Enforcement boundary goes live - console unlocks' },
   }
   const meta = SCREEN_META[screen]
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background:'#07100b' }}>
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* -- Header ----------------------------------------------------------- */}
       <header className="shrink-0 flex items-center px-6 h-[54px]" style={{ borderBottom:'1px solid rgba(74,222,128,0.1)', background:'rgba(7,16,11,0.97)' }}>
         <EdonLogo variant="compact" subtitle />
         <div className="flex items-center gap-1.5 mx-auto">
@@ -3756,10 +4428,10 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
         </button>
       </header>
 
-      {/* ── Body: split screen ─────────────────────────────────────────────── */}
+      {/* -- Body: split screen ----------------------------------------------- */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
 
-        {/* LEFT — Copilot chat pane */}
+        {/* LEFT - Copilot chat pane */}
         <div className="flex flex-col shrink-0 md:w-[400px] w-full md:max-h-full max-h-[45vh]" style={{ borderRight:'1px solid rgba(74,222,128,0.08)', borderBottom:'1px solid rgba(74,222,128,0.08)', background:'#0b1610' }}>
           {/* Screen label */}
           <div className="px-5 pt-5 pb-4 shrink-0" style={{ borderBottom:'1px solid rgba(74,222,128,0.07)' }}>
@@ -3863,14 +4535,14 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
           )}
         </div>
 
-        {/* RIGHT — Live artifact pane */}
+        {/* RIGHT - Live artifact pane */}
         <div className="flex-1 overflow-y-auto">
           <AnimatePresence mode="wait">
             <motion.div key={screen} initial={{ opacity:0, x:20 }} animate={{ opacity:1, x:0 }} exit={{ opacity:0, x:-20 }} transition={{ duration:0.18 }} className="flex flex-col min-h-full">
 
               <div className="flex-1 p-8 space-y-6">
 
-                {/* ── Screen 1 ─────────────────────────────────────────────── */}
+                {/* -- Screen 1 ----------------------------------------------- */}
                 {screen === 1 && (
                   <div className="max-w-lg space-y-6">
                     <div>
@@ -3904,7 +4576,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                     ) : (
                       <div className="grid grid-cols-3 gap-4">
                         {([
-                          [Shield, 'Policy Compiler', 'Natural language → enforcement rules'],
+                          [Shield, 'Policy Compiler', 'Natural language -> enforcement rules'],
                           [Activity, 'Topology Builder', 'Agent surface + trust boundary map'],
                           [Package, 'Deploy Generator', 'Helm / VPC / IaC bundle'],
                         ] as const).map(([Icon, label, sub]) => (
@@ -3921,7 +4593,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 2 ─────────────────────────────────────────────── */}
+                {/* -- Screen 2 ----------------------------------------------- */}
                 {screen === 2 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -3946,7 +4618,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                                 <p className="text-sm font-semibold text-white">{a.name}</p>
                                 {a.phi && <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background:'rgba(251,146,60,0.15)', border:'1px solid rgba(251,146,60,0.3)', color:'#fb923c' }}>PHI</span>}
                               </div>
-                              <p className="text-xs text-muted-foreground mt-0.5">{a.type} · {a.autonomous ? 'autonomous' : 'human-in-loop'}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">{a.type} / {a.autonomous ? 'autonomous' : 'human-in-loop'}</p>
                             </div>
                             <span className="text-[10px] px-2.5 py-1 rounded-full font-bold shrink-0" style={{ background:'rgba(74,222,128,0.1)', border:'1px solid rgba(74,222,128,0.2)', color:'#4ade80' }}>IDENTIFIED</span>
                           </motion.div>
@@ -3960,7 +4632,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 3 ─────────────────────────────────────────────── */}
+                {/* -- Screen 3 ----------------------------------------------- */}
                 {screen === 3 && (
                   <div className="max-w-2xl space-y-5">
                     <div>
@@ -3982,7 +4654,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                               }}>{act}</span>
                             ))}
                           </div>
-                          <span className={a.phi ? 'text-orange-400 font-medium' : 'text-muted-foreground'}>{a.phi ? 'PHI · PII' : 'Internal'}</span>
+                          <span className={a.phi ? 'text-orange-400 font-medium' : 'text-muted-foreground'}>{a.phi ? 'PHI / PII' : 'Internal'}</span>
                           <RiskBadge tier={a.phi&&a.actions.some(x=>x.includes('write')) ? 'critical' : a.phi ? 'high' : a.actions.some(x=>x.includes('write')) ? 'medium' : 'low'} />
                         </div>
                       )) : (
@@ -3998,7 +4670,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 4 ─────────────────────────────────────────────── */}
+                {/* -- Screen 4 ----------------------------------------------- */}
                 {screen === 4 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -4040,7 +4712,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 5 ─────────────────────────────────────────────── */}
+                {/* -- Screen 5 ----------------------------------------------- */}
                 {screen === 5 && (
                   <div className="max-w-2xl space-y-5">
                     <div>
@@ -4068,14 +4740,14 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                           ))}
                         </div>
                         {([
-                          [bundle.hard_safety,       'Layer A — Hard Safety',     'Non-negotiable · Immutable after go-live', '#ef4444', 'rgba(239,68,68,0.18)'],
-                          [bundle.operational,       'Layer B — Operational',     'Rate limits, tool access, escalation thresholds', '#f59e0b', 'rgba(245,158,11,0.18)'],
-                          [bundle.intent_contracts,  'Layer C — Intent Contracts','Business scope and purpose bounds', '#4ade80', 'rgba(74,222,128,0.18)'],
+                          [bundle.hard_safety,       'Layer A - Hard Safety',     'Non-negotiable / Immutable after go-live', '#ef4444', 'rgba(239,68,68,0.18)'],
+                          [bundle.operational,       'Layer B - Operational',     'Rate limits, tool access, escalation thresholds', '#f59e0b', 'rgba(245,158,11,0.18)'],
+                          [bundle.intent_contracts,  'Layer C - Intent Contracts','Business scope and purpose bounds', '#4ade80', 'rgba(74,222,128,0.18)'],
                         ] as const).map(([policies, label, note, color, border], gi) => (
                           <details key={gi} open className="rounded-2xl overflow-hidden" style={{ border:`1px solid ${border}` }}>
                             <summary className="cursor-pointer flex items-center justify-between px-5 py-4 text-sm font-semibold select-none" style={{ color, background:'rgba(255,255,255,0.02)' }}>
                               <span>{label}</span>
-                              <span className="text-xs font-normal" style={{ color:'rgba(255,255,255,0.35)' }}>{note} · {(policies as import('./api').OnboardingPolicy[]).length} rules</span>
+                              <span className="text-xs font-normal" style={{ color:'rgba(255,255,255,0.35)' }}>{note} / {(policies as import('./api').OnboardingPolicy[]).length} rules</span>
                             </summary>
                             <div className="p-4 space-y-2" style={{ background:'rgba(0,0,0,0.15)' }}>
                               {(policies as import('./api').OnboardingPolicy[]).slice(0,5).map(p => {
@@ -4128,7 +4800,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 6 ─────────────────────────────────────────────── */}
+                {/* -- Screen 6 ----------------------------------------------- */}
                 {screen === 6 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -4170,7 +4842,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 7 ─────────────────────────────────────────────── */}
+                {/* -- Screen 7 ----------------------------------------------- */}
                 {screen === 7 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -4215,7 +4887,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 8 ─────────────────────────────────────────────── */}
+                {/* -- Screen 8 ----------------------------------------------- */}
                 {screen === 8 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -4253,7 +4925,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 9 ─────────────────────────────────────────────── */}
+                {/* -- Screen 9 ----------------------------------------------- */}
                 {screen === 9 && (
                   <div className="max-w-lg space-y-5">
                     <div>
@@ -4315,7 +4987,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                   </div>
                 )}
 
-                {/* ── Screen 10 ────────────────────────────────────────────── */}
+                {/* -- Screen 10 ---------------------------------------------- */}
                 {screen === 10 && (
                   <div className="max-w-lg space-y-6">
                     <div>
@@ -4349,7 +5021,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
                     <div className="rounded-2xl p-6 space-y-3" style={{ border:'1px solid rgba(74,222,128,0.22)', background:'rgba(74,222,128,0.05)' }}>
                       <p className="font-semibold text-emerald-200">Governance system ready to activate.</p>
                       <p className="text-sm text-muted-foreground leading-relaxed">Once activated, EDON enforces governance in real time. All agent actions are intercepted, evaluated, and enforced per Policy Pack v1. The production console unlocks immediately.</p>
-                      {profile && <p className="text-xs text-emerald-400/70">Risk tier: <span className="font-bold">{profile.risk_tier.toUpperCase()}</span> · {profile.agent_systems.length} system{profile.agent_systems.length !== 1 ? 's' : ''} governed</p>}
+                      {profile && <p className="text-xs text-emerald-400/70">Risk tier: <span className="font-bold">{profile.risk_tier.toUpperCase()}</span> / {profile.agent_systems.length} system{profile.agent_systems.length !== 1 ? 's' : ''} governed</p>}
                     </div>
                   </div>
                 )}
@@ -4388,11 +5060,11 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
 }
 
 
-// ── Onboarding helper components (reused in OnboardingScreen) ─────────────────
+// -- Onboarding helper components (reused in OnboardingScreen) -----------------
 
 function OnboardingTab() {
-  const [step, setStep]           = useState<number>(1)
-  const [maxReached, setMaxReached] = useState<number>(1)
+  const [step, setStep]           = useState<OBStep>(1)
+  const [maxReached, setMaxReached] = useState<OBStep>(1)
   const [busy, setBusy]           = useState(false)
   const [err, setErr]             = useState('')
 
@@ -4457,7 +5129,7 @@ function OnboardingTab() {
     await loadStatus(p.profile_id)
   }
 
-  // ── Step 1 submit ──────────────────────────────────────────────────────────
+  // -- Step 1 submit ----------------------------------------------------------
   const handleIntake = async () => {
     if (!orgName.trim()) { setErr('Organisation name required'); return }
     const invalid = agentSystems.find(a => !a.name.trim())
@@ -4480,7 +5152,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 2: Topology ───────────────────────────────────────────────────────
+  // -- Step 2: Topology -------------------------------------------------------
   const handleTopology = async () => {
     if (!activeProfileId) return
     setBusy(true); setErr('')
@@ -4493,7 +5165,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 3: Bootstrap ──────────────────────────────────────────────────────
+  // -- Step 3: Bootstrap ------------------------------------------------------
   const handleBootstrap = async () => {
     if (!activeProfileId) return
     setBusy(true); setErr('')
@@ -4506,7 +5178,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 4: Deployment ─────────────────────────────────────────────────────
+  // -- Step 4: Deployment -----------------------------------------------------
   const handleDeployment = async () => {
     if (!activeProfileId) return
     setBusy(true); setErr('')
@@ -4519,7 +5191,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 5: Shadow Mode ────────────────────────────────────────────────────
+  // -- Step 5: Shadow Mode ----------------------------------------------------
   const handleShadow = async () => {
     if (!activeProfileId) return
     setBusy(true); setErr('')
@@ -4531,7 +5203,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 6: Signoff ────────────────────────────────────────────────────────
+  // -- Step 6: Signoff --------------------------------------------------------
   const handleSignoffRequest = async () => {
     if (!activeProfileId || !signoffBy.trim()) { setErr('Approver name required'); return }
     setBusy(true); setErr('')
@@ -4559,7 +5231,7 @@ function OnboardingTab() {
     finally { setBusy(false) }
   }
 
-  // ── Step 7: Expansion ──────────────────────────────────────────────────────
+  // -- Step 7: Expansion ------------------------------------------------------
   const handleExpansion = async () => {
     if (!activeProfileId) return
     setBusy(true); setErr('')
@@ -4584,7 +5256,7 @@ function OnboardingTab() {
             Governance Onboarding Copilot
           </h2>
           <p className="text-sm text-muted-foreground mt-0.5">
-            End-to-end client deployment — from intake to live enforcement
+            End-to-end client deployment - from intake to live enforcement
           </p>
         </div>
         {profile && <RiskBadge tier={profile.risk_tier} />}
@@ -4600,11 +5272,11 @@ function OnboardingTab() {
                 className="w-full flex items-center justify-between px-4 py-3 rounded-lg border border-border/40 hover:border-emerald-500/30 hover:bg-emerald-500/5 transition-colors text-left">
                 <div>
                   <p className="text-sm font-medium text-foreground">{p.org_name}</p>
-                  <p className="text-xs text-muted-foreground">{p.profile_id} · {p.stage}</p>
+                  <p className="text-xs text-muted-foreground">{p.profile_id} / {p.stage}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <RiskBadge tier={p.risk_tier} />
-                  {p.signed_off && <span className="text-xs text-emerald-400 font-medium">● LIVE</span>}
+                  {p.signed_off && <span className="text-xs text-emerald-400 font-medium">LIVE LIVE</span>}
                 </div>
               </button>
             ))}
@@ -4627,7 +5299,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 1: Intake ───────────────────────────────────────────────── */}
+      {/* -- Step 1: Intake ------------------------------------------------- */}
       {(step === 1 && (!activeProfileId || activeProfileId === 'new')) && (
         <div className="space-y-6">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
@@ -4725,14 +5397,14 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* Profile summary card (shown in steps 2–7) */}
+      {/* Profile summary card (shown in steps 2-7) */}
       {profile && step > 1 && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-foreground">{profile.org_name}</p>
             <div className="flex items-center gap-2">
               <RiskBadge tier={profile.risk_tier} />
-              {profile.signed_off && <span className="text-xs text-emerald-400 font-semibold">● LIVE</span>}
+              {profile.signed_off && <span className="text-xs text-emerald-400 font-semibold">LIVE LIVE</span>}
             </div>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -4745,7 +5417,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 2: Topology ─────────────────────────────────────────────── */}
+      {/* -- Step 2: Topology ----------------------------------------------- */}
       {step === 2 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
@@ -4779,7 +5451,7 @@ function OnboardingTab() {
                       <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${ep.is_external_boundary ? 'bg-orange-400' : 'bg-emerald-400'}`} />
                       <div className="min-w-0">
                         <p className="text-xs font-medium text-foreground">{ep.label}</p>
-                        <p className="text-[11px] text-muted-foreground">{ep.connector_type} · {ep.intercepts.slice(0, 4).join(', ')}{ep.intercepts.length > 4 ? ` +${ep.intercepts.length - 4}` : ''}</p>
+                        <p className="text-[11px] text-muted-foreground">{ep.connector_type} / {ep.intercepts.slice(0, 4).join(', ')}{ep.intercepts.length > 4 ? ` +${ep.intercepts.length - 4}` : ''}</p>
                       </div>
                       <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${ep.priority === 'required' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-muted/10 border-border/30 text-muted-foreground'}`}>{ep.priority}</span>
                     </div>
@@ -4793,7 +5465,7 @@ function OnboardingTab() {
                         <p className="text-xs font-medium text-foreground">{tb.label}</p>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${tb.enforcement === 'block_by_default' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'}`}>{tb.enforcement}</span>
                       </div>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">{tb.from_zone} → {tb.to_zone}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{tb.from_zone} -&gt; {tb.to_zone}</p>
                     </div>
                   ))}
                 </div>
@@ -4807,7 +5479,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 3: Policy Bootstrap ─────────────────────────────────────── */}
+      {/* -- Step 3: Policy Bootstrap --------------------------------------- */}
       {step === 3 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
@@ -4837,9 +5509,9 @@ function OnboardingTab() {
                   ))}
                 </div>
                 {[
-                  { key: 'hard_safety', policies: bundle.hard_safety, label: 'Layer A — Hard Safety', badge: 'text-red-400 border-red-500/30 bg-red-500/10' },
-                  { key: 'operational', policies: bundle.operational, label: 'Layer B — Operational', badge: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' },
-                  { key: 'contracts',   policies: bundle.intent_contracts, label: 'Layer C — Intent Contracts', badge: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+                  { key: 'hard_safety', policies: bundle.hard_safety, label: 'Layer A - Hard Safety', badge: 'text-red-400 border-red-500/30 bg-red-500/10' },
+                  { key: 'operational', policies: bundle.operational, label: 'Layer B - Operational', badge: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' },
+                  { key: 'contracts',   policies: bundle.intent_contracts, label: 'Layer C - Intent Contracts', badge: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
                 ].map(({ key, policies, label, badge }) => (
                   <details key={key} className="group">
                     <summary className={`cursor-pointer flex items-center justify-between px-3 py-2 rounded-lg border ${badge} text-xs font-semibold select-none`}>
@@ -4853,7 +5525,7 @@ function OnboardingTab() {
                           <div className="min-w-0">
                             <p className="text-xs text-foreground font-medium">{p.action_pattern} <span className="font-normal text-muted-foreground">({p.agent_system})</span></p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">{p.reason}</p>
-                            {p.immutable_after_signoff && <span className="text-[10px] text-orange-400/80">🔒 immutable after signoff</span>}
+                            {p.immutable_after_signoff && <span className="text-[10px] text-orange-400/80">- immutable after signoff</span>}
                           </div>
                         </div>
                       ))}
@@ -4870,7 +5542,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 4: Deployment Package ───────────────────────────────────── */}
+      {/* -- Step 4: Deployment Package ------------------------------------- */}
       {step === 4 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
@@ -4937,7 +5609,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 5: Shadow Mode ──────────────────────────────────────────── */}
+      {/* -- Step 5: Shadow Mode -------------------------------------------- */}
       {step === 5 && (
         <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -4946,7 +5618,7 @@ function OnboardingTab() {
           </h3>
           <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-xs text-blue-300/80 space-y-1">
             <p className="font-semibold text-blue-300">This is your sales weapon.</p>
-            <p>EDON runs silently — watches all agent actions, simulates decisions, logs what it WOULD block. No enforcement yet.</p>
+            <p>EDON runs silently - watches all agent actions, simulates decisions, logs what it WOULD block. No enforcement yet.</p>
             <p>Output: "here are 17 risky actions we would have blocked" and "here are 3 policy gaps".</p>
           </div>
           {profile?.shadow_mode_enabled ? (
@@ -4973,7 +5645,7 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 6: Signoff ──────────────────────────────────────────────── */}
+      {/* -- Step 6: Signoff ------------------------------------------------ */}
       {step === 6 && (
         <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -4990,10 +5662,10 @@ function OnboardingTab() {
             <div className="space-y-2 text-xs text-muted-foreground">
               <p className="font-semibold text-foreground/70">What's being approved:</p>
               <ul className="space-y-1 pl-3">
-                <li>• {profile.agent_systems.length} agent system(s) governed: {profile.agent_systems.map(a => a.name).join(', ')}</li>
-                <li>• Data classes: {profile.all_data_classes.join(', ') || 'none'}</li>
-                <li>• Compliance: {profile.compliance_requirements.join(', ') || 'none'}</li>
-                <li>• Risk tier: <RiskBadge tier={profile.risk_tier} /></li>
+                <li>- {profile.agent_systems.length} agent system(s) governed: {profile.agent_systems.map(a => a.name).join(', ')}</li>
+                <li>- Data classes: {profile.all_data_classes.join(', ') || 'none'}</li>
+                <li>- Compliance: {profile.compliance_requirements.join(', ') || 'none'}</li>
+                <li>- Risk tier: <RiskBadge tier={profile.risk_tier} /></li>
               </ul>
             </div>
           )}
@@ -5039,13 +5711,13 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* ── Step 7: Live + Expansion ─────────────────────────────────────── */}
+      {/* -- Step 7: Live + Expansion --------------------------------------- */}
       {step === 7 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 space-y-3">
             <h3 className="text-sm font-semibold text-emerald-300 flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-emerald-500/40 text-white text-[11px] font-bold flex items-center justify-center">✓</span>
-              EDON is LIVE — Active Enforcement
+              <span className="w-5 h-5 rounded-full bg-emerald-500/40 text-white text-[11px] font-bold flex items-center justify-center">OK</span>
+              EDON is LIVE - Active Enforcement
             </h3>
             <p className="text-xs text-muted-foreground">
               Every agent action is intercepted, evaluated, and enforced. All decisions produce audit trails with causal attribution.
@@ -5074,7 +5746,7 @@ function OnboardingTab() {
               <div className="space-y-2">
                 {expansion.expansion_recommended && (
                   <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-500/10 border border-orange-500/20 text-orange-300 text-xs font-semibold">
-                    <AlertTriangle size={13} /> Expansion recommended — {expansion.signals.filter(s => s.severity === 'high').length} high-severity signals
+                    <AlertTriangle size={13} /> Expansion recommended - {expansion.signals.filter(s => s.severity === 'high').length} high-severity signals
                   </div>
                 )}
                 {expansion.signals.length === 0 ? (
@@ -5087,7 +5759,7 @@ function OnboardingTab() {
                         <RiskBadge tier={sig.severity} />
                       </div>
                       <p className="text-[11px] text-muted-foreground">{sig.description}</p>
-                      <p className="text-[11px] text-emerald-400/80 font-medium">→ {sig.recommended_action}</p>
+                      <p className="text-[11px] text-emerald-400/80 font-medium">-&gt; {sig.recommended_action}</p>
                     </div>
                   ))
                 )}
@@ -5100,23 +5772,35 @@ function OnboardingTab() {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', icon: Activity },
-  { id: 'decisions', label: 'Decisions', icon: ListChecks },
-  { id: 'agents',    label: 'Agents',    icon: Users },
-  { id: 'audit',     label: 'Audit',     icon: FileText },
-  { id: 'report',    label: 'Report',    icon: FileDown },
-  { id: 'policies',  label: 'Policies',  icon: Shield },
-  { id: 'review',    label: 'Review',    icon: ClipboardList },
-  { id: 'redteam',   label: 'Red Team',  icon: FlaskConical },
-  { id: 'settings',  label: 'Settings',  icon: Settings },
+  { id: 'clinical_summary', label: 'Patient Summary', icon: Stethoscope, roles: ['clinical'] },
+  { id: 'clinical_explain', label: 'Explanation', icon: Eye, roles: ['clinical'] },
+  { id: 'clinical_actions', label: 'Actions', icon: ClipboardList, roles: ['clinical'] },
+  { id: 'review', label: 'Escalations', icon: AlertCircle, roles: ['clinical', 'admin'] },
+  { id: 'research_experiments', label: 'Experiments', icon: Microscope, roles: ['research'] },
+  { id: 'research_simulations', label: 'Simulations', icon: Radio, roles: ['research'] },
+  { id: 'research_readiness', label: 'Readiness', icon: CheckCircle2, roles: ['research'] },
+  { id: 'policy_diff', label: 'Policy Diff', icon: GitCompare, roles: ['research', 'admin'] },
+  { id: 'control_tower', label: 'Overview', icon: Building2, roles: ['admin'] },
+  { id: 'systems', label: 'Systems', icon: ServerCog, roles: ['admin'] },
+  { id: 'decisions', label: 'Decisions', icon: ListChecks, roles: ['admin'] },
+  { id: 'deployments', label: 'Deployments', icon: CheckCircle2, roles: ['admin'] },
+  { id: 'assurance', label: 'Assurance', icon: FlaskConical, roles: ['admin'] },
+  { id: 'impact', label: 'Impact', icon: Network, roles: ['admin'] },
+  { id: 'policies', label: 'Policies', icon: Shield, roles: ['admin'] },
+  { id: 'audit', label: 'Compliance', icon: FileText, roles: ['admin'] },
+  { id: 'report', label: 'Reports', icon: FileDown, roles: ['research', 'admin'] },
+  { id: 'dashboard', label: 'Legacy Dashboard', icon: Activity, roles: ['admin'] },
+  { id: 'agents', label: 'Legacy Agents', icon: Users, roles: ['admin'] },
+  { id: 'onboarding', label: 'Onboarding', icon: Package, roles: ['admin'] },
+  { id: 'settings', label: 'Settings', icon: Settings, roles: ['clinical', 'research', 'admin'] },
 ] as const
 
 type Tab = typeof TABS[number]['id']
 
-// ── Live Key Claim Banner ─────────────────────────────────────────────────────
+// -- Live Key Claim Banner -----------------------------------------------------
 
 function LiveKeyClaimBanner() {
   const [pending, setPending] = useState(false)
@@ -5160,10 +5844,10 @@ function LiveKeyClaimBanner() {
 
           {!liveKey ? (
             <>
-              <p className="text-xs text-emerald-300/80 flex-1">Your live production key is ready. Claim it now — it will only be shown once.</p>
+              <p className="text-xs text-emerald-300/80 flex-1">Your live production key is ready. Claim it now - it will only be shown once.</p>
               <button onClick={claim} disabled={claiming}
                 className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
-                {claiming ? 'Claiming…' : 'Reveal my live key'}
+                {claiming ? 'Claiming...' : 'Reveal my live key'}
               </button>
             </>
           ) : (
@@ -5186,7 +5870,10 @@ function LiveKeyClaimBanner() {
   )
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
+// -- App -----------------------------------------------------------------------
+
+type LockdownState = 'unknown' | 'pending' | 'active' | 'inactive' | 'failed' | 'unreachable'
+type LockdownDetails = { reason?: string; actor?: string; verifiedAt?: string }
 
 export default function App() {
   const [authed, setAuthed] = useState(!!getAuth())
@@ -5194,12 +5881,17 @@ export default function App() {
   const isAdmin = meInfo?.is_admin === true || meInfo?.role === 'admin'
   const vertical = meInfo?.vertical ?? null
   const [onboardingDone, setOnboardingDone] = useState(() => localStorage.getItem('edon_ob_done') === '1')
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [role, setRole] = useState<ConsoleRole>(() => (localStorage.getItem('edon_console_role') as ConsoleRole) || 'admin')
+  const [tab, setTab] = useState<Tab>('control_tower')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('edon_theme') as 'dark' | 'light') || 'dark')
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number } | null>(null)
-  const [hgiHalt, setHgiHalt] = useState(() => localStorage.getItem('edon_hgi_halt') === 'true')
+  const [hgiHalt, setHgiHalt] = useState(false)
+  const [lockdownState, setLockdownState] = useState<LockdownState>('unknown')
+  const [lockdownDetails, setLockdownDetails] = useState<LockdownDetails>({})
+  const [lockdownPhrase, setLockdownPhrase] = useState('')
   const [lockdownConfirm, setLockdownConfirm] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
+  const [aside, setAside] = useState<AsideItem | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -5207,6 +5899,11 @@ export default function App() {
     document.documentElement.classList.toggle('light', theme === 'light')
     localStorage.setItem('edon_theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem('edon_console_role', role)
+    setTab(ROLE_DEFAULT_TAB[role] as Tab)
+  }, [role])
 
   useEffect(() => {
     if (!authed || onboardingDone) return
@@ -5223,7 +5920,17 @@ export default function App() {
     api.health().then(h => setHealth(h)).catch(() => {})
     // Only fetch /me if we don't already have it (i.e. returning session, not fresh login)
     if (!meInfo) api.me().then(m => setMeInfo(m)).catch(() => {})
-    const fetchCount = async () => { try { const r = await api.reviewQueue('pending'); setPendingCount(r?.count ?? 0) } catch { /* silent */ } }
+    // Sync kill switch state from backend on load and every 30s
+    const syncKillSwitch = () => api.killSwitchStatus().then(s => {
+      setHgiHalt(s.active)
+      setLockdownState(s.active ? 'active' : 'inactive')
+      setLockdownDetails({ reason: s.reason, actor: s.activated_by, verifiedAt: new Date().toLocaleString() })
+    }).catch(() => setLockdownState('unreachable'))
+    syncKillSwitch()
+    const fetchCount = async () => {
+      try { const r = await api.reviewQueue('pending'); setPendingCount(r?.count ?? 0) } catch { /* silent */ }
+      syncKillSwitch()
+    }
     fetchCount(); const iv = setInterval(fetchCount, 30000); return () => clearInterval(iv)
   }, [authed])
 
@@ -5232,8 +5939,33 @@ export default function App() {
   // Session timeout
   const { warning: sessionWarn, secondsLeft, extend } = useSessionTimeout(handleLogout)
 
-  const activateLockdown = () => { localStorage.setItem('edon_hgi_halt', 'true'); setHgiHalt(true); setLockdownConfirm(false) }
-  const liftLockdown = () => { localStorage.removeItem('edon_hgi_halt'); setHgiHalt(false) }
+  const activateLockdown = async () => {
+    const actor = getReviewerName() || 'console-operator'
+    if (lockdownPhrase.trim() !== 'LOCKDOWN') return
+    setLockdownState('pending')
+    try {
+      const r = await api.killSwitchActivate('Emergency lockdown activated from console', actor)
+      setHgiHalt(r.active)
+      setLockdownState(r.active ? 'active' : 'failed')
+      setLockdownDetails({ reason: 'Emergency lockdown activated from console', actor, verifiedAt: new Date().toLocaleString() })
+      setLockdownConfirm(false)
+      setLockdownPhrase('')
+    } catch {
+      setLockdownState('failed')
+    }
+  }
+  const liftLockdown = async () => {
+    const actor = getReviewerName() || 'console-operator'
+    setLockdownState('pending')
+    try {
+      const r = await api.killSwitchDeactivate(actor)
+      setHgiHalt(r.active)
+      setLockdownState(r.active ? 'active' : 'inactive')
+      setLockdownDetails({ actor, verifiedAt: new Date().toLocaleString() })
+    } catch {
+      setLockdownState('failed')
+    }
+  }
 
   if (!authed) return <LoginScreen onLogin={me => { setMeInfo(me); setAuthed(true) }} />
   if (!onboardingDone) return (
@@ -5244,8 +5976,10 @@ export default function App() {
   )
 
   const auth = getAuth()
+  const visibleTabs = TABS.filter(t => (t.roles as readonly ConsoleRole[]).includes(role))
 
   return (
+    <AsideCtx.Provider value={{ open: (item) => setAside(item) }}>
     <div className="min-h-screen flex flex-col">
       {/* Lockdown banner */}
       <AnimatePresence>
@@ -5255,7 +5989,7 @@ export default function App() {
             <div className="flex items-center gap-2 text-red-400 text-xs">
               <AlertTriangle size={13} className="animate-pulse shrink-0" />
               <span className="font-bold tracking-wider">EMERGENCY LOCKDOWN ACTIVE</span>
-              <span className="text-red-400/60 hidden sm:inline">— all agent actions suspended</span>
+              <span className="text-red-400/60 hidden sm:inline">- all agent actions suspended</span>
             </div>
             <button onClick={liftLockdown} className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 transition-colors">
               Lift Lockdown
@@ -5266,14 +6000,43 @@ export default function App() {
 
       {/* Top nav */}
       <header className="sticky top-0 z-40 border-b border-border/50 bg-background/80 backdrop-blur-xl">
+        {hgiHalt && (
+          <div className="flex items-center justify-between px-4 py-1.5 bg-red-500/15 border-b border-red-500/30">
+            <div className="flex items-center gap-2 text-red-400 text-xs">
+              <AlertTriangle size={13} className="animate-pulse shrink-0" />
+              <span className="font-bold tracking-wider">EMERGENCY LOCKDOWN ACTIVE</span>
+              <span className="text-red-400/60 hidden sm:inline">- all agent actions suspended</span>
+            </div>
+            <button onClick={liftLockdown}
+              className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-red-400 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 transition-colors">
+              Lift Lockdown
+            </button>
+          </div>
+        )}
         <div className="max-w-7xl mx-auto px-4 flex items-center gap-3 h-14">
-          <div className="shrink-0">
-            <EdonLogo variant="compact" subtitle={false} />
+          {/* Wordmark */}
+          <div className="shrink-0 flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/25 flex items-center justify-center">
+              <Lock size={13} className="text-primary" />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="edon-brand font-bold text-foreground text-sm">EDON</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-dot" title="Live" />
+            </div>
+          </div>
+
+          <div className="hidden lg:flex items-center rounded-lg border border-border bg-muted/30 p-0.5">
+            {(['admin', 'research', 'clinical'] as const).map(r => (
+              <button key={r} onClick={() => setRole(r)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${role === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>
+                {ROLE_LABELS[r]}
+              </button>
+            ))}
           </div>
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-0.5 px-1 py-0.5 rounded-xl bg-muted/40 border border-border/40">
-            {TABS.map(t => {
+            {visibleTabs.map(t => {
               const Icon = t.icon; const active = tab === t.id
               return (
                 <button key={t.id} onClick={() => setTab(t.id)} title={t.label}
@@ -5290,14 +6053,22 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2 ml-auto shrink-0">
+            {/* Health status */}
             {health && (
               <div className="hidden lg:flex items-center gap-1.5 text-xs text-muted-foreground">
                 <div className={`w-1.5 h-1.5 rounded-full animate-pulse-dot ${health.ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
                 <span>{health.ok ? 'Healthy' : 'Degraded'}</span>
-                <span className="text-border">·</span>
+                <span className="text-border">/</span>
                 <span>v{health.version}</span>
               </div>
             )}
+
+            <div className="hidden xl:flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className={lockdownState === 'active' ? 'text-red-400' : lockdownState === 'failed' || lockdownState === 'unreachable' ? 'text-amber-400' : 'text-emerald-400'}>
+                Lockdown {lockdownState}
+              </span>
+              {lockdownDetails.verifiedAt && <span>/ {lockdownDetails.verifiedAt}</span>}
+            </div>
 
             {/* Reviewer identity pill */}
             {getReviewerName() && (
@@ -5309,7 +6080,7 @@ export default function App() {
                 )}
                 {!isAdmin && getReviewerDept() && (
                   <>
-                    <span className="text-border">·</span>
+                    <span className="text-border">/</span>
                     <span className="max-w-[90px] truncate">{getReviewerDept()}</span>
                   </>
                 )}
@@ -5321,27 +6092,33 @@ export default function App() {
 
             {/* AI Chat */}
             <button onClick={() => setChatOpen(true)} title="Governance AI"
-              className="flex items-center justify-center w-8 h-8 rounded-xl border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-colors">
+              className="flex items-center justify-center w-8 h-8 rounded-lg border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-colors">
               <Bot size={14} />
-            </button>
-
-            {/* Lockdown */}
-            <button onClick={() => hgiHalt ? liftLockdown() : setLockdownConfirm(true)}
-              title={hgiHalt ? 'Lockdown active — click to lift' : 'Emergency lockdown'}
-              className={`hidden sm:flex items-center gap-1.5 px-2.5 h-8 rounded-xl border text-xs font-semibold transition-colors ${hgiHalt ? 'border-red-500/50 bg-red-500/20 text-red-400 animate-pulse' : 'border-red-500/25 bg-red-500/10 text-red-400/70 hover:text-red-400 hover:bg-red-500/15'}`}>
-              <Power size={12} />{hgiHalt ? 'LOCKDOWN' : 'Lockdown'}
             </button>
 
             {/* Theme toggle */}
             <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition">
-              {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 hover:bg-secondary transition-colors"
+              aria-label="Toggle theme">
+              {theme === 'dark' ? <Sun size={13} className="text-muted-foreground" /> : <Moon size={13} className="text-muted-foreground" />}
             </button>
 
             {/* Logout */}
             <button onClick={handleLogout} title="Disconnect"
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition">
-              <LogOut size={14} />
+              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive text-muted-foreground transition-colors">
+              <LogOut size={13} />
+            </button>
+
+            {/* Emergency lockdown */}
+            <button onClick={() => hgiHalt ? liftLockdown() : setLockdownConfirm(true)}
+              title={hgiHalt ? 'Lockdown active - click to lift' : 'Emergency lockdown'}
+              className={cn(
+                'flex items-center justify-center w-8 h-8 rounded-lg border transition-all',
+                hgiHalt
+                  ? 'bg-red-500/20 border-red-400/50 text-red-400 animate-pulse'
+                  : 'border-border/60 bg-secondary/60 text-muted-foreground/50 hover:text-red-400/80 hover:bg-red-500/[0.08] hover:border-red-500/20',
+              )}>
+              <AlertTriangle size={13} />
             </button>
 
             {/* Mobile hamburger */}
@@ -5358,7 +6135,15 @@ export default function App() {
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
               className="md:hidden border-t border-border bg-background/95 overflow-hidden">
               <nav className="px-4 py-3 flex flex-col gap-1">
-                {TABS.map(t => {
+                <div className="grid grid-cols-3 gap-1 mb-2">
+                  {(['admin', 'research', 'clinical'] as const).map(r => (
+                    <button key={r} onClick={() => setRole(r)}
+                      className={`rounded-lg px-2 py-2 text-xs font-medium ${role === r ? 'bg-primary/15 text-primary' : 'bg-muted/30 text-muted-foreground'}`}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                {visibleTabs.map(t => {
                   const Icon = t.icon; const active = tab === t.id
                   return (
                     <button key={t.id} onClick={() => { setTab(t.id); setMobileOpen(false) }}
@@ -5394,7 +6179,7 @@ export default function App() {
                 <span className="text-xs font-semibold">Sandbox Mode</span>
               </div>
               <p className="text-xs text-purple-300/80">
-                Your governance rules are active and logging every decision — but nothing is being blocked yet. This is your trial period to observe EDON in action before enforcement goes live.
+                Your governance rules are active and logging every decision - but nothing is being blocked yet. This is your trial period to observe EDON in action before enforcement goes live.
               </p>
             </div>
           </motion.div>
@@ -5403,19 +6188,34 @@ export default function App() {
 
       {/* Page content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+        <GovernanceStrip hgiHalt={hgiHalt} />
         <AnimatePresence mode="wait">
           <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
             <ErrorBoundary>
-              {tab === 'dashboard' && <DashboardTab />}
-              {tab === 'decisions' && <DecisionsTab />}
-              {tab === 'agents'    && <AgentsTab />}
+              <Suspense fallback={<div className="glass-card p-4 text-sm text-muted-foreground">Loading console surface...</div>}>
+                {tab === 'clinical_summary' && <ClinicalSummaryTab />}
+                {tab === 'clinical_explain' && <ClinicalExplainTab />}
+                {tab === 'clinical_actions' && <ClinicalActionsTab />}
+                {tab === 'research_experiments' && <ResearchExperimentsTab />}
+                {tab === 'research_simulations' && <ShadowSimulationTab />}
+                {tab === 'research_readiness' && <ReadinessTab />}
+                {tab === 'policy_diff' && <PolicyDiffViewerTab />}
+                {tab === 'control_tower' && <ControlTowerTab />}
+                {tab === 'systems' && <SystemRegistryTable />}
+                {tab === 'deployments' && <DeploymentGatekeeperTab />}
+                {tab === 'assurance' && <RedTeamTab />}
+                {tab === 'impact' && <ImpactCenterTab />}
+                {tab === 'dashboard' && <DashboardTab />}
+                {tab === 'decisions' && <DecisionsTab />}
+                {tab === 'agents'    && <AgentsTab />}
 
-              {tab === 'audit'     && <AuditTab />}
-              {tab === 'report'    && <ComplianceReportTab />}
-              {tab === 'policies'  && <PoliciesTab vertical={vertical} />}
-              {tab === 'review'    && <ReviewTab />}
-              {tab === 'redteam'   && <RedTeamTab />}
-              {tab === 'settings'  && <SettingsTab onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} isAdmin={isAdmin} vertical={vertical} onVerticalChange={v => setMeInfo(m => m ? { ...m, vertical: v as typeof m.vertical } : m)} />}
+                {tab === 'audit'     && <AuditTab />}
+                {tab === 'report'    && <ComplianceReportTab />}
+                {tab === 'policies'  && <PoliciesTab vertical={vertical} />}
+                {tab === 'review'    && <ReviewTab vertical={vertical} />}
+                {tab === 'onboarding' && <OnboardingTab />}
+                {tab === 'settings'  && <SettingsTab onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} isAdmin={isAdmin} vertical={vertical} onVerticalChange={v => setMeInfo(m => m ? { ...m, vertical: v as typeof m.vertical } : m)} onTabChange={t => setTab(t as typeof tab)} />}
+              </Suspense>
             </ErrorBoundary>
           </motion.div>
         </AnimatePresence>
@@ -5424,7 +6224,7 @@ export default function App() {
       <footer className="border-t border-border/30 py-3 px-4 text-center">
         <p className="text-xs text-muted-foreground flex items-center justify-center gap-1.5">
           <Zap size={10} className="text-primary" /> EDON Governance Console
-          <span className="text-border">·</span>
+          <span className="text-border">/</span>
           <span className="font-mono">{auth?.gatewayUrl?.replace('https://', '')}</span>
         </p>
       </footer>
@@ -5478,15 +6278,30 @@ export default function App() {
                   <p className="text-xs text-muted-foreground mt-0.5">Immediately suspends all agent actions.</p>
                 </div>
               </div>
-              <p className="text-sm text-muted-foreground leading-relaxed">All AI agent actions will be blocked system-wide until the lockdown is lifted. This is logged to your audit trail.</p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                This will block all agent actions for the current tenant until the backend confirms lockdown is lifted. Type LOCKDOWN to confirm.
+              </p>
+              <input value={lockdownPhrase} onChange={e => setLockdownPhrase(e.target.value)}
+                placeholder="LOCKDOWN"
+                className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-mono text-red-300 focus:outline-none focus:ring-1 focus:ring-red-400" />
+              {lockdownState === 'failed' && <p className="text-xs text-red-400">Activation failed or backend was unreachable. Lockdown was not marked active locally.</p>}
               <div className="flex gap-3">
                 <button onClick={() => setLockdownConfirm(false)} className="flex-1 py-2.5 rounded-xl border border-white/15 text-sm text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">Cancel</button>
-                <button onClick={activateLockdown} className="flex-1 py-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 text-sm font-bold hover:bg-red-500/30 transition-colors">Activate Lockdown</button>
+                <button onClick={() => activateLockdown()} disabled={lockdownPhrase.trim() !== 'LOCKDOWN' || lockdownState === 'pending'}
+                  className="flex-1 py-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 text-sm font-bold hover:bg-red-500/30 transition-colors disabled:opacity-40">
+                  {lockdownState === 'pending' ? 'Confirming...' : 'Activate Lockdown'}
+                </button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Aside panel - AI reasoning for cited items */}
+      <AnimatePresence>
+        {aside && <AsidePanel key={`${aside.type}-${aside.id}`} type={aside.type} id={aside.id} onClose={() => setAside(null)} />}
+      </AnimatePresence>
     </div>
+    </AsideCtx.Provider>
   )
 }

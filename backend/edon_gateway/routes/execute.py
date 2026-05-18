@@ -6,17 +6,22 @@ Credentials live in the gateway; agents never touch them directly.
 """
 
 import time
+import hashlib
+import json as _json_stdlib
 from datetime import datetime, UTC
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 
-from ..schemas import Action, IntentContract, Tool, RiskLevel, ActionSource, Verdict, ReasonCode
+from ..schemas import Action, Tool, ActionSource, Verdict, ReasonCode
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
 from ..fleet_learning import get_fleet_learning_engine
+from ..services.governance import load_intent
+from ..schemas.v1_action import V1ActionRequest
+from ..preflight import PreflightContext, run_preflight
 
 logger = get_logger(__name__)
 
@@ -150,49 +155,9 @@ async def execute_action(request: Request, req: ExecuteRequest):
     tenant_id = get_request_tenant_id(request)
     db = get_db()
 
-    # ── Load intent (same logic as /v1/action) ─────────────────────────────
+    # ── Load intent ─────────────────────────────────────────────────────────
     intent_id = req.context.get("intent_id")
-    intent_contract = None
-
-    if intent_id:
-        try:
-            intent_data = db.get_intent(intent_id, customer_id=tenant_id)
-            if intent_data:
-                intent_contract = IntentContract(
-                    objective=intent_data["objective"],
-                    scope=intent_data["scope"],
-                    constraints=intent_data.get("constraints", {}),
-                    risk_level=RiskLevel(intent_data.get("risk_level", "MEDIUM")),
-                    approved_by_user=bool(intent_data.get("approved_by_user", False)),
-                )
-        except Exception as exc:
-            logger.warning("Failed to load intent %s: %s", intent_id, exc)
-
-    if not intent_contract:
-        try:
-            active = db.get_active_policy_preset()
-            if active and active.get("preset_name"):
-                from ..policy_packs import get_policy_pack
-                pack = get_policy_pack(active["preset_name"])
-                d = pack.to_intent_dict()
-                intent_contract = IntentContract(
-                    objective=d["objective"],
-                    scope=d["scope"],
-                    constraints=d.get("constraints", {}),
-                    risk_level=RiskLevel(d.get("risk_level", "LOW")),
-                    approved_by_user=bool(d.get("approved_by_user", False)),
-                )
-        except Exception as exc:
-            logger.warning("Failed to load active preset: %s", exc)
-
-    if not intent_contract:
-        intent_contract = IntentContract(
-            objective="Default intent",
-            scope={},
-            constraints={},
-            risk_level=RiskLevel.MEDIUM,
-            approved_by_user=False,
-        )
+    intent_contract, intent_id = load_intent(db, intent_id, tenant_id)
 
     # ── Build Action ────────────────────────────────────────────────────────
     action_params = dict(req.action_payload)
@@ -215,9 +180,37 @@ async def execute_action(request: Request, req: ExecuteRequest):
         hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
         req_context["session_id"] = f"auto:{req.agent_id}:{hour_bucket}"
 
+    _v1_req = V1ActionRequest(
+        agent_id=req.agent_id,
+        action_type=req.action_type,
+        action_payload=req.action_payload,
+        timestamp=req.timestamp,
+        context=req_context,
+    )
+    _pf_ctx = PreflightContext(
+        req=_v1_req,
+        tenant_id=tenant_id,
+        action=action,
+        action_params=action_params,
+        db=db,
+        start_time=start,
+        req_context=req_context,
+    )
+    _pf_hard = run_preflight(_pf_ctx)
+    if _pf_hard is not None:
+        return ExecuteResponse(
+            action_id=_pf_hard.action_id,
+            decision=_map_verdict(_pf_hard.decision),
+            decision_reason=_pf_hard.decision_reason,
+            executed=False,
+            processing_latency_ms=_pf_hard.processing_latency_ms,
+            reason_code=_pf_hard.reason_code,
+        )
+    req_context = _pf_ctx.req_context
+    tenant_rules = _pf_ctx.tenant_rules
+
     # ── Tenant policy rules ─────────────────────────────────────────────────
-    tenant_rules = []
-    if tenant_id:
+    if tenant_id and not tenant_rules:
         try:
             tenant_rules = db.get_policy_rules(tenant_id, enabled_only=True)
         except Exception as exc:
@@ -234,8 +227,9 @@ async def execute_action(request: Request, req: ExecuteRequest):
         decision = governor.evaluate(
             action=action,
             intent=intent_contract,
-            context={"agent_id": req.agent_id, "tenant_id": tenant_id, **req_context},
+            context={"agent_id": req.agent_id, **req_context},
             tenant_rules=tenant_rules,
+            tenant_id=tenant_id,
         )
         _policy_eval_ms = (time.time() - _policy_eval_start) * 1000.0
         # Record policy evaluation time for Prometheus (Phase 6.4)
@@ -254,6 +248,11 @@ async def execute_action(request: Request, req: ExecuteRequest):
 
     latency_ms = int((time.time() - start) * 1000)
     verdict_str = decision.verdict.value
+    _created_at = datetime.now(UTC).isoformat()
+    decision_id = f"dec-{action.id}-{_created_at}"
+    _request_hash = hashlib.sha256(
+        _json_stdlib.dumps(action_params, sort_keys=True).encode()
+    ).hexdigest()
 
     # ── Audit ───────────────────────────────────────────────────────────────
     try:
@@ -262,10 +261,13 @@ async def execute_action(request: Request, req: ExecuteRequest):
             decision=decision.to_dict(),
             intent_id=intent_id,
             agent_id=req.agent_id,
-            context={"agent_id": req.agent_id, "tenant_id": tenant_id, **req_context},
+            context={"agent_id": req.agent_id, "tenant_id": tenant_id, "request_hash": _request_hash, **req_context},
             customer_id=tenant_id,
             processing_latency_ms=latency_ms,
             action_summary=f"{action.tool.value}.{action.op}",
+            request_hash=_request_hash,
+            decision_id_override=decision_id,
+            created_at_override=_created_at,
         )
     except Exception as exc:
         logger.exception("Audit write failed in /execute: %s", exc)
@@ -295,6 +297,21 @@ async def execute_action(request: Request, req: ExecuteRequest):
         try:
             execution_result = _run_connector(tool_str, operation, action_params)
             executed = True
+            try:
+                from ..shadow.trace_capture import ActionResult, get_trace_store
+                _result = ActionResult.build(
+                    action_id=decision_id,
+                    agent_id=req.agent_id,
+                    tenant_id=tenant_id,
+                    action_type=req.action_type,
+                    outcome="success",
+                    latency_ms=max(0, int((time.time() - start) * 1000) - latency_ms),
+                    result_summary="Connector executed successfully",
+                    executed_at=datetime.now(UTC).isoformat(),
+                )
+                get_trace_store().save_action_result(_result)
+            except Exception as _receipt_err:
+                logger.warning("[/execute] execution receipt write failed: %s", _receipt_err)
             logger.info("[/execute] ALLOW+executed agent=%s action=%s", req.agent_id, req.action_type)
             # ── Scan tool output for indirect injection ──────────────────────
             try:
@@ -313,6 +330,22 @@ async def execute_action(request: Request, req: ExecuteRequest):
             logger.info("[/execute] ALLOW but no connector for %s: %s", tool_str, exc)
         except Exception as exc:
             execution_error = str(exc)
+            try:
+                from ..shadow.trace_capture import ActionResult, get_trace_store
+                _result = ActionResult.build(
+                    action_id=decision_id,
+                    agent_id=req.agent_id,
+                    tenant_id=tenant_id,
+                    action_type=req.action_type,
+                    outcome="failure",
+                    latency_ms=max(0, int((time.time() - start) * 1000) - latency_ms),
+                    error=execution_error[:1000],
+                    result_summary="Connector execution failed",
+                    executed_at=datetime.now(UTC).isoformat(),
+                )
+                get_trace_store().save_action_result(_result)
+            except Exception as _receipt_err:
+                logger.warning("[/execute] failure receipt write failed: %s", _receipt_err)
             logger.warning("[/execute] Connector error for %s: %s", req.action_type, exc)
 
     return ExecuteResponse(

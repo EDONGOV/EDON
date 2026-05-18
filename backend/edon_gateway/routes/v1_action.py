@@ -9,6 +9,8 @@ from fastapi import APIRouter, Request, HTTPException
 from datetime import datetime, UTC
 import time
 import os
+import hashlib
+import json as _json_stdlib
 
 from ..schemas.v1_action import V1ActionRequest, V1ActionResponse
 from ..schemas import (
@@ -26,14 +28,12 @@ from ..logging_config import get_logger
 from ..tenancy import get_request_tenant_id
 from ..monitoring.metrics import metrics as metrics_collector
 from ..fleet_learning import get_fleet_learning_engine
-from ..security.phi_allowlist import check_params as phi_check_params
 from ..security.audit_reason_formatter import format_reason as fmt_audit_reason
+from ..preflight import PreflightContext, run_preflight
+from ..services.governance import load_intent
 
-# Simple TTL cache for per-tenant policy rules.
-# Rules are loaded from DB at most once per TTL window per tenant,
-# preventing a round-trip to RDS on every single /v1/action call.
-_policy_rules_cache: dict = {}  # {tenant_id: (rules_list, expires_at_float)}
-_POLICY_RULES_TTL_SEC = float(os.getenv("EDON_POLICY_RULES_TTL", "30"))
+_shadow_mode_cache: dict = {}
+_SHADOW_MODE_TTL_SEC = 30.0
 _PREDICTIVE_OOB_ESCALATE_THRESHOLD = float(os.getenv("EDON_PREDICTIVE_OOB_ESCALATE_THRESHOLD", "0.82"))
 _PREDICTIVE_OOB_ADVISORY_THRESHOLD = float(os.getenv("EDON_PREDICTIVE_OOB_ADVISORY_THRESHOLD", "0.60"))
 
@@ -150,6 +150,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     # Get tenant context
     tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
 
     # Get database
     db = get_db()
@@ -232,65 +234,15 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except HTTPException:
             raise
         except Exception as _dev_err:
-            logger.warning("Device check error (non-blocking): %s", _dev_err)
+            logger.error("Device check error (fail-closed): %s", _dev_err)
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to validate device binding and mutex state",
+            )
 
     # Load intent contract
     intent_id = req.context.get("intent_id") if req.context else None
-    intent_contract = None
-
-    if intent_id:
-        # Try to load specific intent
-        try:
-            intent_data = db.get_intent(intent_id, customer_id=tenant_id)
-            if intent_data:
-                intent_contract = IntentContract(
-                    objective=intent_data["objective"],
-                    scope=intent_data["scope"],
-                    constraints=intent_data.get("constraints", {}),
-                    risk_level=RiskLevel(intent_data.get("risk_level", "MEDIUM")),
-                    approved_by_user=bool(intent_data.get("approved_by_user", False)),
-                )
-        except Exception as e:
-            logger.warning(f"Failed to load intent {intent_id}: {e}")
-
-    # Fallback to active policy preset if no intent specified
-    if not intent_contract:
-        try:
-            active_preset = db.get_active_policy_preset()
-            if active_preset and active_preset.get("preset_name"):
-                from ..policy_packs import get_policy_pack
-                preset_name = active_preset["preset_name"]
-                pack = get_policy_pack(preset_name)
-                intent_dict = pack.to_intent_dict()
-                intent_contract = IntentContract(
-                    objective=intent_dict["objective"],
-                    scope=intent_dict["scope"],
-                    constraints=intent_dict.get("constraints", {}),
-                    risk_level=RiskLevel(intent_dict.get("risk_level", "LOW")),
-                    approved_by_user=bool(intent_dict.get("approved_by_user", False)),
-                )
-                # Auto-resolve intent_id from the active preset so audit records
-                # always have an intent_id even when none was passed in context.
-                if not intent_id:
-                    try:
-                        all_intents = db.list_intents(customer_id=tenant_id)
-                        matching = [i for i in all_intents if preset_name.lower() in i.get("intent_id", "").lower()]
-                        if matching:
-                            intent_id = matching[0]["intent_id"]
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"Failed to load active policy preset: {e}")
-
-    # Final fallback to default intent
-    if not intent_contract:
-        intent_contract = IntentContract(
-            objective="Default intent",
-            scope={},
-            constraints={},
-            risk_level=RiskLevel.MEDIUM,
-            approved_by_user=False,
-        )
+    intent_contract, intent_id = load_intent(db, intent_id, tenant_id)
 
     # Create Action object
     # For custom tools, inject the original tool name into params so policy
@@ -310,424 +262,63 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     req_context: dict = dict(req.context or {})
 
-    # ── Auto session_id ──────────────────────────────────────────────────────
-    # Group actions by agent + hour so session risk accumulates automatically
-    # even when callers don't supply a session_id.
+    # Auto session_id — group by agent + hour so session risk accumulates
+    # even when callers don't supply one.
     if "session_id" not in req_context:
-        hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
-        req_context["session_id"] = f"auto:{req.agent_id}:{hour_bucket}"
+        req_context["session_id"] = f"auto:{req.agent_id}:{datetime.now(UTC).strftime('%Y%m%d%H')}"
 
-    # ── Cross-session causal risk ────────────────────────────────────────────
-    # Two paths:
-    #   1. Declared lineage (req.caused_by set): agent explicitly names which
-    #      prior actions caused this one → precise blame attribution, no inference.
-    #   2. Heuristic inference: scan full 7-day history, time-weighted scoring.
-    # Attribution: top_cause() names the specific prior action driving risk.
-    if tenant_id:
+    # ── Preflight pipeline ───────────────────────────────────────────────────
+    # Runs kill-switch → quota → PHI → intent → causal → fleet → coordination
+    # → prediction → policy-rules → trust in that order.
+    # Mutates req_context, populates tenant_rules and prediction on ctx.
+    # Returns a V1ActionResponse to short-circuit, or None to continue.
+    _pf_ctx = PreflightContext(
+        req=req,
+        tenant_id=tenant_id,
+        action=action,
+        action_params=action_params,
+        db=db,
+        start_time=start_time,
+        req_context=req_context,
+    )
+    _pf_hard = run_preflight(_pf_ctx)
+    if _pf_hard is not None:
+        # Write a minimal audit event so preflight blocks are never unaudited.
         try:
-            from ..causal_chain import get_causal_chain, CausalRisk
-            from ..latency_guard import run_with_budget
-            _causal_fallback = CausalRisk(
-                causal_score=0.5, credential_actions=0, data_actions=0,
-                oldest_action_age_h=0.0, reason="causal_timeout_conservative",
-            )
-
-            _declared_lineage = list(req.caused_by) if req.caused_by else []
-
-            if _declared_lineage:
-                # Declared path — lookup those specific action_ids
-                def _declared_eval():
-                    chain = get_causal_chain()
-                    contribs = chain.build_declared_contributions(
-                        _declared_lineage, req.action_type
-                    )
-                    # Synthesize a CausalRisk from declared contributions
-                    cred = sum(1 for c in contribs if c.output_type == "credential")
-                    data = sum(1 for c in contribs if c.output_type == "data")
-                    score = min(1.0, sum(c.contribution_weight * (0.30 if c.output_type == "credential" else 0.10) for c in contribs))
-                    oldest = max((c.age_h for c in contribs), default=0.0)
-                    r = CausalRisk(
-                        causal_score=round(score, 4),
-                        credential_actions=cred, data_actions=data,
-                        oldest_action_age_h=oldest,
-                        reason=f"declared_lineage(n={len(contribs)})",
-                        contributions=contribs,
-                    )
-                    return r
-                _causal, _causal_timed_out = run_with_budget(
-                    "causal", _declared_eval, fallback=_causal_fallback,
-                )
-                req_context["causal_lineage_source"] = "declared"
-            else:
-                # Heuristic path
-                _causal, _causal_timed_out = run_with_budget(
-                    "causal",
-                    lambda: get_causal_chain().evaluate(
-                        tenant_id=tenant_id,
-                        agent_id=req.agent_id,
-                        action_type=req.action_type,
-                    ),
-                    fallback=_causal_fallback,
-                )
-                req_context["causal_lineage_source"] = "inferred"
-
-            req_context["causal_risk_score"]       = _causal.causal_score
-            req_context["causal_credential_count"] = _causal.credential_actions
-            req_context["causal_reason"]           = _causal.reason
-            req_context["causal_timed_out"]        = _causal_timed_out
-            # Attribution: surface the specific prior action driving risk
-            _top_cause = _causal.top_cause()
-            if _top_cause:
-                req_context["causal_top_blame"] = {
-                    "action_id":           _top_cause.action_id,
-                    "action_type":         _top_cause.action_type,
-                    "age_h":               _top_cause.age_h,
-                    "contribution_weight": _top_cause.contribution_weight,
-                    "reason":              _top_cause.reason,
-                    "lineage_source":      req_context.get("causal_lineage_source", "inferred"),
-                }
-            if _causal.causal_score > 0.50:
-                req_context["risk_estimate"] = "critical"
-            elif _causal.causal_score > 0.25:
-                current = req_context.get("risk_estimate", "low")
-                if current in ("low", "medium"):
-                    req_context["risk_estimate"] = "high"
-        except Exception as _causal_err:
-            logger.debug("Causal chain check failed (non-blocking): %s", _causal_err)
-
-    # ── Fleet campaign detection ─────────────────────────────────────────────
-    # Cross-tenant fingerprint matching — detects coordinated attacks at scale.
-    # "10 tenants seeing the same action sequence" = campaign signal.
-    if tenant_id:
-        try:
-            from ..fleet.campaign_detector import get_campaign_detector, CampaignSignal
-            from ..latency_guard import run_with_budget
-            _campaign_fallback = CampaignSignal(
-                fingerprint="", threat_level="watch",
-                matched_tenants=0, matched_agents=0,
-                sample_action_seq=[], window_h=24.0,
-                reason="fleet_timeout_conservative",
-            )
-            _campaign, _fleet_timed_out = run_with_budget(
-                "fleet",
-                lambda: get_campaign_detector().detect(
-                    tenant_id=tenant_id,
-                    agent_id=req.agent_id,
-                    action_type=req.action_type,
-                ),
-                fallback=_campaign_fallback,
-            )
-            # Record this action into the global fingerprint store
-            try:
-                get_campaign_detector().record(tenant_id, req.agent_id, req.action_type)
-            except Exception:
-                pass
-            req_context["fleet_campaign_level"]   = _campaign.threat_level
-            req_context["fleet_matched_tenants"]  = _campaign.matched_tenants
-            req_context["fleet_timed_out"]        = _fleet_timed_out
-            if _campaign.threat_level in ("suspected", "confirmed"):
-                current = req_context.get("risk_estimate", "low")
-                if current not in ("critical",):
-                    req_context["risk_estimate"] = "critical" if _campaign.threat_level == "confirmed" else "high"
-                logger.warning(
-                    "[/v1/action] fleet campaign signal: agent=%s action=%s level=%s tenants=%d",
-                    req.agent_id, req.action_type,
-                    _campaign.threat_level, _campaign.matched_tenants,
-                )
-                # Cross-tenant proposal generation: submit an ESCALATE proposal for
-                # every affected tenant so they each get the campaign finding surfaced
-                # in their review queue without waiting for the attack to hit them.
-                try:
-                    from ..policy.proposals import get_proposal_store
-                    _store = get_proposal_store()
-                    # Current tenant already gets a proposal
-                    _affected_tenants = list({tenant_id} | set(_campaign.top_tenants))
-                    for _affected_tid in _affected_tenants:
-                        if not _affected_tid:
-                            continue
-                        _store.submit(
-                            tenant_id=_affected_tid,
-                            source="campaign_detector",
-                            action="ESCALATE",
-                            name=f"Campaign signal: {req.action_type} ({_campaign.fingerprint[:8]})",
-                            description=(
-                                f"Action sequence '{req.action_type}' matched {_campaign.matched_tenants} "
-                                f"tenants in {_campaign.window_h}h window — possible coordinated attack."
-                            ),
-                            rationale=_campaign.reason,
-                            condition_tool=req.action_type.split(".")[0],
-                            condition_op=req.action_type.split(".", 1)[1] if "." in req.action_type else None,
-                            priority=100,  # high priority — cross-tenant signal
-                            evidence=(
-                                f"tenants={_campaign.matched_tenants} "
-                                f"agents={_campaign.matched_agents} "
-                                f"level={_campaign.threat_level} "
-                                f"fingerprint={_campaign.fingerprint}"
-                            ),
-                        )
-                except Exception as _prop_err:
-                    logger.debug("Cross-tenant proposal generation failed: %s", _prop_err)
-        except Exception as _fleet_err:
-            logger.debug("Fleet campaign check failed (non-blocking): %s", _fleet_err)
-
-    # ── Multi-agent coordination risk (Fix 2) ───────────────────────────────
-    # Score composite risk from prior actions in this session before evaluation.
-    # Detects cross-agent data hand-offs and credential propagation paths.
-    if tenant_id:
-        try:
-            from ..coordination import get_coordination_graph, CoordinationRisk
-            from ..latency_guard import run_with_budget
-            _coord_fallback = CoordinationRisk(
-                composite_score=0.3, unique_agents=1,
-                data_flow_connections=0, credential_in_flow=False,
-                multi_agent=False, reason="coord_timeout_conservative",
-            )
-            _coord_risk, _coord_timed_out = run_with_budget(
-                "coordination",
-                lambda: get_coordination_graph().evaluate_composite_risk(
-                    tenant_id=tenant_id,
-                    session_id=req_context["session_id"],
-                    agent_id=req.agent_id,
-                    action_type=req.action_type,
-                ),
-                fallback=_coord_fallback,
-            )
-            req_context["coordination_composite_risk"] = _coord_risk.composite_score
-            req_context["coordination_multi_agent"]    = _coord_risk.multi_agent
-            req_context["coordination_reason"]         = _coord_risk.reason
-            req_context["coordination_timed_out"]      = _coord_timed_out
-            if _coord_risk.composite_score > 0.30:
-                current = req_context.get("risk_estimate", "low")
-                if _coord_risk.composite_score > 0.60 and current not in ("critical",):
-                    req_context["risk_estimate"] = "critical"
-                elif _coord_risk.composite_score > 0.30 and current in ("low",):
-                    req_context["risk_estimate"] = "high"
-        except Exception as _coord_err:
-            logger.debug("Coordination graph check failed (non-blocking): %s", _coord_err)
-
-    # ── Per-agent resource quota check ──────────────────────────────────────
-    try:
-        from ..security.agent_quotas import check_agent_quota, record_agent_call
-        import json as _json
-        _payload_bytes = len(_json.dumps(req.action_payload or {}).encode("utf-8"))
-        _quota_allowed, _quota_msg = check_agent_quota(
-            db=db,
-            tenant_id=tenant_id,
-            agent_id=req.agent_id,
-            payload_bytes=_payload_bytes,
-        )
-        if not _quota_allowed:
-            raise HTTPException(status_code=429, detail=f"Agent quota exceeded: {_quota_msg}")
-        record_agent_call(tenant_id, req.agent_id)
-    except HTTPException:
-        raise
-    except Exception as _quota_err:
-        logger.warning("Agent quota check failed (non-blocking): %s", _quota_err)
-
-    # Pre-action out-of-bounds risk prediction (per-agent + fleet signals).
-    prediction = None
-    if tenant_id:
-        try:
-            estimated_risk = str(req_context.get("risk_estimate", "low"))
-            prediction = get_fleet_learning_engine().predict_action(
-                db=db,
-                tenant_id=tenant_id,
+            from ..audit_queue import AuditTask, enqueue_audit
+            _pf_latency_ms = int((time.time() - start_time) * 1000)
+            _pf_created_at = datetime.now(UTC).isoformat()
+            _pf_decision_id = _pf_hard.action_id
+            _pf_audit_task = AuditTask(
+                action=action.to_dict(),
+                decision={
+                    "verdict": _pf_hard.decision,
+                    "reason_code": getattr(_pf_hard, "reason_code", None),
+                    "explanation": getattr(_pf_hard, "decision_reason", None),
+                },
+                intent_id=None,
                 agent_id=req.agent_id,
-                action_tool=action.tool.value,
-                action_op=action.op,
-                estimated_risk=estimated_risk,
+                context={
+                    "agent_id": req.agent_id,
+                    "tenant_id": tenant_id,
+                    "request_timestamp": req.timestamp,
+                    "preflight_block": True,
+                },
+                customer_id=tenant_id,
+                processing_latency_ms=_pf_latency_ms,
+                action_summary=f"{action.tool.value}.{action.op}",
+                decision_id=_pf_decision_id,
+                created_at_override=_pf_created_at,
             )
-            req_context["predicted_oob_risk"] = round(prediction.score, 4)
-            req_context["predicted_oob_reasons"] = prediction.reasons
-        except Exception as pred_err:
-            logger.warning("Predictive OOB scoring failed (non-blocking): %s", pred_err)
+            import asyncio as _asyncio
+            _asyncio.create_task(enqueue_audit(_pf_audit_task, db))
+        except Exception as _pf_audit_err:
+            logger.warning("Preflight audit write failed (non-blocking): %s", _pf_audit_err)
+        return _pf_hard
 
-    # Load tenant-specific custom policy rules (cached per tenant, TTL=30s)
-    tenant_rules = []
-    if tenant_id:
-        try:
-            cached = _policy_rules_cache.get(tenant_id)
-            if cached and cached[1] > time.time():
-                tenant_rules = cached[0]
-            else:
-                tenant_rules = db.get_policy_rules(tenant_id, enabled_only=True)
-                _policy_rules_cache[tenant_id] = (tenant_rules, time.time() + _POLICY_RULES_TTL_SEC)
-                # Evict expired entries to prevent unbounded growth with many tenants
-                now = time.time()
-                expired = [k for k, v in _policy_rules_cache.items() if v[1] <= now]
-                for k in expired:
-                    del _policy_rules_cache[k]
-        except Exception as e:
-            logger.warning(f"Failed to load tenant policy rules for {tenant_id}: {e}")
-
-    # ── PHI endpoint allowlist check ────────────────────────────────────────────
-    # Block any action that tries to send data to an unauthorized URL.
-    # Runs before the governor so it never hits policy evaluation.
-    if tenant_id:
-        try:
-            _phi_allowed, _phi_url, _phi_reason = phi_check_params(
-                tenant_id=tenant_id,
-                params=action_params,
-            )
-            if not _phi_allowed:
-                latency_ms = int((time.time() - start_time) * 1000)
-                logger.warning(
-                    "[/v1/action] PHI allowlist block: agent=%s url=%s tenant=%s",
-                    req.agent_id, _phi_url, tenant_id,
-                )
-                raise HTTPException(
-                    status_code=403,
-                    detail=_phi_reason or "Action blocked — unauthorized endpoint (PHI-EXFIL-001).",
-                )
-        except HTTPException:
-            raise
-        except Exception as _phi_err:
-            logger.warning("PHI allowlist check failed (non-blocking): %s", _phi_err)
-
-    # ── Intent normalization ────────────────────────────────────────────────────
-    # Reconcile stated_intent, user_message, and action_type before the governor
-    # sees the context. Misalignment score is advisory — it feeds into the
-    # governor context and is audit-logged, but never sole basis for BLOCK.
-    try:
-        from ..intake.normalizer import normalize_intent
-        _norm = normalize_intent(
-            stated_intent=req_context.get("stated_intent", ""),
-            user_message=req_context.get("user_message", "") or req_context.get("prompt", ""),
-            action_type=req.action_type,
-            action_payload=action_params,
-        )
-        req_context["intent_alignment_score"] = _norm.alignment_score
-        req_context["intent_action_class"] = _norm.action_class
-        req_context["intent_inferred_class"] = _norm.inferred_intent_class
-        if _norm.misalignment_flag:
-            req_context["intent_misalignment_flag"] = True
-            req_context["intent_gap_description"] = _norm.gap_description or ""
-            logger.warning(
-                "[/v1/action] intent misalignment: agent=%s action=%s score=%.2f source=%s",
-                req.agent_id, req.action_type, _norm.alignment_score, _norm.source,
-            )
-    except Exception as _norm_err:
-        logger.debug("[normalizer] failed (non-blocking): %s", _norm_err)
-
-    # ── Kill switch check ───────────────────────────────────────────────────────
-    # O(1) in-memory check. If active, every action for this tenant is BLOCK.
-    # The governor still runs in shadow to preserve the audit trail.
-    if tenant_id:
-        try:
-            from ..routes.kill_switch import is_kill_switch_active
-            if is_kill_switch_active(tenant_id):
-                latency_ms = int((time.time() - start_time) * 1000)
-                logger.warning(
-                    "[/v1/action] KILL SWITCH active: tenant=%s agent=%s action=%s — forcing BLOCK",
-                    tenant_id, req.agent_id, req.action_type,
-                )
-                return V1ActionResponse(  # type: ignore[call-arg]
-                    action_id=f"ks-{req.agent_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
-                    decision="BLOCK",
-                    decision_reason=(
-                        "Emergency kill switch is active for this tenant. "
-                        "All AI agent actions are halted. "
-                        "Contact your administrator to resume operations."
-                    ),
-                    policy_version="kill-switch",
-                    processing_latency_ms=latency_ms,
-                    reason_code="KILL_SWITCH",
-                )
-        except Exception as _ks_err:
-            logger.warning("Kill switch check failed (non-blocking): %s", _ks_err)
-
-    # ── Trust engine ────────────────────────────────────────────────────────────
-    # Hard blocks fire here — before the governor, before OOB prediction.
-    # For non-cold-start agents, trust score is injected into context so the
-    # governor sees risk_estimate adjusted to the agent's real track record.
-    _trust_score = None
-    if tenant_id:
-        try:
-            from ..trust import get_trust_engine
-            _te = get_trust_engine()
-
-            if _te.is_hard_blocked(req.action_type):
-                latency_ms = int((time.time() - start_time) * 1000)
-                logger.warning(
-                    "[/v1/action] HARD BLOCK: agent=%s action=%s tenant=%s",
-                    req.agent_id, req.action_type, tenant_id,
-                )
-                return V1ActionResponse(  # type: ignore[call-arg]
-                    action_id=f"hb-{req.agent_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
-                    decision="BLOCK",
-                    decision_reason=(
-                        f"Action type '{req.action_type}' is in the hard policy block list "
-                        "and cannot be permitted regardless of trust or policy rules."
-                    ),
-                    policy_version="hard-policy-v1",
-                    processing_latency_ms=latency_ms,
-                    reason_code="HARD_POLICY_BLOCK",
-                )
-
-            _trust_score = _te.get_trust(tenant_id, req.agent_id, req.action_type)
-            req_context["agent_trust_combined"]    = _trust_score.combined
-            req_context["agent_trust_cold_start"]  = _trust_score.cold_start
-            req_context["agent_trust_confidence"]  = _trust_score.action_confidence
-            req_context["agent_trust_outcomes"]    = _trust_score.action_outcomes
-
-            # For known agents (past cold-start), skew estimated_risk toward trust.
-            # Thresholds are adaptive: calibrated from the per-tenant trust distribution
-            # (p10/p25/p50 of all agent scores for this tenant). Falls back to fixed
-            # defaults (0.35/0.50/0.65) if < 50 agents are enrolled.
-            if not _trust_score.cold_start:
-                try:
-                    _risk_thresholds = _te.compute_adaptive_risk_thresholds(tenant_id)
-                    _crit_t = _risk_thresholds["critical"]
-                    _high_t = _risk_thresholds["high"]
-                    _med_t  = _risk_thresholds["medium"]
-                    req_context["trust_adaptive_thresholds"] = _risk_thresholds
-                except Exception:
-                    _crit_t, _high_t, _med_t = 0.35, 0.50, 0.65
-                if _trust_score.combined < _crit_t:
-                    req_context["risk_estimate"] = "critical"
-                elif _trust_score.combined < _high_t:
-                    req_context["risk_estimate"] = "high"
-                elif _trust_score.combined < _med_t:
-                    req_context.setdefault("risk_estimate", "medium")
-
-            # Behavioral entropy: low diversity = possible probing pattern.
-            # Computed inside get_trust() — read here, elevate risk if needed.
-            _entropy = getattr(_trust_score, "behavioral_entropy", 1.0)
-            req_context["behavioral_entropy"] = _entropy
-            if not _trust_score.cold_start and _entropy < 0.20:
-                current = req_context.get("risk_estimate", "low")
-                if current not in ("critical",):
-                    req_context["risk_estimate"] = "critical" if current == "high" else "high"
-                logger.warning(
-                    "[/v1/action] low behavioral entropy: agent=%s entropy=%.3f",
-                    req.agent_id, _entropy,
-                )
-
-            # Patch E: exploitation detection — trust-building into high-risk action.
-            # Runs after basic risk skewing so it can override to "critical" when needed.
-            try:
-                _risk_bucket = req_context.get("risk_estimate", "default")
-                _exploit = _te.detect_exploitation_pattern(
-                    tenant_id=tenant_id,
-                    agent_id=req.agent_id,
-                    action_type=req.action_type,
-                    risk_bucket=_risk_bucket,
-                )
-                req_context["exploitation_signal"] = _exploit
-                if _exploit.get("exploitation_suspected"):
-                    req_context["risk_estimate"] = "critical"
-                    logger.warning(
-                        "[/v1/action] exploitation pattern detected: agent=%s action=%s "
-                        "run=%d trend=%.4f reason=%s",
-                        req.agent_id, req.action_type,
-                        _exploit["positive_run"], _exploit["trust_trend"],
-                        _exploit["reason"],
-                    )
-            except Exception as _exp_err:
-                logger.debug("Exploitation detection failed (non-blocking): %s", _exp_err)
-
-        except Exception as _trust_err:
-            logger.warning("Trust engine check failed (non-blocking): %s", _trust_err)
+    req_context   = _pf_ctx.req_context
+    tenant_rules  = _pf_ctx.tenant_rules
+    prediction    = _pf_ctx.prediction
 
     # Evaluate action through governor (use shared module-level instance for loop detection).
     # Fall back to a fresh instance in test environments where startup event hasn't fired.
@@ -772,10 +363,10 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 intent=intent_contract,
                 context={
                     "agent_id": req.agent_id,
-                    "tenant_id": tenant_id,
                     **req_context,
                 },
                 tenant_rules=tenant_rules,
+                tenant_id=tenant_id,
             )
             _policy_eval_ms = (time.time() - _policy_eval_start) * 1000.0
             # Record policy evaluation time for Prometheus (Phase 6.4)
@@ -815,8 +406,16 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             meta={**(decision.meta or {}), "device_supervision_required": True},
         )
 
+    # Compute request hash — SHA-256 of canonicalised action params.
+    # Ties the audit record and response to the exact payload received.
+    _request_hash = hashlib.sha256(
+        _json_stdlib.dumps(action_params, sort_keys=True).encode()
+    ).hexdigest()
+
     # Calculate latency
     latency_ms = int((time.time() - start_time) * 1000)
+    _decision_created_at = datetime.now(UTC).isoformat()
+    _canonical_decision_id = f"dec-{action.id}-{_decision_created_at}"
 
     # Record metrics
     verdict_str = decision.verdict.value
@@ -853,6 +452,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             audit_context["policy_snapshot_hash"] = decision.policy_snapshot_hash
         if decision.invariant_results:
             audit_context["invariant_results"] = decision.invariant_results
+        audit_context["request_hash"] = _request_hash
         # Include device_id and vendor_id in audit context when present
         if _device_id:
             audit_context["device_id"] = _device_id
@@ -882,8 +482,11 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             user_message=req.context.get("user_message") or req.context.get("prompt"),
             action_summary=f"{action.tool.value}.{action.op}",
             policy_rule_id=decision.policy_rule_id or (decision.meta or {}).get("policy_rule_id"),
+            request_hash=_request_hash,
+            decision_id=_canonical_decision_id,
+            created_at_override=_decision_created_at,
         )
-        decision_id = await enqueue_audit(_audit_task, db) or f"async-{action.id}"
+        decision_id = await enqueue_audit(_audit_task, db) or _canonical_decision_id
     except Exception as e:
         logger.exception(f"Failed to persist decision to audit trail: {e}")
         # Generate fallback decision_id
@@ -938,51 +541,60 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _lock_err:
             logger.warning("Device lock acquire failed (non-blocking): %s", _lock_err)
 
-    # Update per-agent verdict counters (non-blocking; never raises)
+    # Update per-agent verdict counters — background thread so DB write never adds latency
     try:
-        db.update_agent_stats(req.agent_id, verdict_str, tenant_id=tenant_id)
+        import threading as _thr
+        _thr.Thread(
+            target=lambda: db.update_agent_stats(req.agent_id, verdict_str, tenant_id=tenant_id),
+            daemon=True,
+        ).start()
     except Exception as _stats_err:
         logger.warning("update_agent_stats failed (non-blocking): %s", _stats_err)
 
-    # Continuous learning signal: auto-label outcome for this tool/op.
-    # Human feedback can later override/correct this label via /learning/feedback.
+    # Continuous learning signal — run in background thread; never blocks response.
     try:
-        auto_label = "safe"
+        import threading as _thr
+        _auto_label = "safe"
         if verdict_str in {"BLOCK", "ERROR"}:
-            auto_label = "blocked"
+            _auto_label = "blocked"
         elif verdict_str in {"ESCALATE", "PAUSE"}:
-            auto_label = "incident"
-        engine = get_fleet_learning_engine()
-        engine.record_feedback(
-            tenant_id=tenant_id,
-            agent_id=req.agent_id,
-            action_tool=action.tool.value,
-            action_op=action.op,
-            label=auto_label,
-            predicted_risk=(prediction.score if prediction else None),
-            source="auto_decision",
-            notes=f"decision={verdict_str}",
-        )
-        # Sequence (bigram) transition label — records (prev_action → this_action) outcome
-        # so the model learns which action pairs are risky, not just individual actions.
+            _auto_label = "incident"
+        _pred_score = prediction.score if prediction else None
         _prev = prediction.prev_action if prediction else None
-        if _prev:
-            prev_tool, prev_op = _prev
-        else:
-            prev_tool = prev_op = ""
-        if prev_tool and prev_op:
-            engine.record_sequence_feedback(
-                tenant_id=tenant_id,
-                agent_id=req.agent_id,
-                prev_tool=prev_tool,
-                prev_op=prev_op,
-                curr_tool=action.tool.value,
-                curr_op=action.op,
-                label=auto_label,
-                source="auto_decision",
-            )
+        _prev_tool, _prev_op = (_prev if _prev else (None, None))
+        _learn_tool = action.tool.value
+        _learn_op = action.op
+
+        def _record_learning() -> None:
+            try:
+                engine = get_fleet_learning_engine()
+                engine.record_feedback(
+                    tenant_id=tenant_id,
+                    agent_id=req.agent_id,
+                    action_tool=_learn_tool,
+                    action_op=_learn_op,
+                    label=_auto_label,
+                    predicted_risk=_pred_score,
+                    source="auto_decision",
+                    notes=f"decision={verdict_str}",
+                )
+                if _prev_tool and _prev_op:
+                    engine.record_sequence_feedback(
+                        tenant_id=tenant_id,
+                        agent_id=req.agent_id,
+                        prev_tool=_prev_tool,
+                        prev_op=_prev_op,
+                        curr_tool=_learn_tool,
+                        curr_op=_learn_op,
+                        label=_auto_label,
+                        source="auto_decision",
+                    )
+            except Exception as _le:
+                logger.warning("auto learning feedback failed (non-blocking): %s", _le)
+
+        _thr.Thread(target=_record_learning, daemon=True).start()
     except Exception as _learning_err:
-        logger.warning("auto learning feedback failed (non-blocking): %s", _learning_err)
+        logger.warning("auto learning thread spawn failed: %s", _learning_err)
 
     # ── Audit-ready reason formatting ────────────────────────────────────────
     # Rewrite the explanation into regulation-mapped, auditor-friendly language.
@@ -1019,13 +631,14 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 "escalation_options": decision.escalation_options or [],
                 "review_url": "https://console.edoncore.com",
             }
-            # Legacy synchronous dispatcher (keeps existing alert rules working)
-            dispatch_event(
-                event_type=_legacy_event,
-                payload=_decision_data,
-                tenant_id=tenant_id,
-                db=db,
-            )
+            # Legacy dispatcher moved to background thread — it retries with sleep(backoff)
+            # which could block the request path for up to 30s on webhook failure.
+            import threading as _thr
+            _thr.Thread(
+                target=dispatch_event,
+                args=(_legacy_event, _decision_data, tenant_id, db),
+                daemon=True,
+            ).start()
             # New async deliver_webhook — fires per the new /webhooks route events
             if _verdict in ("BLOCK", "ERROR"):
                 _asyncio.create_task(_deliver_webhook(tenant_id, "decision.blocked", _decision_data, db))
@@ -1042,10 +655,13 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             logger.warning("Webhook dispatch failed (non-blocking): %s", _wh_err)
 
     # ── Enqueue HUMAN_REQUIRED escalations for review + Telegram notify ──────
+    # Runs as a fire-and-forget task — the ESCALATE verdict is already in the
+    # audit trail so the escalation queue entry is recoverable if this drops.
     if verdict_str in ("ESCALATE", "PAUSE") and tenant_id:
         try:
+            import asyncio as _asyncio
             from .review_queue import enqueue_escalation, notify_escalation_async
-            _record = {
+            _esc_record = {
                 "decision_id": decision_id,
                 "tenant_id": tenant_id,
                 "agent_id": req.agent_id,
@@ -1055,10 +671,18 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 "explanation": decision.explanation,
                 "meta": decision.meta or {},
             }
-            enqueue_escalation(**_record)
-            notify_escalation_async(_record)
+            _esc_snap = dict(_esc_record)
+
+            async def _enqueue_escalation() -> None:
+                try:
+                    enqueue_escalation(**_esc_snap)
+                    notify_escalation_async(_esc_snap)
+                except Exception as _e:
+                    logger.warning("Escalation enqueue failed (non-blocking): %s", _e)
+
+            _asyncio.create_task(_enqueue_escalation())
         except Exception as _esq_err:
-            logger.warning("Escalation enqueue failed (non-blocking): %s", _esq_err)
+            logger.warning("Escalation task spawn failed (non-blocking): %s", _esq_err)
 
     # ── Anomaly Telegram alert ────────────────────────────────────────────────
     # If anomaly score is high (>= 75), send Telegram alert immediately.
@@ -1119,22 +743,34 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _meter_err:
         logger.debug("Metering record dispatch failed (non-blocking): %s", _meter_err)
 
-    # ── Sandbox / Shadow Mode override ──────────────────────────────────────
-    # Two ways observe-only mode can be active:
-    #   1. Key-level: key.is_sandbox=True (hardcoded, cannot be bypassed)
-    #   2. Tenant-level: shadow mode setting (admin-controlled)
-    # Either triggers the same behaviour: log real verdict, respond ALLOW.
+    # ── Observe-Only (Shadow / Sandbox) Mode ────────────────────────────────
+    # Shadow mode is an OBSERVE-ONLY deployment state — not a security bypass.
+    # The governor still runs its full 12-step pipeline; the real verdict is
+    # computed, logged, and audit-trailed exactly as in enforcing mode.
+    # Only the *response* to the caller is flipped to ALLOW so the agent under
+    # observation can complete its action while governance data is collected.
+    # This must never be used in production without explicit admin intent.
+    #
+    # Two activation paths:
+    #   1. Key-level: key.is_sandbox=True (hardcoded at key issuance, not admin-changeable)
+    #   2. Tenant-level: shadow_mode DB setting (admin-controlled, 30s TTL cache)
     _key_is_sandbox = bool((getattr(request.state, 'tenant_info', None) or {}).get('is_sandbox', False))
     _shadow_mode_active = _key_is_sandbox
     if not _shadow_mode_active and tenant_id:
         try:
-            _shadow_mode_active = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
+            _cached_sm = _shadow_mode_cache.get(tenant_id)
+            if _cached_sm and _cached_sm[1] > time.time():
+                _shadow_mode_active = _cached_sm[0]
+            else:
+                _sm_val = db.get_shadow_mode(tenant_id) if hasattr(db, "get_shadow_mode") else False
+                _shadow_mode_cache[tenant_id] = (_sm_val, time.time() + _SHADOW_MODE_TTL_SEC)
+                _shadow_mode_active = _sm_val
         except Exception as _sm_err:
             logger.warning("Shadow mode check failed (non-blocking): %s", _sm_err)
 
     if _shadow_mode_active and verdict_str not in ("ALLOW",):
         logger.info(
-            "[/v1/action] shadow_mode override: agent=%s action=%s original_verdict=%s -> ALLOW",
+            "[/v1/action] observe-only override: agent=%s action=%s governance_verdict=%s response=ALLOW (shadow/sandbox)",
             req.agent_id, req.action_type, verdict_str,
         )
         verdict_str = "ALLOW"
@@ -1186,6 +822,11 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     if _shadow_mode_active:
         response.shadow_mode = True
+
+    if decision.invariant_results:
+        response.invariant_results = decision.invariant_results
+
+    response.request_hash = _request_hash
 
     predictive_meta = decision.meta or {}
     predictive_risk = predictive_meta.get("predictive_oob_risk")

@@ -78,6 +78,9 @@ def verify_clerk_token(token: str) -> Optional[Dict[str, Any]]:
 
     issuer = os.getenv("CLERK_ISSUER")
     audience = os.getenv("CLERK_AUDIENCE")
+    if config.is_production() and (not issuer or not audience):
+        logger.warning("Clerk token verification disabled: CLERK_ISSUER and CLERK_AUDIENCE are required in production")
+        return None
     options = {
         "verify_aud": bool(audience),
         "verify_iss": bool(issuer),
@@ -268,6 +271,12 @@ def verify_token(token: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
     try:
         clerk_claims = verify_clerk_token(token)
         if clerk_claims:
+            if config.is_production():
+                issuer = (os.getenv("CLERK_ISSUER") or "").strip()
+                audience = (os.getenv("CLERK_AUDIENCE") or "").strip()
+                if not issuer or not audience:
+                    logger.warning("Clerk token rejected: issuer/audience missing in production")
+                    return False, None
             tenant_info = resolve_tenant_for_clerk(clerk_claims)
             return True, tenant_info
     except Exception as e:
@@ -318,14 +327,37 @@ def get_token_from_header(request: Request) -> Optional[str]:
 def _ip_in_allowlist(ip: str, cidrs: List[str]) -> bool:
     """Return True if the IP address is within any of the CIDR ranges.
 
-    Fails open (returns True) for unparseable IP strings so that reverse-proxy
-    or internal health-check addresses never get spuriously blocked.
+    Fails closed (returns False) for unparseable IP strings — an unknown or
+    malformed address is denied rather than silently allowed.
     """
     try:
         addr = ipaddress.ip_address(ip)
         return any(addr in ipaddress.ip_network(c, strict=False) for c in cidrs)
     except ValueError:
-        return True  # fail-open for unparseable IPs
+        return False  # fail closed: unparseable IP is denied
+
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP, safe against X-Forwarded-For spoofing.
+
+    X-Forwarded-For / X-Real-IP are only trusted when:
+      1. TRUSTED_PROXIES env var is set (comma-separated list of proxy IPs), AND
+      2. The direct TCP peer (request.client.host) is one of those trusted proxies.
+
+    In all other cases request.client.host is used directly.
+    """
+    direct_host = request.client.host if request.client else "unknown"
+    trusted_raw = os.getenv("TRUSTED_PROXIES", "").strip()
+    if trusted_raw:
+        trusted = {p.strip() for p in trusted_raw.split(",") if p.strip()}
+        if direct_host in trusted:
+            forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+            real_ip = request.headers.get("X-Real-IP", "").strip()
+            if real_ip:
+                return real_ip
+    return direct_host
 
 
 _BRUTE_FORCE_MAX = int(os.getenv("EDON_BRUTE_FORCE_MAX", "10"))      # max failures per window
@@ -355,7 +387,7 @@ def _is_brute_force_locked(ip: str) -> bool:
         count = db.get_counter(_brute_force_key(ip))
         return count >= _BRUTE_FORCE_MAX
     except Exception:
-        return _STRICT_FAIL_CLOSED
+        return True  # fail closed: DB error → conservatively treat as locked
 
 
 def _record_failed_auth(ip: str):
@@ -400,6 +432,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/telegram/bot-webhook",
     }
 
+    BOOTSTRAP_AUTH_PREFIXES = (
+        "/v1/jarvis",
+        "/v1/voice",
+        "/v1/autonomous",
+        "/v1/codex",
+    )
+
     # Admin routes are protected by X-Bootstrap-Secret, not EDON tokens
     ADMIN_PREFIX = "/admin/"
 
@@ -415,6 +454,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path in self.PUBLIC_ENDPOINTS or request.url.path in self.PUBLIC_ENDPOINTS:
             return await call_next(request)
+        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in self.BOOTSTRAP_AUTH_PREFIXES):
+            return await call_next(request)
         if path.startswith(self.ADMIN_PREFIX) or path == "/admin":
             return await call_next(request)
 
@@ -423,12 +464,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.tenant_info = None
             return await call_next(request)
 
-        # Extract client IP for brute-force tracking
-        client_ip = (
-            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or request.headers.get("X-Real-IP", "").strip()
-            or (request.client.host if request.client else "unknown")
-        )
+        # Extract client IP for brute-force tracking (proxy-safe)
+        client_ip = _get_client_ip(request)
 
         # Brute-force lockout: block IP after too many failed attempts
         if _is_brute_force_locked(client_ip):
@@ -544,11 +581,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 _db = _get_db()
                 _allowlist = _db.get_ip_allowlist(_resolved_tenant_id)
                 if _allowlist:
-                    _client_ip = (
-                        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                        or request.headers.get("X-Real-IP", "").strip()
-                        or (request.client.host if request.client else "unknown")
-                    )
+                    _client_ip = _get_client_ip(request)
                     if not _ip_in_allowlist(_client_ip, _allowlist):
                         logger.warning(
                             "ip_allowlist_blocked: tenant=%s ip=%s",
@@ -559,8 +592,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             status_code=403,
                             content={"detail": "IP address not in tenant allowlist"},
                         )
-            except Exception:
-                pass  # allowlist check is fail-open
+            except Exception as _exc:
+                logger.error("ip_allowlist_check_error: tenant=%s error=%s — blocking request (fail-closed)", _resolved_tenant_id, _exc)
+                return JSONResponse(status_code=403, content={"detail": "IP allowlist check failed"})
 
         # Token → agent_id binding
         if config.TOKEN_BINDING_ENABLED:

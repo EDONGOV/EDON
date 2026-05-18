@@ -41,6 +41,19 @@ jobs:
           EDON_CREDENTIALS_STRICT: "false"
           EDON_STRICT_FAIL_CLOSED: "false"
 
+      - name: Governance benchmark (safety gate)
+        run: |
+          pytest edon_gateway/test/benchmark/ \
+            -k "not load" \
+            -q -W ignore::DeprecationWarning \
+            --tb=short
+        env:
+          PYTHONPATH: .
+          EDON_ENV: development
+          EDON_AUTH_ENABLED: "false"
+          EDON_CREDENTIALS_STRICT: "false"
+          EDON_STRICT_FAIL_CLOSED: "false"
+
   deploy-staging:
     name: Deploy to Fly.io Staging
     needs: test

@@ -1,0 +1,2955 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "EDON Governance API",
+    "version": "1.0.1",
+    "description": "Real-time governance for AI agents. Every action evaluated, every decision auditable.",
+    "x-fern-sdk-group-name": "edon"
+  },
+  "servers": [
+    {
+      "url": "https://edon-gateway-prod.fly.dev",
+      "description": "Production"
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/v1/action": {
+      "post": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Evaluate Action",
+        "description": "Evaluate an agent action through the governance engine.\n\nThis is the primary endpoint for agent action evaluation. It:\n1. Validates the request\n2. Parses action_type into tool and operation\n3. Loads the relevant intent contract (from context or active policy)\n4. Evaluates the action through the policy engine\n5. Logs the decision to the audit trail\n6. Returns the governance decision with latency metrics\n\nArgs:\n    request: FastAPI request object (for tenant context)\n    req: V1ActionRequest containing action details\n\nReturns:\n    V1ActionResponse with governance decision and metadata\n\nRaises:\n    HTTPException:\n        - 400: Invalid request format or action_type\n        - 500: Internal error during evaluation",
+        "operationId": "evaluate_action_v1_action_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/V1ActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V1ActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/intent/set": {
+      "post": {
+        "summary": "Set Intent",
+        "operationId": "set_intent_intent_set_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/edon_gateway__main__IntentSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntentSetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "intents"
+        ]
+      }
+    },
+    "/intent/get": {
+      "get": {
+        "summary": "Get Intent",
+        "operationId": "get_intent_intent_get_get",
+        "parameters": [
+          {
+            "name": "intent_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Intent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntentGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "intents"
+        ]
+      }
+    },
+    "/intent/list": {
+      "get": {
+        "tags": [
+          "intents"
+        ],
+        "summary": "List Intents",
+        "description": "List all intent contracts for this tenant, newest first.",
+        "operationId": "list_intents_intent_list_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/intent/{intent_id}": {
+      "delete": {
+        "tags": [
+          "intents"
+        ],
+        "summary": "Delete Intent",
+        "description": "Delete an intent contract by ID.",
+        "operationId": "delete_intent_intent__intent_id__delete",
+        "parameters": [
+          {
+            "name": "intent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Intent Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit/query": {
+      "get": {
+        "summary": "Query Audit",
+        "operationId": "query_audit_audit_query_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "verdict",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Verdict"
+            }
+          },
+          {
+            "name": "intent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Intent Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditQueryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/decisions/{action_id}": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Get Decision",
+        "description": "Look up the governance decision for a specific action ID.",
+        "operationId": "get_decision_audit_decisions__action_id__get",
+        "parameters": [
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit/verify-chain": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Verify Audit Chain",
+        "description": "Verify cryptographic integrity of audit trail hash chain.\n\nReturns verification result including whether chain is valid,\nhow many entries were checked, and where breakage occurred if any.",
+        "operationId": "verify_audit_chain_audit_verify_chain_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit/export": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Export Audit Trail",
+        "description": "Export audit trail in JSON, CSV, or Parquet format.\n\nImplements Spec 4.8: paginated export with optional chain verification proof.",
+        "operationId": "export_audit_trail_audit_export_get",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(json|csv|parquet)$",
+              "default": "json",
+              "title": "Format"
+            }
+          },
+          {
+            "name": "agent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Id"
+            }
+          },
+          {
+            "name": "verdict",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Verdict"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "default": 10000,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "include_chain_proof",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Chain Proof"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/queue": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Review Queue",
+        "description": "Get human review queue for actions requiring human decision.",
+        "operationId": "get_review_queue_review_queue_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(pending|approved|blocked|timeout)$",
+              "default": "pending",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Enqueue Review",
+        "description": "Enqueue an action for human review (called internally by governor).",
+        "operationId": "enqueue_review_review_queue_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/queue/{review_id}/decide": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Decide Review",
+        "description": "Submit human decision for a queued review.\n\nBody: {\"decision\": \"approve\"|\"block\", \"reason\": \"optional reason\"}",
+        "operationId": "decide_review_review_queue__review_id__decide_post",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy/rules": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "List Rules",
+        "description": "List all policy rules for the current tenant.\n\nRules are ordered by priority (highest first).",
+        "operationId": "list_rules_policy_rules_get",
+        "parameters": [
+          {
+            "name": "include_disabled",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Disabled"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Create Rule",
+        "description": "Create a new custom policy rule for the current tenant.\n\nRules are evaluated before the standard governance policy.\nThe first matching rule (by priority, highest first) wins.\n\n**Conditions** (all are optional; omitting means \"match any\"):\n- `condition_tool`: e.g. `robot`, `email`, `shell`\n- `condition_op`: e.g. `move`, `send`, `exec`\n- `condition_risk_level`: `low`, `medium`, `high`, `critical`\n- `condition_tags`: list of tags that must ALL be present\n\n**Actions**: `ALLOW`, `BLOCK`, `ESCALATE`",
+        "operationId": "create_rule_policy_rules_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyRuleCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy/rules/{rule_id}": {
+      "get": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Get Rule",
+        "description": "Get a specific policy rule.",
+        "operationId": "get_rule_policy_rules__rule_id__get",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Update Rule",
+        "description": "Update a policy rule.\n\nIf the rule is protected (seeded by Clinical Safety Mode), the caller must\nhave **admin** role and supply a non-empty `justification` field.\nThe justification is appended to the policy-change audit log.",
+        "operationId": "update_rule_policy_rules__rule_id__put",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyRuleUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Delete Rule",
+        "description": "Delete a policy rule.\n\nIf the rule is protected (seeded by Clinical Safety Mode), the caller must\nhave **admin** role and supply a non-empty `justification` in the request body.",
+        "operationId": "delete_rule_policy_rules__rule_id__delete",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PolicyRuleDeleteRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy/rules/{rule_id}/enable": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Enable Rule",
+        "description": "Enable a policy rule.",
+        "operationId": "enable_rule_policy_rules__rule_id__enable_post",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy/rules/{rule_id}/disable": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Disable Rule",
+        "description": "Disable a policy rule without deleting it.\n\nIf the rule is protected (seeded by Clinical Safety Mode), the caller must\nhave **admin** role and supply a non-empty `justification` in the request body.",
+        "operationId": "disable_rule_policy_rules__rule_id__disable_post",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PolicyRuleDisableRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy-packs": {
+      "get": {
+        "summary": "List Available Policy Packs",
+        "operationId": "list_available_policy_packs_policy_packs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/policy-packs/{pack_name}/apply": {
+      "post": {
+        "summary": "Apply Policy Pack Endpoint",
+        "operationId": "apply_policy_pack_endpoint_policy_packs__pack_name__apply_post",
+        "parameters": [
+          {
+            "name": "pack_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pack Name"
+            }
+          },
+          {
+            "name": "objective",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Objective"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/v1/pubkey": {
+      "get": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Gateway Ed25519 public key for decision verification",
+        "description": "Return the gateway's Ed25519 public key so customers can verify decision signatures.\n\nEach Decision returned by POST /v1/action includes ``meta.sig`` (base64url Ed25519\nsignature) and ``meta.kid`` (first 16 hex chars of the public key). Verify offline::\n\n    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey\n    import base64, json\n    pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex))\n    pub.verify(base64.urlsafe_b64decode(sig + \"==\"), canonical_payload)",
+        "operationId": "get_pubkey_v1_pubkey_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-keys/me": {
+      "get": {
+        "tags": [
+          "api_keys"
+        ],
+        "summary": "Get Me",
+        "description": "Return identity info for the current API key.",
+        "operationId": "get_me_api_keys_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-keys/{key_id}/rotate": {
+      "post": {
+        "tags": [
+          "api_keys"
+        ],
+        "summary": "Rotate Api Key",
+        "description": "Rotate an API key with zero-downtime overlap.\n\nCreates a new API key and marks the current key as **rotating** (still valid\nfor `overlap_hours`). During the overlap window both keys authenticate\nsuccessfully so you can deploy the new key without any auth failures.\n\nAfter `overlap_hours` the old key automatically stops being accepted.\n\nReturns the **new plaintext key** \u2014 store it securely, it is shown only once.",
+        "operationId": "rotate_api_key_api_keys__key_id__rotate_post",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-keys": {
+      "get": {
+        "tags": [
+          "api_keys"
+        ],
+        "summary": "List Api Keys",
+        "description": "List API keys for the current tenant.\n\nNever returns the plaintext key or its hash \u2014 only metadata.",
+        "operationId": "list_api_keys_api_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api_keys"
+        ],
+        "summary": "Create Api Key",
+        "description": "Create a new API key for the current tenant.\n\nReturns the **plaintext key** once \u2014 it is never stored and cannot be retrieved again.\nStore it securely immediately.",
+        "operationId": "create_api_key_api_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-keys/{key_id}": {
+      "delete": {
+        "tags": [
+          "api_keys"
+        ],
+        "summary": "Delete Api Key",
+        "description": "Revoke/delete an API key for the current tenant.\n\nVerifies tenant ownership before revoking. Revoked keys are immediately rejected.",
+        "operationId": "delete_api_key_api_keys__key_id__delete",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/register": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Register Agent",
+        "description": "Register or update a full agent profile for the authenticated tenant.\n\nUses db.register_agent_full (upsert) \u2014 idempotent for the same agent_id.",
+        "operationId": "register_agent_agents_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "List Agents",
+        "description": "List all agents registered for the authenticated tenant.",
+        "operationId": "list_agents_agents_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(active|paused|retired)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "agent_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Get Agent",
+        "description": "Return full agent profile with 7-day trend, top tools, and top block reasons.",
+        "operationId": "get_agent_agents__agent_id__get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}/stats": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Get Agent Stats",
+        "description": "Return 30-day time-series stats for a specific agent.\n\nIncludes daily action counts by verdict, verdict breakdown totals,\nrisk level breakdown, top block reasons, 7-day trend, and 24h\nbehavioral CAV history (hourly buckets).",
+        "operationId": "get_agent_stats_agents__agent_id__stats_get",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/shadow-mode": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Shadow Mode",
+        "description": "Return the tenant's current shadow mode setting.\n\nIn shadow mode, all decisions are evaluated and logged but NEVER blocked \u2014\nevery verdict is overridden to 'allowed'. Use this for trials and pilots.",
+        "operationId": "get_shadow_mode_settings_shadow_mode_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Set Shadow Mode",
+        "description": "Enable or disable shadow mode for the tenant.\n\nWhen enabled, EDON evaluates every action and logs the true verdict, but\nalways responds with 'allowed' \u2014 nothing is blocked. Ideal for hospital\ntrials where you want to observe governance decisions without disruption.",
+        "operationId": "set_shadow_mode_settings_shadow_mode_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShadowModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "List Webhooks",
+        "description": "List all configured webhooks for this tenant.",
+        "operationId": "list_webhooks_webhooks_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Create Webhook",
+        "description": "Register a webhook endpoint to receive governance events.",
+        "operationId": "create_webhook_webhooks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{webhook_id}": {
+      "delete": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Delete Webhook",
+        "description": "Remove a webhook registration.",
+        "operationId": "delete_webhook_webhooks__webhook_id__delete",
+        "parameters": [
+          {
+            "name": "webhook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Webhook Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{webhook_id}/test": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Test Webhook",
+        "description": "Send a test payload to the webhook URL.",
+        "operationId": "test_webhook_webhooks__webhook_id__test_post",
+        "parameters": [
+          {
+            "name": "webhook_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Webhook Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/action/result": {
+      "post": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Record Action Result",
+        "description": "Record an execution outcome for a previously evaluated action.\n\nCalled by agents after a tool runs. Links the governance decision\n(action_id) to the real-world outcome (success / failure / timeout).\n\nReturns the assigned result_id for the caller's records.",
+        "operationId": "record_action_result_v1_action_result_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionResultRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/action/result/{action_id}": {
+      "get": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Get Action Result",
+        "description": "Look up the recorded execution outcome for a specific action_id.",
+        "operationId": "get_action_result_v1_action_result__action_id__get",
+        "parameters": [
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/kill-switch": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Kill Switch",
+        "description": "Return the current kill switch state for this tenant.\n\nactive=true means ALL agent actions are being blocked right now.",
+        "operationId": "get_kill_switch_settings_kill_switch_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Activate",
+        "description": "Activate the kill switch \u2014 immediately halt ALL AI agent actions.\n\nEvery /v1/action call for this tenant will return BLOCK until the kill\nswitch is deactivated. The real governance verdict is still computed and\naudit-logged, but the response is always BLOCK.\n\nUse this when:\n- A security incident is suspected\n- An agent is behaving unexpectedly\n- You need an immediate pause before a policy update\n\nThis action is audit-logged with timestamp and reason.",
+        "operationId": "activate_settings_kill_switch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchActivateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Deactivate",
+        "description": "Deactivate the kill switch \u2014 resume normal governance.\n\nNormal policy evaluation resumes immediately. This action is audit-logged.",
+        "operationId": "deactivate_settings_kill_switch_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchDeactivateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "governance"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActionResultRequest": {
+        "properties": {
+          "action_id": {
+            "type": "string",
+            "title": "Action Id",
+            "description": "The action_id returned by the /v1/action response for this execution",
+            "example": "dec-abc123"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "description": "Agent that executed the action",
+            "example": "agent_crm_sync"
+          },
+          "action_type": {
+            "type": "string",
+            "title": "Action Type",
+            "description": "The action type that was executed (e.g. 'email.send')",
+            "example": "email.send"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "partial",
+              "timeout"
+            ],
+            "title": "Outcome",
+            "description": "Execution outcome: success | failure | partial | timeout",
+            "example": "success"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "description": "Tool execution time in milliseconds (not governance latency)",
+            "example": 340
+          },
+          "executed_at": {
+            "type": "string",
+            "title": "Executed At",
+            "description": "ISO-8601 timestamp when tool execution completed",
+            "example": "2026-04-11T12:00:00Z"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Error message if outcome is failure or timeout (max 1000 chars, enforced server-side)"
+          },
+          "result_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Summary",
+            "description": "Optional sanitized one-line description of what happened. Do NOT include PII, credentials, or full response bodies. Max 500 chars, enforced server-side."
+          }
+        },
+        "type": "object",
+        "required": [
+          "action_id",
+          "agent_id",
+          "action_type",
+          "outcome",
+          "latency_ms",
+          "executed_at"
+        ],
+        "title": "ActionResultRequest",
+        "description": "Posted by an agent after executing a tool action.\n\nThe action_id field must match the action_id returned by the preceding\n/v1/action call. This closes the loop so EDON can correlate governance\ndecisions with real execution outcomes.",
+        "example": {
+          "action_id": "dec-abc123",
+          "action_type": "email.send",
+          "agent_id": "agent_crm_sync",
+          "executed_at": "2026-04-11T12:00:00Z",
+          "latency_ms": 340,
+          "outcome": "success",
+          "result_summary": "Email delivered to 3 recipients"
+        }
+      },
+      "ActionResultResponse": {
+        "properties": {
+          "result_id": {
+            "type": "string",
+            "title": "Result Id",
+            "description": "Unique ID assigned to this result record"
+          },
+          "action_id": {
+            "type": "string",
+            "title": "Action Id",
+            "description": "The action_id that was correlated"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded",
+            "description": "Whether the result was persisted"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "partial",
+              "timeout"
+            ],
+            "title": "Outcome",
+            "description": "Echo of the recorded outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "result_id",
+          "action_id",
+          "recorded",
+          "outcome"
+        ],
+        "title": "ActionResultResponse",
+        "description": "Confirmation returned after recording an action result."
+      },
+      "AgentRegisterRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "agent_type": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Agent Type",
+            "default": "general"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Description",
+            "default": ""
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capabilities"
+          },
+          "policy_pack": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Policy Pack",
+            "default": ""
+          },
+          "mag_enabled": {
+            "type": "boolean",
+            "title": "Mag Enabled",
+            "default": false
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "vendor_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Id",
+            "description": "Vendor that owns/operates this agent, e.g. 'vendor-a-surgical'"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "name"
+        ],
+        "title": "AgentRegisterRequest"
+      },
+      "AuditQueryResponse": {
+        "properties": {
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "events",
+          "total",
+          "limit"
+        ],
+        "title": "AuditQueryResponse"
+      },
+      "CreateKeyRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Optional name for the key"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "RBAC role: admin, operator, user, read_only",
+            "default": "user"
+          }
+        },
+        "type": "object",
+        "title": "CreateKeyRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "title": "Uptime Seconds"
+          },
+          "governor": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Governor"
+          },
+          "components": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Components",
+            "default": {}
+          },
+          "overall_status": {
+            "type": "string",
+            "title": "Overall Status",
+            "default": "healthy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "uptime_seconds",
+          "governor"
+        ],
+        "title": "HealthResponse"
+      },
+      "IntentGetResponse": {
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "title": "Intent Id"
+          },
+          "objective": {
+            "type": "string",
+            "title": "Objective"
+          },
+          "scope": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Scope"
+          },
+          "constraints": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Constraints"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intent_id",
+          "objective",
+          "scope",
+          "constraints",
+          "created_at"
+        ],
+        "title": "IntentGetResponse"
+      },
+      "IntentSetResponse": {
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "title": "Intent Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intent_id",
+          "created_at",
+          "status"
+        ],
+        "title": "IntentSetResponse"
+      },
+      "KillSwitchActivateBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "description": "Why you are halting all AI agents for this tenant"
+          },
+          "activated_by": {
+            "type": "string",
+            "title": "Activated By",
+            "description": "Identity of the person activating the kill switch",
+            "default": "api"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "KillSwitchActivateBody"
+      },
+      "KillSwitchDeactivateBody": {
+        "properties": {
+          "deactivated_by": {
+            "type": "string",
+            "title": "Deactivated By",
+            "default": "api"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "title": "KillSwitchDeactivateBody"
+      },
+      "PolicyRuleCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "condition_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Tool"
+          },
+          "condition_op": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Op"
+          },
+          "condition_risk_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Risk Level"
+          },
+          "condition_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Tags"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "ALLOW, BLOCK, or ESCALATE"
+          },
+          "priority": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Priority",
+            "default": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "action"
+        ],
+        "title": "PolicyRuleCreate"
+      },
+      "PolicyRuleDeleteRequest": {
+        "properties": {
+          "justification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Justification",
+            "description": "Required when deleting a protected (clinical safety) rule. Admin role only."
+          }
+        },
+        "type": "object",
+        "title": "PolicyRuleDeleteRequest"
+      },
+      "PolicyRuleDisableRequest": {
+        "properties": {
+          "justification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Justification",
+            "description": "Required when disabling a protected (clinical safety) rule. Admin role only."
+          }
+        },
+        "type": "object",
+        "title": "PolicyRuleDisableRequest"
+      },
+      "PolicyRuleUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "condition_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Tool"
+          },
+          "condition_op": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Op"
+          },
+          "condition_risk_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Risk Level"
+          },
+          "condition_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition Tags"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "justification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Justification",
+            "description": "Required when mutating a protected (clinical safety) rule. Admin role only."
+          }
+        },
+        "type": "object",
+        "title": "PolicyRuleUpdate"
+      },
+      "RotateKeyRequest": {
+        "properties": {
+          "overlap_hours": {
+            "type": "integer",
+            "maximum": 168.0,
+            "minimum": 1.0,
+            "title": "Overlap Hours",
+            "description": "How long (hours) the old key stays valid after rotation. Default 24h, max 168h (7 days).",
+            "default": 24
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Optional name for the new key"
+          }
+        },
+        "type": "object",
+        "title": "RotateKeyRequest"
+      },
+      "ShadowModeRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "ShadowModeRequest"
+      },
+      "V1ActionRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Agent Id",
+            "description": "Unique identifier for the agent making the request",
+            "example": "agent_123"
+          },
+          "action_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Action Type",
+            "description": "Type of action being requested (e.g., 'email.send', 'file.read')",
+            "example": "email.send"
+          },
+          "action_payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Action Payload",
+            "description": "Action-specific parameters and data",
+            "example": {
+              "body": "This is a test",
+              "recipients": [
+                "user@example.com"
+              ],
+              "subject": "Test email"
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp",
+            "description": "ISO 8601 timestamp when action was requested",
+            "example": "2026-02-24T10:30:00Z"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id",
+            "description": "Physical device ID being commanded (e.g. 'sr-001'). When present, EDON enforces agent-device binding and mutex lock.",
+            "example": "sr-001"
+          },
+          "context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Context",
+            "description": "Additional context about the action (optional)",
+            "example": {
+              "intent_id": "intent_xyz",
+              "risk_estimate": "low",
+              "user_confirmed": false
+            }
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "action_type",
+          "action_payload",
+          "timestamp"
+        ],
+        "title": "V1ActionRequest",
+        "description": "Request schema for /v1/action endpoint.\n\nThis is the primary request format for agents to submit actions for evaluation.\nAll fields are required for proper governance and audit trail.",
+        "example": {
+          "action_payload": {
+            "body": "Please find the report attached.",
+            "recipients": [
+              "user@example.com"
+            ],
+            "subject": "Monthly Report"
+          },
+          "action_type": "email.send",
+          "agent_id": "agent_123",
+          "context": {
+            "intent_id": "intent_monthly_reports",
+            "user_confirmed": false
+          },
+          "timestamp": "2026-02-24T10:30:00Z"
+        }
+      },
+      "V1ActionResponse": {
+        "properties": {
+          "action_id": {
+            "type": "string",
+            "title": "Action Id",
+            "description": "Unique identifier for this action (for audit trail)",
+            "example": "act_abc123def456"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "ALLOW",
+              "BLOCK",
+              "DEGRADE",
+              "HUMAN_REQUIRED",
+              "ESCALATE",
+              "PAUSE"
+            ],
+            "title": "Decision",
+            "description": "Governance decision: ALLOW, BLOCK, DEGRADE, HUMAN_REQUIRED, ESCALATE, or PAUSE"
+          },
+          "decision_reason": {
+            "type": "string",
+            "title": "Decision Reason",
+            "description": "Human-readable explanation of the decision",
+            "example": "Action approved: within scope, constraints satisfied, risk acceptable"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version",
+            "description": "Version of the policy used for evaluation",
+            "example": "1.0.0"
+          },
+          "processing_latency_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Processing Latency Ms",
+            "description": "Time taken to evaluate the action in milliseconds",
+            "example": 45
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code",
+            "description": "Machine-readable reason code for the decision",
+            "example": "APPROVED"
+          },
+          "safe_alternative": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Alternative",
+            "description": "Alternative action if decision is DEGRADE",
+            "example": {
+              "action_payload": {
+                "body": "Please find the report attached.",
+                "recipients": [
+                  "user@example.com"
+                ],
+                "subject": "Monthly Report"
+              },
+              "action_type": "email.draft"
+            }
+          },
+          "escalation_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Question",
+            "description": "Question to ask user if decision is ESCALATE or HUMAN_REQUIRED",
+            "example": "Send email to 50 recipients? (max allowed: 10)"
+          },
+          "escalation_options": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation Options",
+            "description": "Options for user to choose from if decision is ESCALATE",
+            "example": [
+              {
+                "id": "allow_once",
+                "label": "Allow once"
+              },
+              {
+                "id": "draft_only",
+                "label": "Save as draft only"
+              }
+            ]
+          },
+          "predicted_oob_risk": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Oob Risk",
+            "description": "Predicted out-of-bounds risk score (0.0-1.0) when available",
+            "example": 0.87
+          },
+          "predicted_oob_reasons": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Oob Reasons",
+            "description": "Human-readable reasons that contributed to predicted_oob_risk",
+            "example": [
+              "tool/op not seen in agent 30-day baseline",
+              "agent action-rate spike vs 30-day baseline"
+            ]
+          },
+          "predicted_oob_breakdown": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Oob Breakdown",
+            "description": "Signal-level weighted contributions used to compute predicted_oob_risk",
+            "example": {
+              "estimated_risk": 0.08,
+              "fleet_prior": 0.12,
+              "novelty": 0.2
+            }
+          },
+          "shadow_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shadow Mode",
+            "description": "True when the tenant has shadow mode enabled \u2014 decision was evaluated but verdict was overridden to ALLOW. The real verdict is in the audit log.",
+            "example": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "action_id",
+          "decision",
+          "decision_reason",
+          "processing_latency_ms"
+        ],
+        "title": "V1ActionResponse",
+        "description": "Response schema for /v1/action endpoint.\n\nReturns the governance decision and metadata about the evaluation.",
+        "example": {
+          "action_id": "act_abc123def456",
+          "decision": "ALLOW",
+          "decision_reason": "Action approved: within scope, constraints satisfied, risk acceptable",
+          "policy_version": "1.0.0",
+          "processing_latency_ms": 45,
+          "reason_code": "APPROVED"
+        }
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WebhookCreateRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Events",
+            "default": [
+              "anomaly.detected",
+              "action.blocked",
+              "action.allowed",
+              "compliance.violation",
+              "risk.high",
+              "decision.blocked",
+              "review.required",
+              "decision.escalated",
+              "action.escalated"
+            ]
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "url"
+        ],
+        "title": "WebhookCreateRequest"
+      },
+      "edon_gateway__main__IntentSetRequest": {
+        "properties": {
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Id"
+          },
+          "objective": {
+            "type": "string",
+            "title": "Objective"
+          },
+          "scope": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Scope"
+          },
+          "constraints": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Constraints",
+            "default": {}
+          },
+          "risk_level": {
+            "type": "string",
+            "title": "Risk Level",
+            "default": "medium"
+          },
+          "approved_by_user": {
+            "type": "boolean",
+            "title": "Approved By User",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "objective",
+          "scope"
+        ],
+        "title": "IntentSetRequest"
+      }
+    },
+    "securitySchemes": {}
+  },
+  "tags": [
+    {
+      "name": "governance",
+      "description": "Evaluate agent actions and verify decisions"
+    },
+    {
+      "name": "intents",
+      "description": "Create and manage intent contracts"
+    },
+    {
+      "name": "audit",
+      "description": "Query and export the audit log"
+    },
+    {
+      "name": "policy",
+      "description": "Manage policy rules and packs"
+    },
+    {
+      "name": "agents",
+      "description": "Register and monitor agents"
+    },
+    {
+      "name": "api_keys",
+      "description": "Manage API keys"
+    },
+    {
+      "name": "webhooks",
+      "description": "Configure webhooks for governance events"
+    },
+    {
+      "name": "review",
+      "description": "Human-in-the-loop review queue"
+    },
+    {
+      "name": "settings",
+      "description": "Tenant settings (shadow mode, kill switch)"
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+api:
+  specs:
+    - openapi: openapi/openapi.json
+      overrides: openapi/overrides.yml
+
+default-group: local
+
+groups:
+  local:
+    generators:
+      - name: fernapi/fern-python-sdk
+        version: latest
+        output:
+          location: local-file-system
+          path: ../sdk/python
+        config:
+          package_name: edon_sdk
+          client:
+            class_name: EdonClient
+            filename: client.py
+          use_typeddict_requests: true
+          improved_imports: true
+          additional_init_exports:
+            - EdonClient
+          extra_dependencies:
+            httpx: ">=0.27"
+          extra_dev_dependencies:
+            pytest: ">=8"
+            pytest-asyncio: ">=0.23"
+            respx: ">=0.21"
+
+      - name: fernapi/fern-typescript-node-sdk
+        version: latest
+        output:
+          location: local-file-system
+          path: ../sdk/javascript
+        config:
+          packageName: "@edon/sdk"
+          packageVersion: "0.2.0"
+          useSingleRequestParameter: true
+          includeCredentialsOnCrossOriginRequests: false
+          allowCustomFetcher: true
+          bundle: false
+
+  # Cloud publish targets — used by CI/CD workflows (require FERN_TOKEN secret)
+  publish:
+    generators:
+      - name: fernapi/fern-python-sdk
+        version: latest
+        output:
+          location: pypi
+          package-name: edon-sdk
+          token: ${PYPI_TOKEN}
+        config:
+          package_name: edon_sdk
+          client:
+            class_name: EdonClient
+            filename: client.py
+          use_typeddict_requests: true
+          improved_imports: true
+
+      - name: fernapi/fern-typescript-node-sdk
+        version: latest
+        output:
+          location: npm
+          package-name: "@edon/sdk"
+          token: ${NPM_TOKEN}
+        config:
+          packageName: "@edon/sdk"
+          packageVersion: "0.2.0"
+          useSingleRequestParameter: true

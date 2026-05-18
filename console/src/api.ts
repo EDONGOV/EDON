@@ -6,7 +6,7 @@ export interface AuthConfig {
 }
 
 function getAuth(): AuthConfig | null {
-  const raw = localStorage.getItem('edon_auth')
+  const raw = sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth')
   if (!raw) return null
   try { return JSON.parse(raw) } catch { return null }
 }
@@ -80,6 +80,7 @@ export interface Agent {
   description?: string
   capabilities?: string[]
   policy_pack?: string
+  department?: string
   last_seen?: string
   decisions_total?: number
   decisions_blocked?: number
@@ -94,6 +95,8 @@ export interface PolicyRule {
   enabled: boolean
   regulation?: string
   action?: string
+  tool?: string
+  op?: string
   condition?: Record<string, unknown>
   created_at?: string
 }
@@ -243,6 +246,27 @@ export interface ConfirmedBypass {
   confirmed_at: string
 }
 
+export interface ActionResult {
+  result_id: string
+  action_id: string
+  agent_id: string
+  tenant_id?: string
+  action_type: string
+  outcome: 'success' | 'failure' | 'partial' | 'timeout'
+  latency_ms: number
+  error?: string | null
+  result_summary?: string | null
+  executed_at: string
+  reported_at: string
+}
+
+export interface ActionResultStats {
+  outcomes: Record<'success' | 'failure' | 'partial' | 'timeout', number>
+  total: number
+  failure_rate: number
+  success_rate: number
+}
+
 export interface ChainStressResult {
   injection_step: number
   injection_trace_id: string
@@ -276,9 +300,15 @@ export interface AssistantProposal {
   payload: Record<string, unknown>
 }
 
+export interface Citation {
+  type: 'decision' | 'agent' | 'rule'
+  id: string
+}
+
 export interface AssistantChatResponse {
   answer: string
   suggestion: AssistantProposal | null
+  citations: Citation[]
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -326,6 +356,12 @@ export const api = {
 
   disableRule: (ruleId: string) =>
     request(`/policy/rules/${ruleId}/disable`, { method: 'POST' }),
+
+  policySandboxTest: (rule: Record<string, unknown>, sampleSize = 200) =>
+    request<{ sample_size: number; changed: number; unchanged: number; false_positive_rate: number; changed_decisions: Array<{ action_id: string; original_verdict: string; new_verdict: string }> }>('/policy/sandbox/test', {
+      method: 'POST',
+      body: JSON.stringify({ rule, sample_size: sampleSize }),
+    }),
 
   reviewQueue: (status = 'pending') =>
     request<ReviewQueueResponse>(`/compliance/review/queue?status=${status}`),
@@ -453,6 +489,12 @@ export const api = {
   confirmedBypasses: (limit = 50) =>
     request<{ confirmed_bypasses: ConfirmedBypass[]; count: number }>(`/v1/shadow/confirmed-bypasses?limit=${limit}`),
 
+  actionResultStats: () =>
+    request<ActionResultStats>('/v1/action/result-stats'),
+
+  actionResult: (actionId: string) =>
+    request<ActionResult>(`/v1/action/result/${encodeURIComponent(actionId)}`),
+
   shadowExport: async () => {
     const auth = getAuth()
     if (!auth) throw new Error('Not authenticated')
@@ -469,10 +511,64 @@ export const api = {
     }),
 
   // ── Governance Assistant ──────────────────────────────────────────────────
-  assistantChat: (message: string, conversation: AssistantMessage[]) =>
+  assistantChat: (message: string, conversation: AssistantMessage[], page_context?: Record<string, unknown>) =>
     request<AssistantChatResponse>('/v1/assistant/chat', {
       method: 'POST',
-      body: JSON.stringify({ message, conversation }),
+      body: JSON.stringify({ message, conversation, page_context }),
+    }),
+
+  assistantChatStream: async (
+    message: string,
+    conversation: AssistantMessage[],
+    page_context: Record<string, unknown> | undefined,
+    onDelta: (chunk: string) => void,
+    onDone: (suggestion: AssistantProposal | null, citations: Citation[], conversationId?: string) => void,
+    onError: (msg: string) => void,
+    onThinking?: (label: string) => void,
+    conversationId?: string,
+  ): Promise<void> => {
+    const auth = getAuth()
+    if (!auth) { onError('Not authenticated'); return }
+    let res: Response
+    try {
+      res = await fetch(`${auth.gatewayUrl}/v1/assistant/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-EDON-TOKEN': auth.token },
+        body: JSON.stringify({ message, conversation, page_context, conversation_id: conversationId }),
+      })
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Network error'); return
+    }
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }))
+      onError(err.detail || `${res.status}`); return
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const ev = JSON.parse(line.slice(6))
+          if (ev.error) { onError(ev.error); return }
+          if (ev.thinking && onThinking) onThinking(ev.thinking)
+          if (ev.delta) onDelta(ev.delta)
+          if (ev.done) { onDone(ev.suggestion ?? null, ev.citations ?? [], ev.conversation_id); return }
+        } catch { /* ignore malformed */ }
+      }
+    }
+  },
+
+  assistantExplain: (type: string, id: string) =>
+    request<{ type: string; id: string; explanation: string }>('/v1/assistant/explain', {
+      method: 'POST',
+      body: JSON.stringify({ type, id }),
     }),
 
   assistantApply: (proposal: AssistantProposal) =>
@@ -480,6 +576,15 @@ export const api = {
       '/v1/assistant/apply',
       { method: 'POST', body: JSON.stringify({ proposal }) },
     ),
+
+  assistantConversations: () =>
+    request<{ conversations: { id: string; title: string; created_at: string; updated_at: string; turn_count: number }[] }>('/v1/assistant/conversations'),
+
+  assistantConversation: (id: string) =>
+    request<{ id: string; title: string; messages: { role: string; content: string }[]; created_at: string }>(`/v1/assistant/conversations/${id}`),
+
+  assistantMemories: () =>
+    request<{ memories: { id: string; category: string; fact: string; confidence: number; updated_at: string }[]; count: number }>('/v1/assistant/memories'),
 
   // ── Compliance report export ──────────────────────────────────────────────
   auditReportExport: async (params: {
@@ -594,6 +699,23 @@ export const api = {
   onboardingGetExpansion: (id: string) =>
     request<{ signals: OnboardingExpansionSignal[]; count: number; high_severity_count: number; expansion_recommended: boolean }>(
       `/v1/onboarding/profiles/${id}/expansion`
+    ),
+
+  killSwitchStatus: () =>
+    request<{ active: boolean; tenant_id: string; reason?: string; activated_at?: string; activated_by?: string }>(
+      '/settings/kill-switch'
+    ),
+
+  killSwitchActivate: (reason: string, activated_by: string) =>
+    request<{ active: boolean; message: string }>(
+      '/settings/kill-switch',
+      { method: 'POST', body: JSON.stringify({ reason, activated_by }) }
+    ),
+
+  killSwitchDeactivate: (deactivated_by: string) =>
+    request<{ active: boolean; message: string }>(
+      '/settings/kill-switch',
+      { method: 'DELETE', body: JSON.stringify({ deactivated_by }) }
     ),
 }
 

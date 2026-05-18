@@ -32,20 +32,42 @@ _cache: dict[str, tuple[float, float]] = {}  # key → (score, expires_at)
 _cache_lock = threading.Lock()
 
 
-def _cache_key(objective: str, tool: str, op: str) -> str:
-    raw = f"{objective[:300]}|{tool[:64]}|{op[:64]}"
+_CACHE_MAX = int(os.getenv("EDON_AI_ALIGN_CACHE_MAX", "2000"))
+
+# Cache hit/miss counters for observability
+_cache_hits: int = 0
+_cache_misses: int = 0
+
+
+def _cache_key(
+    objective: str,
+    tool: str,
+    op: str,
+    scope_tools: list,
+    intent_id: Optional[str] = None,
+) -> str:
+    # Use intent_id as primary key when available — faster and more precise.
+    # Fall back to objective text for callers that don't have an intent_id.
+    if intent_id:
+        raw = f"id:{intent_id[:64]}|{tool[:64]}|{op[:64]}"
+    else:
+        scope_str = ",".join(sorted(str(t)[:32] for t in (scope_tools or [])))
+        raw = f"{objective[:300]}|{scope_str}|{tool[:64]}|{op[:64]}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _cache_get(key: str) -> Optional[float]:
+    global _cache_hits, _cache_misses
     if _CACHE_TTL <= 0:
         return None
     with _cache_lock:
         entry = _cache.get(key)
         if entry and time.monotonic() < entry[1]:
+            _cache_hits += 1
             return entry[0]
         if entry:
             del _cache[key]
+    _cache_misses += 1
     return None
 
 
@@ -53,13 +75,45 @@ def _cache_set(key: str, score: float) -> None:
     if _CACHE_TTL <= 0:
         return
     with _cache_lock:
-        # Evict entries over 1 000 to bound memory
-        if len(_cache) >= 1000:
+        if len(_cache) >= _CACHE_MAX:
             now = time.monotonic()
             expired = [k for k, (_, exp) in _cache.items() if exp <= now]
-            for k in expired[:200]:
-                del _cache[k]
+            for k in (expired or list(_cache.keys()))[:max(1, _CACHE_MAX // 5)]:
+                _cache.pop(k, None)
         _cache[key] = (score, time.monotonic() + _CACHE_TTL)
+
+
+def invalidate_intent(intent_id: str) -> None:
+    """Remove all cached scores for a specific intent. Call when intent is updated."""
+    prefix = f"id:{intent_id[:64]}|"
+    with _cache_lock:
+        keys = [k for k, _ in _cache.items()]
+    # We can't reverse the hash, but we can clear all entries if the intent changes.
+    # Fast path: store a reverse index {intent_id → set of cache keys}
+    # Simple path: clear entire cache when any intent is updated (conservative).
+    # We use the simple path here; at 2000 entries the cost is negligible.
+    with _cache_lock:
+        _cache.clear()
+    logger.debug("Alignment cache cleared on intent update: %s", intent_id[:16])
+
+
+def cache_stats() -> dict:
+    """Return current cache statistics for the /v1/governance/cache-stats endpoint."""
+    with _cache_lock:
+        size = len(_cache)
+        now = time.monotonic()
+        live = sum(1 for _, exp in _cache.values() if exp > now)
+    total = _cache_hits + _cache_misses
+    hit_rate = _cache_hits / total if total > 0 else 0.0
+    return {
+        "size": size,
+        "live_entries": live,
+        "ttl_s": _CACHE_TTL,
+        "max_entries": _CACHE_MAX,
+        "hits": _cache_hits,
+        "misses": _cache_misses,
+        "hit_rate": round(hit_rate, 3),
+    }
 
 _SYSTEM_PROMPT = """\
 You are a governance alignment classifier. You evaluate whether a proposed \
@@ -85,6 +139,7 @@ def score_intent_alignment(
     intent_scope_tools: list,
     action_tool: str,
     action_op: str,
+    intent_id: Optional[str] = None,
 ) -> Optional[float]:
     """Return semantic alignment score 0.0–1.0 for the proposed action.
 
@@ -107,7 +162,7 @@ def score_intent_alignment(
     op_str = str(action_op)[:64]
 
     # Cache hit — skip the Claude call entirely
-    ck = _cache_key(safe_objective, tool_str, op_str)
+    ck = _cache_key(safe_objective, tool_str, op_str, intent_scope_tools or [], intent_id)
     cached = _cache_get(ck)
     if cached is not None:
         logger.debug("AI intent alignment (cached): tool=%s op=%s score=%.2f", tool_str, op_str, cached)

@@ -60,3 +60,35 @@ edongov/
 | `backend/edon_gateway/state/session_trust.py` | Adaptive session trust scoring |
 | `backend/edon_gateway/degradation_registry.py` | BLOCK→DEGRADE safe alternatives |
 | `backend/edon_gateway/control/meta_governance.py` | Self-audit / meta-governance |
+
+---
+
+## Coding Principles (Karpathy-Inspired)
+
+### 1. Think Before Coding
+- State assumptions explicitly — if uncertain, ask rather than guess
+- Present multiple interpretations when ambiguity exists — don't pick silently
+- Push back when a simpler approach exists
+- Stop when confused — name what's unclear and ask for clarification
+
+### 2. Simplicity First
+- Minimum code that solves the problem. Nothing speculative.
+- No features beyond what was asked
+- No abstractions for single-use code
+- No "flexibility" or "configurability" that wasn't requested
+- No error handling for impossible scenarios
+- If 200 lines could be 50, rewrite it
+
+### 3. Surgical Changes
+- Touch only what you must. Clean up only your own mess.
+- Don't "improve" adjacent code, comments, or formatting unprompted
+- Don't refactor things that aren't broken
+- Match existing style, even if you'd do it differently
+- If you notice unrelated dead code, mention it — don't delete it
+- Remove imports/variables/functions that YOUR changes made unused; leave pre-existing dead code alone
+
+### 4. Goal-Driven Execution
+- Define success criteria before starting. Loop until verified.
+- For multi-step tasks, state a brief plan with a verify step for each stage
+- Write tests for the failure case first, then make them pass
+- Weak criteria ("make it work") require clarification before proceeding

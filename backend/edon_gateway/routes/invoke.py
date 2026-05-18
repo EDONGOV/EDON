@@ -7,6 +7,8 @@ to the registered agent's endpoint with the gateway's credentials.
 
 import time
 import uuid
+import hashlib
+import json as _json_stdlib
 from datetime import datetime, UTC
 from typing import Any, Optional
 
@@ -19,6 +21,8 @@ from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
 from ..fleet_learning import get_fleet_learning_engine
+from ..schemas.v1_action import V1ActionRequest
+from ..preflight import PreflightContext, run_preflight
 
 logger = get_logger(__name__)
 
@@ -203,12 +207,42 @@ async def invoke_agent(request: Request, req: AgentInvokeRequest):
         hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
         req_context["session_id"] = f"auto:{req.agent_id}:{hour_bucket}"
 
+    _v1_req = V1ActionRequest(
+        agent_id=req.agent_id,
+        action_type=req.action_type,
+        action_payload=req.action_payload,
+        timestamp=req.timestamp,
+        context=req_context,
+    )
+    _pf_ctx = PreflightContext(
+        req=_v1_req,
+        tenant_id=tenant_id,
+        action=action,
+        action_params=dict(req.action_payload),
+        db=db,
+        start_time=start,
+        req_context=req_context,
+    )
+    _pf_hard = run_preflight(_pf_ctx)
+    if _pf_hard is not None:
+        return AgentInvokeResponse(
+            action_id=_pf_hard.action_id,
+            decision=_map_verdict(_pf_hard.decision),
+            decision_reason=_pf_hard.decision_reason,
+            forwarded=False,
+            processing_latency_ms=_pf_hard.processing_latency_ms,
+            reason_code=_pf_hard.reason_code,
+        )
+    req_context = _pf_ctx.req_context
+    tenant_rules = _pf_ctx.tenant_rules or tenant_rules
+
     try:
         decision = governor.evaluate(
             action=action,
             intent=intent_contract,
-            context={"agent_id": req.agent_id, "tenant_id": tenant_id, **req_context},
+            context={"agent_id": req.agent_id, **req_context},
             tenant_rules=tenant_rules,
+            tenant_id=tenant_id,
         )
     except Exception as exc:
         logger.exception("Governor error in /agent/invoke: %s", exc)
@@ -216,6 +250,11 @@ async def invoke_agent(request: Request, req: AgentInvokeRequest):
 
     latency_ms = int((time.time() - start) * 1000)
     verdict_str = decision.verdict.value
+    _created_at = datetime.now(UTC).isoformat()
+    decision_id = f"dec-{action.id}-{_created_at}"
+    _request_hash = hashlib.sha256(
+        _json_stdlib.dumps(dict(req.action_payload), sort_keys=True).encode()
+    ).hexdigest()
 
     # ── Audit ───────────────────────────────────────────────────────────────
     try:
@@ -224,10 +263,13 @@ async def invoke_agent(request: Request, req: AgentInvokeRequest):
             decision=decision.to_dict(),
             intent_id=intent_id,
             agent_id=req.agent_id,
-            context={"agent_id": req.agent_id, "tenant_id": tenant_id, **req_context},
+            context={"agent_id": req.agent_id, "tenant_id": tenant_id, "request_hash": _request_hash, **req_context},
             customer_id=tenant_id,
             processing_latency_ms=latency_ms,
             action_summary=f"{action.tool.value}.{action.op}",
+            request_hash=_request_hash,
+            decision_id_override=decision_id,
+            created_at_override=_created_at,
         )
     except Exception as exc:
         logger.exception("Audit write failed in /agent/invoke: %s", exc)
@@ -256,6 +298,21 @@ async def invoke_agent(request: Request, req: AgentInvokeRequest):
         try:
             agent_response = _forward_to_agent(agent_row, req.action_type, req.action_payload)
             forwarded = True
+            try:
+                from ..shadow.trace_capture import ActionResult, get_trace_store
+                _result = ActionResult.build(
+                    action_id=decision_id,
+                    agent_id=req.agent_id,
+                    tenant_id=tenant_id,
+                    action_type=req.action_type,
+                    outcome="success",
+                    latency_ms=max(0, int((time.time() - start) * 1000) - latency_ms),
+                    result_summary="Agent backend forwarded successfully",
+                    executed_at=datetime.now(UTC).isoformat(),
+                )
+                get_trace_store().save_action_result(_result)
+            except Exception as _receipt_err:
+                logger.warning("[/agent/invoke] execution receipt write failed: %s", _receipt_err)
             logger.info("[/agent/invoke] ALLOW+forwarded agent=%s action=%s", req.agent_id, req.action_type)
             # ── Scan agent response for indirect injection ───────────────────
             try:
@@ -275,6 +332,22 @@ async def invoke_agent(request: Request, req: AgentInvokeRequest):
             logger.info("[/agent/invoke] ALLOW but no endpoint for %s: %s", req.agent_id, exc)
         except Exception as exc:
             agent_response = {"error": str(exc)}
+            try:
+                from ..shadow.trace_capture import ActionResult, get_trace_store
+                _result = ActionResult.build(
+                    action_id=decision_id,
+                    agent_id=req.agent_id,
+                    tenant_id=tenant_id,
+                    action_type=req.action_type,
+                    outcome="failure",
+                    latency_ms=max(0, int((time.time() - start) * 1000) - latency_ms),
+                    error=str(exc)[:1000],
+                    result_summary="Agent backend forward failed",
+                    executed_at=datetime.now(UTC).isoformat(),
+                )
+                get_trace_store().save_action_result(_result)
+            except Exception as _receipt_err:
+                logger.warning("[/agent/invoke] failure receipt write failed: %s", _receipt_err)
             logger.warning("[/agent/invoke] Forward error for %s: %s", req.agent_id, exc)
 
     return AgentInvokeResponse(

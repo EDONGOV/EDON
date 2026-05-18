@@ -3,33 +3,42 @@
 ## Installation
 
 ```bash
-pip install httpx  # only dependency (until edon-sdk is on PyPI)
-# Or install from this repo:
+pip install edon-sdk
+# Or from this repo during development:
 pip install -e sdk/python/
 ```
 
 ## Authentication
 
-Get an API key from the [EDON Console](https://agent.edoncore.com) → Settings → API Keys.
+Get an API key from the [EDON Console](https://console.edoncore.com) → Settings → API Keys,
+or call `POST /auth/register` to sign up programmatically (see below).
 
 ```python
+import os
 from edon_sdk import EdonClient
 
-client = EdonClient(
-    token="eak_your_key_here",
-    base_url="https://edon-gateway.fly.dev",  # default
-)
+# Reads EDON_API_KEY from environment automatically
+client = EdonClient()
+
+# Or pass explicitly
+client = EdonClient(token="edon-your_key_here")
 ```
+
+Set these environment variables to avoid hardcoding credentials:
+
+| Variable | Description |
+|----------|-------------|
+| `EDON_API_KEY` | Your API key (starts with `edon-`) |
+| `EDON_GATEWAY_URL` | Override gateway URL (default: production) |
 
 ## Basic Usage — 5 Lines
 
 ```python
 from edon_sdk import EdonClient
 
-client = EdonClient(token="eak_your_key_here")
+client = EdonClient()  # reads EDON_API_KEY from env
 result = client.evaluate(
     action_type="email.send",
-    agent_id="my-agent-v1",
     payload={"recipients": ["boss@company.com"], "subject": "Quarterly report"},
 )
 print(result["verdict"])  # ALLOW, BLOCK, ESCALATE, DEGRADE, PAUSE, or ERROR
@@ -52,7 +61,7 @@ print(result["verdict"])  # ALLOW, BLOCK, ESCALATE, DEGRADE, PAUSE, or ERROR
 import time
 from edon_sdk import EdonClient
 
-client = EdonClient(token="eak_your_key_here")
+client = EdonClient()  # reads EDON_API_KEY from env
 
 def governed_send_email(recipients, subject, body, agent_id="my-agent"):
     """Send an email only if EDON allows it."""
@@ -63,31 +72,27 @@ def governed_send_email(recipients, subject, body, agent_id="my-agent"):
     )
 
     verdict = result["verdict"]
-    reason = result.get("reason_code", "")
     explanation = result.get("explanation", "")
 
     if verdict == "ALLOW":
-        # Proceed — action is approved
         _actual_send_email(recipients, subject, body)
         return {"sent": True}
 
     elif verdict == "BLOCK":
-        raise PermissionError(f"Email blocked by EDON: {explanation} ({reason})")
+        raise PermissionError(f"Email blocked by EDON: {explanation}")
 
     elif verdict == "ESCALATE":
-        # Queue for human review
         question = result.get("escalation_question", "Please review this action")
         return {"sent": False, "requires_human": True, "question": question}
 
     elif verdict == "DEGRADE":
-        # Use the safe alternative parameters
         alt = result.get("safe_alternative", {})
         _actual_send_email(alt.get("recipients", []), alt.get("subject", subject), body)
         return {"sent": True, "degraded": True}
 
     elif verdict == "PAUSE":
         time.sleep(5)
-        return governed_send_email(recipients, subject, body, agent_id)  # retry
+        return governed_send_email(recipients, subject, body, agent_id)
 
     else:
         raise RuntimeError(f"Unexpected verdict: {verdict}")
@@ -97,38 +102,76 @@ def _actual_send_email(recipients, subject, body):
     print(f"Sending to {recipients}: {subject}")
 ```
 
-## Error Handling Best Practices
+## Error Handling
+
+The SDK raises typed exceptions — catch the specific error you care about:
+
+```python
+from edon_sdk import (
+    EdonClient,
+    AuthenticationError,
+    RateLimitError,
+    APITimeoutError,
+    APIConnectionError,
+    EdonError,
+)
+import time
+
+client = EdonClient()
+
+try:
+    result = client.evaluate(action_type="database.query", payload={...})
+
+except AuthenticationError:
+    print("Invalid API key — check EDON_API_KEY starts with 'edon-'")
+
+except RateLimitError as e:
+    wait = e.retry_after or 5
+    print(f"Rate limit hit — retrying in {wait}s")
+    time.sleep(wait)
+
+except APITimeoutError:
+    print("Gateway timed out — safe to retry (governance is idempotent)")
+
+except APIConnectionError:
+    print("Cannot reach EDON gateway — check network / EDON_GATEWAY_URL")
+
+except EdonError as e:
+    print(f"SDK error: {e}")
+```
+
+The SDK automatically retries 429 and 5xx responses with exponential backoff (2 retries by default).
+You only need to handle errors that persist after retries.
+
+## Async Usage
+
+```python
+import asyncio
+from edon_sdk import AsyncEdonClient
+
+async def main():
+    async with AsyncEdonClient() as client:
+        result = await client.evaluate(
+            action_type="database.query",
+            payload={"table": "patients", "limit": 10},
+        )
+        print(result["verdict"])
+
+asyncio.run(main())
+```
+
+## Self-Serve Sign-Up (No Console Required)
+
+Sign up and get an API key entirely via the API:
 
 ```python
 import httpx
 
-try:
-    result = client.evaluate(action_type="http.request", agent_id="agent-1", payload={...})
-except httpx.HTTPStatusError as e:
-    if e.response.status_code == 401:
-        print("Invalid API key")
-    elif e.response.status_code == 429:
-        print("Rate limit exceeded — slow down")
-    else:
-        print(f"Gateway error: {e.response.text}")
-    # Fail closed — don't proceed with the action
-except httpx.TimeoutException:
-    print("Gateway timeout — fail closed")
-```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `EDON_API_KEY` | API key (alternative to passing `token=` to constructor) |
-| `EDON_GATEWAY_URL` | Gateway base URL (default: `https://edon-gateway.fly.dev`) |
-
-```python
-import os
-from edon_sdk import EdonClient
-
-client = EdonClient(
-    token=os.environ["EDON_API_KEY"],
-    base_url=os.getenv("EDON_GATEWAY_URL", "https://edon-gateway.fly.dev"),
+resp = httpx.post(
+    "https://edon-gateway-prod.fly.dev/auth/register",
+    json={"email": "you@yourhospital.com", "password": "secure-password-here"},
 )
+data = resp.json()
+print(data["api_key"])      # edon-... — copy this now, shown only once
+print(data["tenant_id"])
 ```

@@ -1,10 +1,14 @@
 """Authentication routes for EDON Gateway (Clerk-backed)."""
 
 import secrets
+import logging
+import uuid as _uuid
 
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, field_validator
+
+logger = logging.getLogger(__name__)
 
 from ..middleware.auth import get_token_from_header, verify_token, verify_clerk_token, resolve_tenant_for_clerk
 from ..middleware.rate_limit import check_rate_limit, increment_rate_limit
@@ -18,6 +22,162 @@ _SIGNUP_LIMITS = {
 }
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# ── Self-serve registration (no Clerk required) ────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator('email')
+    @classmethod
+    def email_must_have_at(cls, v: str) -> str:
+        v = v.strip().lower()
+        if '@' not in v or '.' not in v.split('@')[-1]:
+            raise ValueError('Invalid email address')
+        return v
+
+    @field_validator('password')
+    @classmethod
+    def password_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        return v
+
+
+def _hash_password(password: str) -> str:
+    try:
+        import bcrypt
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
+    except ImportError:
+        import hashlib, os
+        salt = os.urandom(16).hex()
+        h = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+        return f"sha256:{salt}:{h}"
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    try:
+        import bcrypt
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except ImportError:
+        logger.warning(
+            "bcrypt not available — falling back to SHA-256 password verification. "
+            "Install bcrypt for production-grade hashing."
+        )
+        if hashed.startswith("sha256:"):
+            _, salt, h = hashed.split(":", 2)
+            import hashlib
+            candidate = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+            return secrets.compare_digest(candidate, h)
+        return False
+
+
+@router.post("/register", status_code=201)
+async def register(request: Request, body: RegisterRequest):
+    """Self-serve registration — no Clerk required.
+
+    Creates a user, tenant, and API key in one step.
+    The API key is returned once and must be stored immediately.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"register_ip:{client_ip}"
+    allowed, rate_err = check_rate_limit(rate_key, _SIGNUP_LIMITS)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=f"Too many attempts. {rate_err}", headers={"Retry-After": "3600"})
+    increment_rate_limit(rate_key)
+
+    db = get_db()
+
+    # Reject duplicate emails
+    existing = db.get_user_by_auth("email", body.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    user_id = str(_uuid.uuid4())
+    tenant_id = f"tenant_{_uuid.uuid4().hex[:16]}"
+    pw_hash = _hash_password(body.password)
+
+    # Store password hash in auth_subject field (provider = "email")
+    db.create_user(
+        user_id=user_id,
+        email=body.email,
+        auth_provider="email",
+        auth_subject=pw_hash,
+        role="admin",
+    )
+    db.create_tenant(tenant_id=tenant_id, user_id=user_id)
+
+    raw_key = f"edon-{secrets.token_urlsafe(32)}"
+    key_hash = hash_api_key_fast(raw_key)
+    key_id = db.create_api_key(tenant_id=tenant_id, key_hash=key_hash, name="Default Key", role="admin")
+
+    return {
+        "tenant_id": tenant_id,
+        "api_key": raw_key,
+        "api_key_id": key_id,
+        "api_key_notice": "This is the only time your API key will be shown. Copy it now.",
+        "user": {"id": user_id, "email": body.email, "tenant_id": tenant_id},
+    }
+
+
+@router.post("/login")
+async def login(request: Request, body: RegisterRequest):
+    """Email + password login — returns the tenant's active API key metadata.
+
+    Does NOT re-issue the plaintext key (already shown at registration).
+    Use /api-keys to create a new key if the original was lost.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"login_ip:{client_ip}"
+    allowed, rate_err = check_rate_limit(rate_key, {"per_minute": 10, "per_hour": 60})
+    if not allowed:
+        raise HTTPException(status_code=429, detail=f"Too many login attempts. {rate_err}")
+    increment_rate_limit(rate_key)
+
+    db = get_db()
+    user = db.get_user_by_auth("email", body.email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    if not _verify_password(body.password, user["auth_subject"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    tenant = db.get_tenant_by_user(user["id"]) if hasattr(db, "get_tenant_by_user") else None
+    if not tenant:
+        # fallback: find tenant via list
+        for t in (db.list_tenants() or []):
+            if t.get("user_id") == user["id"]:
+                tenant = t
+                break
+    if not tenant:
+        raise HTTPException(status_code=404, detail="No tenant found for this account.")
+
+    tenant_id = tenant["id"] if "id" in tenant else tenant.get("tenant_id", "")
+    keys = db.list_api_keys(tenant_id) if hasattr(db, "list_api_keys") else []
+    active_keys = [k for k in keys if k.get("status") == "active"]
+
+    # If no key exists, provision a fresh one
+    raw_key = None
+    key_id = None
+    if not active_keys:
+        raw_key = f"edon-{secrets.token_urlsafe(32)}"
+        key_hash = hash_api_key_fast(raw_key)
+        key_id = db.create_api_key(tenant_id=tenant_id, key_hash=key_hash, name="Default Key", role="admin")
+
+    response: dict = {
+        "tenant_id": tenant_id,
+        "user": {"id": user["id"], "email": user["email"], "tenant_id": tenant_id},
+    }
+    if raw_key:
+        response["api_key"] = raw_key
+        response["api_key_id"] = key_id
+        response["api_key_notice"] = "This is the only time your API key will be shown. Copy it now."
+    else:
+        response["message"] = "Logged in. Use your existing API key to authenticate SDK calls."
+        response["key_count"] = len(active_keys)
+    return response
 
 
 class SignupRequest(BaseModel):

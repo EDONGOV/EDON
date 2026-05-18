@@ -55,13 +55,37 @@ def _queue_path() -> Path:
     return _data_dir() / "review_queue.json"
 
 
+def _db_write(record: Dict[str, Any]) -> None:
+    """Write escalation record to DB. Logs but never raises."""
+    try:
+        from ..persistence import get_db
+        get_db().save_escalation(record["decision_id"], record)
+    except Exception as exc:
+        logger.warning("review_queue: DB write failed (JSON-only): %s", exc)
+
+
 def _load_from_disk() -> None:
+    """Warm in-memory queue from DB first, fall back to JSON file."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=_TTL_HOURS)).isoformat()
+    # Primary: DB
+    try:
+        from ..persistence import get_db
+        rows = get_db().list_escalations(status=None, limit=2000)
+        with _lock:
+            for v in rows:
+                if v.get("created_at", "") >= cutoff:
+                    _queue[v["decision_id"]] = v
+        if _queue:
+            logger.info("review_queue: loaded %d records from DB", len(_queue))
+            return
+    except Exception as exc:
+        logger.debug("review_queue: DB load failed, trying JSON file: %s", exc)
+    # Fallback: JSON file
     path = _queue_path()
     if not path.exists():
         return
     try:
         data = json.loads(path.read_text())
-        cutoff = (datetime.now(UTC) - timedelta(hours=_TTL_HOURS)).isoformat()
         with _lock:
             for k, v in data.items():
                 if v.get("created_at", "") >= cutoff:
@@ -96,6 +120,7 @@ def enqueue_escalation(
         "decision_id": decision_id,
         "tenant_id": tenant_id,
         "agent_id": agent_id,
+        "submitted_by": agent_id,
         "action_type": action_type,
         "action_payload": action_payload,
         "escalation_question": escalation_question,
@@ -111,6 +136,7 @@ def enqueue_escalation(
     with _lock:
         _queue[decision_id] = record
         _persist()
+    _db_write(record)
     logger.info(
         "review_queue: escalation enqueued decision=%s tenant=%s agent=%s",
         decision_id, tenant_id, agent_id,
@@ -226,12 +252,18 @@ async def approve_escalation(decision_id: str, request: Request, body: ReviewDec
             raise HTTPException(status_code=403, detail="Access denied")
         if record["status"] != "pending":
             raise HTTPException(status_code=409, detail=f"Already resolved: {record['status']}")
+        if body.resolved_by and body.resolved_by == record.get("agent_id"):
+            raise HTTPException(
+                status_code=403,
+                detail="An agent cannot approve its own escalation. Use a different reviewer identity.",
+            )
         record["status"] = "approved"
         record["resolved_at"] = datetime.now(UTC).isoformat()
         record["resolved_by"] = body.resolved_by
         record["resolution"] = "approved"
         record["resolution_note"] = body.note
         _persist()
+    _db_write(record)
     logger.info(
         "review_queue: APPROVED decision=%s by=%s tenant=%s",
         decision_id, body.resolved_by, tenant_id,
@@ -258,12 +290,18 @@ async def reject_escalation(decision_id: str, request: Request, body: ReviewDeci
             raise HTTPException(status_code=403, detail="Access denied")
         if record["status"] != "pending":
             raise HTTPException(status_code=409, detail=f"Already resolved: {record['status']}")
+        if body.resolved_by and body.resolved_by == record.get("agent_id"):
+            raise HTTPException(
+                status_code=403,
+                detail="An agent cannot approve its own escalation. Use a different reviewer identity.",
+            )
         record["status"] = "rejected"
         record["resolved_at"] = datetime.now(UTC).isoformat()
         record["resolved_by"] = body.resolved_by
         record["resolution"] = "rejected"
         record["resolution_note"] = body.note
         _persist()
+    _db_write(record)
     logger.info(
         "review_queue: REJECTED decision=%s by=%s tenant=%s",
         decision_id, body.resolved_by, tenant_id,

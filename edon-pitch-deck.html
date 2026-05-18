@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EDON — Investor Pitch 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@300;400;600;700;800&family=Barlow:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root {
+  --bg:      #06060f;
+  --surf:    #0a0a18;
+  --surf2:   #0e0e22;
+  --border:  #15153a;
+  --borderB: #22225a;
+  --cyan:    #00e5ff;
+  --cyanD:   rgba(0,229,255,.12);
+  --cyanG:   rgba(0,229,255,.35);
+  --blue:    #0057ff;
+  --text:    #eaeaf6;
+  --muted:   #5a5a9a;
+  --dim:     #2a2a55;
+  --red:     #ff2255;
+  --green:   #00ff88;
+  --amber:   #ffaa00;
+}
+
+html,body { width:100%;height:100%;background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;overflow:hidden }
+
+/* ─── DECK ─── */
+#deck { width:100vw;height:100vh;position:relative;overflow:hidden }
+
+/* ─── SLIDES ─── */
+.slide {
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;justify-content:center;
+  padding:52px 80px 80px;
+  opacity:0;pointer-events:none;
+  transition:opacity .45s ease,transform .45s ease;
+  transform:translateX(32px);
+  overflow:hidden;
+}
+.slide.active  { opacity:1;pointer-events:all;transform:translateX(0) }
+.slide.leaving { opacity:0;pointer-events:none;transform:translateX(-32px) }
+
+/* grid bg */
+.slide::before {
+  content:'';position:absolute;inset:0;z-index:0;
+  background-image:
+    linear-gradient(rgba(0,87,255,.035) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,87,255,.035) 1px,transparent 1px);
+  background-size:64px 64px;
+}
+/* scanlines */
+.slide::after {
+  content:'';position:absolute;inset:0;z-index:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.06) 3px,rgba(0,0,0,.06) 4px);
+  pointer-events:none;
+}
+
+.sc { position:relative;z-index:1;width:100% }
+
+/* corner brackets */
+.corners { position:absolute;inset:22px;pointer-events:none;z-index:2 }
+.corners span {
+  position:absolute;width:18px;height:18px;
+  border-color:rgba(0,229,255,.4);border-style:solid;
+}
+.corners .tl { top:0;left:0;border-width:1px 0 0 1px }
+.corners .tr { top:0;right:0;border-width:1px 1px 0 0 }
+.corners .bl { bottom:0;left:0;border-width:0 0 1px 1px }
+.corners .br { bottom:0;right:0;border-width:0 1px 1px 0 }
+
+/* ambient glows */
+.glow-a,.glow-b {
+  position:absolute;border-radius:50%;
+  filter:blur(130px);pointer-events:none;z-index:0;
+}
+.glow-a {
+  width:560px;height:560px;top:-120px;right:-80px;
+  background:radial-gradient(circle,rgba(0,87,255,.07),transparent 70%);
+}
+.glow-b {
+  width:420px;height:420px;bottom:-80px;left:-40px;
+  background:radial-gradient(circle,rgba(0,229,255,.05),transparent 70%);
+}
+
+/* ─── PROGRESS ─── */
+#progress { position:fixed;top:0;left:0;right:0;height:2px;background:var(--border);z-index:200 }
+#prog-fill {
+  height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan));
+  transition:width .4s ease;box-shadow:0 0 10px var(--cyanG);
+}
+
+/* ─── NAV ─── */
+#nav {
+  position:fixed;bottom:28px;left:50%;transform:translateX(-50%);
+  display:flex;align-items:center;gap:14px;z-index:200;
+  background:rgba(6,6,15,.92);border:1px solid var(--border);
+  padding:9px 20px;backdrop-filter:blur(16px);
+}
+.nbtn {
+  background:none;border:1px solid var(--borderB);color:var(--muted);
+  font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.15em;
+  padding:5px 14px;cursor:pointer;text-transform:uppercase;
+  transition:all .2s;
+}
+.nbtn:hover { border-color:var(--cyan);color:var(--cyan) }
+#ctr {
+  font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:var(--muted);letter-spacing:.25em;min-width:58px;text-align:center;
+}
+
+/* ─── TYPE SYSTEM ─── */
+.label {
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--cyan);letter-spacing:.35em;text-transform:uppercase;
+  margin-bottom:14px;opacity:.75;
+}
+.h1 {
+  font-family:'Bebas Neue',sans-serif;
+  font-size:clamp(60px,9vw,116px);
+  line-height:.92;letter-spacing:.02em;margin-bottom:22px;
+}
+.h2 {
+  font-family:'Bebas Neue',sans-serif;
+  font-size:clamp(44px,6.5vw,84px);
+  line-height:.94;letter-spacing:.02em;margin-bottom:18px;
+}
+.sub {
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:clamp(16px,2vw,22px);font-weight:300;
+  color:var(--muted);line-height:1.45;max-width:680px;
+}
+.cyan  { color:var(--cyan) }
+.red   { color:var(--red) }
+.green { color:var(--green) }
+.glow-text { text-shadow:0 0 22px var(--cyanG),0 0 60px rgba(0,229,255,.18) }
+
+/* ─── DIVIDER ─── */
+.div {
+  width:56px;height:2px;
+  background:linear-gradient(90deg,var(--cyan),transparent);
+  margin:20px 0;
+}
+
+/* ─── STATS ROW ─── */
+.stats { display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:36px }
+.stat {
+  border:1px solid var(--border);padding:22px;
+  background:var(--surf);position:relative;
+}
+.stat::before {
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--cyan),transparent);
+}
+.stat-n {
+  font-family:'Bebas Neue',sans-serif;font-size:54px;
+  color:var(--cyan);line-height:1;margin-bottom:6px;
+}
+.stat-l {
+  font-family:'Barlow Condensed',sans-serif;font-size:12px;
+  font-weight:700;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;
+}
+.stat-d {
+  font-family:'Barlow',sans-serif;font-size:13px;
+  color:var(--dim);margin-top:8px;line-height:1.55;
+}
+/* custom stat colors */
+.stat-n.r { color:var(--red) }
+.stat-n.g { color:var(--green) }
+
+/* ─── FEATURE LIST ─── */
+.feats { display:flex;flex-direction:column;gap:12px;margin-top:24px }
+.feat {
+  display:flex;align-items:flex-start;gap:16px;
+  padding:14px 18px;border:1px solid var(--border);
+  background:var(--surf);transition:border-color .2s;
+}
+.feat:hover { border-color:rgba(0,229,255,.3) }
+.ftag {
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--cyan);letter-spacing:.18em;text-transform:uppercase;
+  white-space:nowrap;padding-top:1px;min-width:110px;
+}
+.fbody {
+  font-family:'Barlow',sans-serif;font-size:13.5px;
+  color:var(--muted);line-height:1.55;
+}
+.fbody strong { color:var(--text);font-weight:600 }
+
+/* ─── TWO COLS ─── */
+.two { display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center }
+.two-w { display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:start }
+
+/* ─── TERMINAL ─── */
+.term {
+  background:#030310;border:1px solid var(--border);
+  padding:22px 24px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:2;
+}
+.term-head {
+  font-size:9px;letter-spacing:.3em;color:var(--dim);
+  border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;
+  text-transform:uppercase;
+}
+.ta { color:var(--green) }
+.tb { color:var(--red) }
+.te { color:var(--amber) }
+.tm { color:var(--muted) }
+.tc { color:var(--cyan) }
+.cursor {
+  display:inline-block;width:8px;height:13px;
+  background:var(--cyan);vertical-align:middle;
+  animation:blink 1.1s step-end infinite;
+}
+@keyframes blink { 50%{opacity:0} }
+
+/* ─── GRID 2x2 ─── */
+.g22 { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:28px }
+.gcard {
+  padding:20px 22px;border:1px solid var(--border);background:var(--surf);position:relative;
+}
+.gcard-n {
+  font-family:'Bebas Neue',sans-serif;font-size:52px;color:var(--blue);
+  opacity:.22;position:absolute;top:6px;right:14px;line-height:1;
+}
+.gcard-t {
+  font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;
+  letter-spacing:.18em;color:var(--cyan);text-transform:uppercase;margin-bottom:8px;
+}
+.gcard-b { font-family:'Barlow',sans-serif;font-size:13px;color:var(--muted);line-height:1.55 }
+
+/* ─── BIG QUOTE ─── */
+.bq {
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:clamp(18px,2.4vw,28px);font-weight:300;
+  color:var(--text);line-height:1.4;
+  border-left:2px solid var(--cyan);padding-left:24px;
+  margin:28px 0 20px;max-width:720px;
+}
+
+/* ─── TABLE ─── */
+.mtab { width:100%;border-collapse:collapse;margin-top:22px }
+.mtab th {
+  font-family:'JetBrains Mono',monospace;font-size:9px;
+  color:var(--dim);letter-spacing:.25em;text-transform:uppercase;
+  text-align:left;padding:7px 14px;border-bottom:1px solid var(--border);
+}
+.mtab td {
+  font-family:'Barlow',sans-serif;font-size:14px;color:var(--muted);
+  padding:11px 14px;border-bottom:1px solid var(--border);
+}
+.mtab td.hl { color:var(--cyan);font-family:'JetBrains Mono',monospace;font-weight:700 }
+.mtab tr:last-child td { border-bottom:none;color:var(--text) }
+
+/* ─── PRICING CARD ─── */
+.pcard {
+  border:1px solid var(--border);background:var(--surf);padding:22px 24px;
+  margin-bottom:14px;
+}
+.pcard.hot { border-color:rgba(0,229,255,.28);background:rgba(0,229,255,.03) }
+.ptier {
+  font-family:'JetBrains Mono',monospace;font-size:9px;
+  letter-spacing:.25em;color:var(--muted);text-transform:uppercase;
+  margin-bottom:4px;
+}
+.ptier.a { color:var(--cyan) }
+.pprice {
+  font-family:'Bebas Neue',sans-serif;font-size:40px;line-height:1;color:var(--text);
+}
+.pprice span { font-family:'Barlow',sans-serif;font-size:14px;color:var(--muted) }
+.pdesc {
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--dim);margin-top:4px;
+}
+
+/* ─── FOMO GRID ─── */
+.fg { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:26px }
+.fi {
+  padding:18px 20px;border:1px solid var(--border);background:var(--surf);
+}
+.fi.hot { border-color:rgba(255,34,85,.28);background:rgba(255,34,85,.04) }
+.fmark {
+  font-family:'JetBrains Mono',monospace;font-size:9px;
+  letter-spacing:.28em;text-transform:uppercase;margin-bottom:7px;
+}
+.fmark.d { color:var(--red) }
+.fmark.w { color:var(--amber) }
+.ftext { font-family:'Barlow',sans-serif;font-size:13.5px;color:var(--muted);line-height:1.55 }
+.ftext strong { color:var(--text) }
+
+/* ─── COVER specifics ─── */
+.eye {
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--cyan);letter-spacing:.45em;text-transform:uppercase;
+  margin-bottom:20px;opacity:.7;
+}
+.cover-h {
+  font-family:'Bebas Neue',sans-serif;
+  font-size:clamp(80px,12vw,148px);
+  line-height:.88;letter-spacing:.01em;margin-bottom:28px;
+}
+.cover-h .l1 { display:block;color:var(--text) }
+.cover-h .l2 { display:block;color:var(--cyan) }
+.pills { margin-bottom:32px }
+.pill {
+  display:inline-block;
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  letter-spacing:.18em;padding:5px 13px;
+  border:1px solid var(--borderB);color:var(--muted);
+  text-transform:uppercase;margin-right:8px;margin-bottom:8px;
+}
+.pill.on { border-color:var(--cyan);color:var(--cyan);background:var(--cyanD) }
+.classified {
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  color:var(--dim);letter-spacing:.2em;
+  border:1px solid var(--border);display:inline-block;padding:7px 16px;
+}
+
+/* ─── CTA slide ─── */
+.cta-url {
+  font-family:'JetBrains Mono',monospace;font-size:clamp(13px,1.8vw,18px);
+  color:var(--cyan);letter-spacing:.15em;
+  border-bottom:1px solid rgba(0,229,255,.4);
+  padding-bottom:4px;display:inline-block;margin-top:28px;
+}
+.cta-sign {
+  font-family:'Bebas Neue',sans-serif;
+  font-size:clamp(30px,4.5vw,58px);
+  color:var(--text);margin-top:40px;line-height:1.05;
+}
+
+/* ─── STAGGER ANIMATIONS ─── */
+.slide.active .stag > * {
+  opacity:0;animation:fadeUp .5s ease forwards;
+}
+.slide.active .stag > *:nth-child(1){animation-delay:.04s}
+.slide.active .stag > *:nth-child(2){animation-delay:.13s}
+.slide.active .stag > *:nth-child(3){animation-delay:.22s}
+.slide.active .stag > *:nth-child(4){animation-delay:.31s}
+.slide.active .stag > *:nth-child(5){animation-delay:.40s}
+@keyframes fadeUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+
+/* ─── PARTICLE CANVAS (cover) ─── */
+#canvas { position:absolute;inset:0;z-index:0;pointer-events:none }
+
+/* ─── PRINT ─── */
+@media print {
+  html,body { overflow:visible }
+  #deck { height:auto;overflow:visible }
+  .slide {
+    position:relative;opacity:1;transform:none;pointer-events:all;
+    height:100vh;page-break-after:always;
+  }
+  #nav,#progress,#canvas { display:none }
+}
+
+@media (max-width:860px){
+  .slide{padding:36px}
+  .two,.two-w{grid-template-columns:1fr;gap:28px}
+  .stats,.fg,.g22{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div id="progress"><div id="prog-fill" style="width:12.5%"></div></div>
+
+<div id="deck">
+
+<!-- ══════════════════════════════════════════
+     SLIDE 1 — COVER
+══════════════════════════════════════════ -->
+<div class="slide active" id="s1">
+  <canvas id="canvas"></canvas>
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="eye">AI GOVERNANCE INFRASTRUCTURE &nbsp;/&nbsp; INVESTOR BRIEF 2026</div>
+    <div class="cover-h">
+      <span class="l1">EDON</span>
+      <span class="l2 glow-text">GOVERNS.</span>
+    </div>
+    <div class="sub" style="margin-bottom:28px">
+      The control layer between AI agents and the real world.
+      Every decision governed. Every action audited. Every breach self-healed — autonomously, in production, today.
+    </div>
+    <div class="pills">
+      <span class="pill on">GOVERNANCE ENGINE</span>
+      <span class="pill on">SELF-HEALING</span>
+      <span class="pill on">FLEET LEARNING</span>
+      <span class="pill on">SHADOW MODE</span>
+    </div>
+    <div class="classified">CONFIDENTIAL &nbsp;&mdash;&nbsp; DO NOT DISTRIBUTE</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 2 — THE PROBLEM
+══════════════════════════════════════════ -->
+<div class="slide" id="s2">
+  <div class="glow-a"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="label">01 &mdash; THE PROBLEM</div>
+    <div class="h1">YOUR AGENTS ARE<br><span class="red">ACTING RIGHT NOW.</span><br>UNGOVERNED.</div>
+    <div class="sub">80% of enterprises will deploy autonomous AI agents in 2026. Not one has a governance layer.</div>
+    <div class="stats stag">
+      <div class="stat">
+        <div class="stat-n">$4.4T</div>
+        <div class="stat-l">Enterprise AI spend by 2028</div>
+        <div class="stat-d">Agents sending emails, executing code, writing contracts — with zero oversight.</div>
+      </div>
+      <div class="stat">
+        <div class="stat-n">0</div>
+        <div class="stat-l">Governance products in production</div>
+        <div class="stat-d">No NIST framework. No ISO standard. No shipped product. A total vacuum.</div>
+      </div>
+      <div class="stat">
+        <div class="stat-n r">1</div>
+        <div class="stat-l">Bad decision ends everything</div>
+        <div class="stat-d">One agent. One policy violation. One leaked record. That is all it takes.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 3 — THE SOLUTION
+══════════════════════════════════════════ -->
+<div class="slide" id="s3">
+  <div class="glow-b"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="two">
+      <div>
+        <div class="label">02 &mdash; THE SOLUTION</div>
+        <div class="h2">THE CONTROL<br><span class="cyan">PLANE FOR</span><br>AI AGENTS</div>
+        <div class="sub" style="margin-bottom:18px">EDON sits between every agent and every action. Before anything touches the real world, EDON decides.</div>
+        <div class="div"></div>
+        <div class="feats stag">
+          <div class="feat">
+            <div class="ftag">DECISION ENGINE</div>
+            <div class="fbody"><strong>ALLOW / BLOCK / ESCALATE / DEGRADE / PAUSE</strong> — every agent action adjudicated in under 50ms.</div>
+          </div>
+          <div class="feat">
+            <div class="ftag">KILL SWITCH</div>
+            <div class="fbody"><strong>Global, per-tenant, or per-agent.</strong> One call halts everything before damage spreads across your stack.</div>
+          </div>
+          <div class="feat">
+            <div class="ftag">AUDIT CHAIN</div>
+            <div class="fbody"><strong>Full chain of custody</strong> on every decision. Defensible in court. Ready for any regulator.</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="term">
+          <div class="term-head">// EDON GATEWAY — LIVE DECISION TRACE</div>
+          <span class="tm">agent: </span><span class="tc">outbound_agent</span><br>
+          <span class="tm">action: </span>send_email &rarr; cfo@client.com<br>
+          <span class="tm">payload: </span>contract_draft_v3.pdf<br>
+          <span class="tm">risk_score: </span><span class="te">0.62</span><br>
+          <span class="tm">policy_match: </span>CONTRACT_SEND_LIMIT<br>
+          <br>
+          <span class="tm">verdict: </span><span class="te">ESCALATE</span><br>
+          <span class="tm">reason: </span>value exceeds $50K threshold<br>
+          <span class="tm">latency: </span><span class="tc">34ms</span><br>
+          <br>
+          <span class="tm">--- human override in 11s ---</span><br>
+          <span class="tm">decision: </span><span class="ta">APPROVED</span><br>
+          <span class="tm">audit_ref: </span>evt_8f3a92c1<span class="cursor"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 4 — HOW IT WORKS
+══════════════════════════════════════════ -->
+<div class="slide" id="s4">
+  <div class="glow-a"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="label">03 &mdash; HOW IT WORKS</div>
+    <div class="h2">FIVE SYSTEMS.<br><span class="cyan">ONE COMMAND LAYER.</span></div>
+    <div class="g22 stag">
+      <div class="gcard">
+        <div class="gcard-n">01</div>
+        <div class="gcard-t">GOVERNANCE ENGINE</div>
+        <div class="gcard-b">Policy-backed decisions in &lt;50ms. Risk scoring, prompt injection detection, intent alignment. Per-tenant priority-ordered rule sets updated in real time.</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard-n">02</div>
+        <div class="gcard-t">SELF-HEALING (CREAO)</div>
+        <div class="gcard-b">Every 10 minutes: finds vulnerabilities, generates attack narratives, validates them, auto-deploys hardened rules. Your governance surface shrinks while you sleep.</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard-n">03</div>
+        <div class="gcard-t">SHADOW MODE</div>
+        <div class="gcard-b">Every new policy replayed against historical traces before going live. Zero-risk rule deployment. Catch regressions before they reach production — automatically.</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard-n">04</div>
+        <div class="gcard-t">FLEET LEARNING</div>
+        <div class="gcard-b">Bayesian risk models updated cross-tenant. What client 1's agent encounters today, every client's governance benefits from tomorrow — fully anonymized.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 5 — THE MOAT
+══════════════════════════════════════════ -->
+<div class="slide" id="s5">
+  <div class="glow-b"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="two">
+      <div>
+        <div class="label">04 &mdash; THE MOAT</div>
+        <div class="h1">THE DATA<br><span class="cyan">FLYWHEEL</span><br>NO ONE CAN<br>REPLICATE</div>
+      </div>
+      <div>
+        <div class="bq">"Every governance decision EDON makes trains the fleet model. The first mover owns the training data. The gap compounds daily — and a competitor starting today cannot catch up."</div>
+        <div class="feats stag">
+          <div class="feat">
+            <div class="ftag">10K / DAY</div>
+            <div class="fbody"><strong>Per client, per day.</strong> At 10 clients: 100K governed decisions/day feeding the risk model continuously. No competitor has this data.</div>
+          </div>
+          <div class="feat">
+            <div class="ftag">FINE-TUNING</div>
+            <div class="fbody"><strong>Monthly model retraining</strong> on real-world governance outcomes. EDON's accuracy compounds. A new entrant ships with a blank slate model.</div>
+          </div>
+          <div class="feat">
+            <div class="ftag">NETWORK EFFECT</div>
+            <div class="fbody"><strong>Client 10 ships with a model</strong> trained on 9 prior deployments. The product gets materially better with every contract signed.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 6 — BUSINESS MODEL
+══════════════════════════════════════════ -->
+<div class="slide" id="s6">
+  <div class="glow-a"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="two-w">
+      <div>
+        <div class="label">05 &mdash; BUSINESS MODEL</div>
+        <div class="h1">98%<br><span class="cyan">GROSS</span><br>MARGIN</div>
+        <div class="sub">SaaS per-decision pricing. No humans in the loop. Infrastructure cost scales at a fraction of revenue.</div>
+        <table class="mtab" style="margin-top:28px">
+          <thead><tr><th>Scale</th><th>Revenue/mo</th><th>Total COGS</th><th>Margin</th></tr></thead>
+          <tbody>
+            <tr><td>1 client</td><td>$5,000</td><td>~$230</td><td class="hl">95%</td></tr>
+            <tr><td>5 clients</td><td>$25,000</td><td>~$530</td><td class="hl">97.9%</td></tr>
+            <tr><td>20 clients</td><td>$100,000</td><td>~$1,700</td><td class="hl">98.3%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="pcard">
+          <div class="ptier">STARTER</div>
+          <div class="pprice">$2,500 <span>/mo</span></div>
+          <div class="pdesc">3M governed decisions / month</div>
+        </div>
+        <div class="pcard hot">
+          <div class="ptier a">GROWTH</div>
+          <div class="pprice" style="color:var(--cyan)">$7,500 <span>/mo</span></div>
+          <div class="pdesc">15M governed decisions / month</div>
+        </div>
+        <div class="pcard">
+          <div class="ptier">ENTERPRISE</div>
+          <div class="pprice">$25K+ <span>/mo</span></div>
+          <div class="pdesc">Unlimited decisions + SLA + white-label</div>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-top:12px;line-height:1.8">
+          COGS at 10K decisions/day/client: ~$53–90/mo<br>
+          Contract ACV: $30K–$300K<br>
+          CAC: near zero (inbound + proof report)
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 7 — THE WINDOW IS CLOSING
+══════════════════════════════════════════ -->
+<div class="slide" id="s7">
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="label">06 &mdash; THE WINDOW IS CLOSING</div>
+    <div class="h2">THE STANDARD IS BEING<br><span class="cyan">WRITTEN RIGHT NOW.</span><br>YOU ARE READING IT.</div>
+    <div class="fg stag">
+      <div class="fi hot">
+        <div class="fmark d">REGULATORY PRESSURE</div>
+        <div class="ftext"><strong>EU AI Act enforcement is live.</strong> Autonomous agent systems classified high-risk must have human oversight mechanisms. Enterprises are scrambling with no vendor to call.</div>
+      </div>
+      <div class="fi hot">
+        <div class="fmark d">ENTERPRISE RFPs IN MOTION</div>
+        <div class="ftext"><strong>Fortune 500 procurement teams are running AI governance RFPs today.</strong> The first vendor to close 3 logos sets the category benchmark everyone else is measured against.</div>
+      </div>
+      <div class="fi">
+        <div class="fmark w">THE INCIDENT IS INEVITABLE</div>
+        <div class="ftext"><strong>The first major AI agent breach at a public company is months away.</strong> When it lands, every enterprise in that sector will need a governance layer within 90 days. EDON is the only one ready to deliver.</div>
+      </div>
+      <div class="fi">
+        <div class="fmark w">COMPETITIVE WINDOW: CLOSING</div>
+        <div class="ftext"><strong>No funded competitor has shipped a production governance layer.</strong> EDON is live, self-healing, and deployed. This window closes the moment Series A money reaches the space — likely 2026 Q3.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SLIDE 8 — THE ASK
+══════════════════════════════════════════ -->
+<div class="slide" id="s8">
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+  <div class="corners"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+  <div class="sc">
+    <div class="label">07 &mdash; THE ASK</div>
+    <div class="h1">RAISING<br><span class="cyan">$1.5M</span><br>SEED.</div>
+    <div class="sub" style="margin-bottom:28px">To close the first 10 enterprise clients, harden infrastructure for scale, and own the AI governance category before it becomes contested.</div>
+    <div class="stats stag">
+      <div class="stat">
+        <div class="stat-n">10</div>
+        <div class="stat-l">Target clients — Year 1</div>
+        <div class="stat-d">$100K MRR at 98% gross margin. Zero additional headcount required to operate.</div>
+      </div>
+      <div class="stat">
+        <div class="stat-n g">LIVE</div>
+        <div class="stat-l">In production today</div>
+        <div class="stat-d">Full governance stack, CREAO self-healing, shadow mode, fleet learning — shipped and running.</div>
+      </div>
+      <div class="stat">
+        <div class="stat-n">98%</div>
+        <div class="stat-l">Gross margin at scale</div>
+        <div class="stat-d">Every dollar above $10K/month in ARR is nearly pure profit. Infrastructure cost is structurally capped.</div>
+      </div>
+    </div>
+    <div class="cta-sign">THE AGENTS ARE ALREADY RUNNING.<br>THE QUESTION IS WHETHER YOU<br>CONTROL <span class="cyan">THEM.</span></div>
+    <div class="cta-url">console.edoncore.com</div>
+  </div>
+</div>
+
+</div><!-- #deck -->
+
+<nav id="nav">
+  <button class="nbtn" id="bp">PREV</button>
+  <span id="ctr">01 / 08</span>
+  <button class="nbtn" id="bn">NEXT</button>
+</nav>
+
+<script>
+// ── PARTICLE CANVAS ────────────────────────────────────────────────────────
+(function(){
+  const cv = document.getElementById('canvas');
+  if(!cv) return;
+  const ctx = cv.getContext('2d');
+  let W,H,pts=[];
+  function resize(){
+    W=cv.width=cv.offsetWidth;
+    H=cv.height=cv.offsetHeight;
+  }
+  function mkPt(){
+    return {
+      x:Math.random()*W, y:Math.random()*H,
+      vx:(Math.random()-.5)*.25, vy:(Math.random()-.5)*.25,
+      r:Math.random()*1.2+.3,
+      a:Math.random()*.5+.1
+    };
+  }
+  function init(){
+    resize();
+    pts=Array.from({length:70},mkPt);
+  }
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    pts.forEach(p=>{
+      p.x+=p.vx; p.y+=p.vy;
+      if(p.x<0||p.x>W) p.vx*=-1;
+      if(p.y<0||p.y>H) p.vy*=-1;
+      ctx.beginPath();
+      ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(0,229,255,${p.a})`;
+      ctx.fill();
+    });
+    // connect close pairs
+    for(let i=0;i<pts.length;i++){
+      for(let j=i+1;j<pts.length;j++){
+        const dx=pts[i].x-pts[j].x, dy=pts[i].y-pts[j].y;
+        const d=Math.sqrt(dx*dx+dy*dy);
+        if(d<120){
+          ctx.beginPath();
+          ctx.moveTo(pts[i].x,pts[i].y);
+          ctx.lineTo(pts[j].x,pts[j].y);
+          ctx.strokeStyle=`rgba(0,87,255,${(1-d/120)*.12})`;
+          ctx.lineWidth=.6;
+          ctx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+  window.addEventListener('resize',()=>{resize()});
+  init(); draw();
+})();
+
+// ── SLIDE ENGINE ───────────────────────────────────────────────────────────
+const slides = Array.from(document.querySelectorAll('.slide'));
+const ctr    = document.getElementById('ctr');
+const pf     = document.getElementById('prog-fill');
+let cur = 0;
+
+function goTo(n){
+  if(n===cur || n<0 || n>=slides.length) return;
+  slides[cur].classList.remove('active');
+  slides[cur].classList.add('leaving');
+  const prev = cur;
+  cur = n;
+  slides[cur].classList.add('active');
+  setTimeout(()=>slides[prev].classList.remove('leaving'), 480);
+  ctr.textContent = String(cur+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
+  pf.style.width = ((cur+1)/slides.length*100)+'%';
+}
+
+document.getElementById('bn').addEventListener('click',()=>goTo(cur+1));
+document.getElementById('bp').addEventListener('click',()=>goTo(cur-1));
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key==='ArrowDown') goTo(cur+1);
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')    goTo(cur-1);
+});
+</script>
+</body>
+</html>

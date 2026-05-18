@@ -11,6 +11,24 @@ from datetime import datetime, UTC
 from contextlib import contextmanager
 
 
+def get_db_url() -> str:
+    """Return the DB URL from EDON_DB_URL env var, defaulting to SQLite.
+
+    Used by Alembic migrations and any code that needs the canonical DB URL.
+    Does NOT change the existing runtime connection logic in this module.
+    """
+    url = os.getenv("EDON_DB_URL", "").strip()
+    if url:
+        return url
+    db_path = os.getenv("EDON_DATABASE_PATH", "edon_gateway.db").strip()
+    return f"sqlite:///{db_path}"
+
+
+def is_postgresql() -> bool:
+    """Return True when the configured DB URL points to PostgreSQL."""
+    return get_db_url().startswith("postgresql")
+
+
 def _resolve_db_path() -> Path:
     """Resolve DB file path from EDON_DB_URL (sqlite:///path) or EDON_DATABASE_PATH."""
     url = os.getenv("EDON_DB_URL", "").strip()
@@ -440,6 +458,7 @@ class Database:
                 ("human_override_reason", "TEXT"),
                 ("processing_latency_ms", "REAL"),
                 ("edge_node_id", "TEXT"),
+                ("request_hash", "TEXT"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE audit_events ADD COLUMN {col} {typ}")  # safe: schema-only
@@ -692,6 +711,12 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)
             """)
+            # Lazy migration: add department column if missing
+            try:
+                cursor.execute("ALTER TABLE agents ADD COLUMN department TEXT")
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
 
             # Behavioral CAV windows (rolling telemetry snapshots per agent)
             cursor.execute("""
@@ -1228,6 +1253,8 @@ class Database:
         stated_intent: Optional[str] = None,
         user_message: Optional[str] = None,
         created_at_override: Optional[str] = None,
+        request_hash: Optional[str] = None,
+        decision_id_override: Optional[str] = None,
     ) -> str:
         """Save an audit event with optional chain hash and pilot-ready fields.
         
@@ -1245,6 +1272,8 @@ class Database:
             processing_latency_ms: Latency in ms (optional)
             edge_node_id: Edge node ID for physical systems (optional)
             created_at_override: Use this as created_at/decision_id timestamp (for async audit writer).
+            request_hash: SHA-256 of canonical request payload.
+            decision_id_override: Preallocated canonical decision ID.
             
         Returns:
             Decision ID that was created
@@ -1266,6 +1295,7 @@ class Database:
         action_summary = action_summary or decision.get("action_summary")
         stated_intent = stated_intent or context.get("stated_intent")
         user_message = user_message or context.get("user_message")
+        request_hash = request_hash or context.get("request_hash")
         context_json = json.dumps(context)
 
         # Optional field-level encryption of action params (Tier 1 security)
@@ -1288,7 +1318,7 @@ class Database:
             intent_id or "", agent_id or "", context_json, now,
             customer_id or "", str(anomaly_score) if anomaly_score is not None else "",
             "1" if human_override else "0", human_override_actor_id or "", human_override_reason or "",
-            str(processing_latency_ms) if processing_latency_ms is not None else "", edge_node_id or "",
+            str(processing_latency_ms) if processing_latency_ms is not None else "", edge_node_id or "", request_hash or "",
         ])
         prev_hash = self._get_previous_chain_hash()
         chain_hash = self._compute_chain_hash(prev_hash, entry_payload)
@@ -1305,21 +1335,21 @@ class Database:
                     intent_id, agent_id, context, created_at,
                     chain_hash, chain_sig, customer_id, anomaly_score, human_override,
                     human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id,
-                    is_payload_encrypted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_payload_encrypted, request_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ts, action_id, tool, op, params_json, source, est_risk, comp_risk,
                 verdict, reason_code, explanation, policy_version, policy_rule_id, action_summary, stated_intent, user_message,
                 intent_id, agent_id, context_json, now,
                 chain_hash, chain_sig, customer_id, anomaly_score, 1 if human_override else 0,
                 human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id,
-                is_payload_encrypted
+                is_payload_encrypted, request_hash
             ))
             
             # Also save to decisions table for quick lookup
             # Use action_id + timestamp for unique decision_id
             action_id = action.get("id", "")
-            decision_id = f"dec-{action_id}-{now}" if action_id else f"dec-{now}"
+            decision_id = decision_id_override or (f"dec-{action_id}-{now}" if action_id else f"dec-{now}")
             cursor.execute("""
                 INSERT OR REPLACE INTO decisions 
                 (decision_id, action_id, verdict, reason_code, explanation,
@@ -1349,7 +1379,7 @@ class Database:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            q = "SELECT id, chain_hash, chain_sig, timestamp, action_id, action_tool, action_op, action_params, action_source, action_estimated_risk, action_computed_risk, decision_verdict, decision_reason_code, decision_explanation, decision_policy_version, policy_rule_id, action_summary, stated_intent, user_message, intent_id, agent_id, context, created_at, customer_id, anomaly_score, human_override, human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id FROM audit_events ORDER BY id ASC"
+            q = "SELECT id, chain_hash, chain_sig, timestamp, action_id, action_tool, action_op, action_params, action_source, action_estimated_risk, action_computed_risk, decision_verdict, decision_reason_code, decision_explanation, decision_policy_version, policy_rule_id, action_summary, stated_intent, user_message, intent_id, agent_id, context, created_at, customer_id, anomaly_score, human_override, human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id, request_hash FROM audit_events ORDER BY id ASC"
             if limit:
                 q += f" LIMIT {int(limit)}"
             cursor.execute(q)
@@ -1372,7 +1402,7 @@ class Database:
                 row["created_at"] or "",
                 row["customer_id"] or "", str(row["anomaly_score"]) if row["anomaly_score"] is not None else "",
                 "1" if row["human_override"] else "0", row["human_override_actor_id"] or "", row["human_override_reason"] or "",
-                str(row["processing_latency_ms"]) if row["processing_latency_ms"] is not None else "", row["edge_node_id"] or "",
+                str(row["processing_latency_ms"]) if row["processing_latency_ms"] is not None else "", row["edge_node_id"] or "", row["request_hash"] or "",
             ])
             expected = self._compute_chain_hash(prev_hash, entry_payload)
             if row["chain_hash"] != expected:
@@ -3361,6 +3391,7 @@ class Database:
         mag_enabled: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
         vendor_id: Optional[str] = None,
+        department: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register or update a full agent record in the agents table.
 
@@ -3377,8 +3408,8 @@ class Database:
                     (agent_id, tenant_id, name, agent_type, description, capabilities,
                      policy_pack, mag_enabled, cav_enabled, status, registered_at,
                      last_seen_at, total_actions, total_allowed, total_blocked,
-                     total_escalated, metadata, vendor_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, 0, 0, 0, 0, ?, ?)
+                     total_escalated, metadata, vendor_id, department)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, 0, 0, 0, 0, ?, ?, ?)
                 ON CONFLICT(agent_id) DO UPDATE SET
                     name = excluded.name,
                     agent_type = excluded.agent_type,
@@ -3388,10 +3419,11 @@ class Database:
                     mag_enabled = excluded.mag_enabled,
                     metadata = excluded.metadata,
                     last_seen_at = excluded.last_seen_at,
-                    vendor_id = COALESCE(excluded.vendor_id, agents.vendor_id)
+                    vendor_id = COALESCE(excluded.vendor_id, agents.vendor_id),
+                    department = COALESCE(excluded.department, agents.department)
             """, (
                 agent_id, tenant_id, name, agent_type, description, caps_json,
-                policy_pack, 1 if mag_enabled else 0, now, now, meta_json, vendor_id,
+                policy_pack, 1 if mag_enabled else 0, now, now, meta_json, vendor_id, department,
             ))
             conn.commit()
         return self.get_agent(agent_id) or {}
@@ -3439,6 +3471,7 @@ class Database:
                 "total_blocked": row["total_blocked"],
                 "total_escalated": row["total_escalated"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "department": row["department"] if "department" in row.keys() else None,
             }
 
     def list_agents(self, tenant_id: str) -> List[Dict[str, Any]]:
@@ -3470,6 +3503,7 @@ class Database:
                 "total_blocked": row["total_blocked"],
                 "total_escalated": row["total_escalated"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "department": row["department"] if "department" in row.keys() else None,
             })
         return result
 
@@ -3861,6 +3895,601 @@ class Database:
             )
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    # ── CI/CD Scans ──────────────────────────────────────────────────────────────
+
+    def save_cicd_scan(self, tenant_id: str, scan_id: str, data: dict) -> None:
+        """Persist a CI/CD scan result."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cicd_scans (
+                    scan_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    repo TEXT,
+                    branch TEXT,
+                    commit_sha TEXT,
+                    gate_passed INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO cicd_scans (scan_id, tenant_id, repo, branch, commit_sha, gate_passed, status, data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scan_id) DO UPDATE SET
+                  gate_passed = excluded.gate_passed,
+                  status = excluded.status,
+                  data = excluded.data
+            """, (
+                scan_id,
+                tenant_id,
+                data.get("repo"),
+                data.get("branch"),
+                data.get("commit_sha"),
+                1 if data.get("gate_passed") else 0,
+                data.get("status", "unknown"),
+                _json.dumps(data),
+                now,
+            ))
+            conn.commit()
+
+    def get_cicd_scan(self, scan_id: str, tenant_id: Optional[str] = None) -> Optional[dict]:
+        """Fetch a CI/CD scan by ID."""
+        import json as _json
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if tenant_id:
+                cursor.execute(
+                    "SELECT data FROM cicd_scans WHERE scan_id=? AND tenant_id=?",
+                    (scan_id, tenant_id),
+                )
+            else:
+                cursor.execute("SELECT data FROM cicd_scans WHERE scan_id=?", (scan_id,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return _json.loads(row[0] if not hasattr(row, "keys") else row["data"])
+        except Exception:
+            return None
+
+    def list_cicd_scans(self, tenant_id: str, limit: int = 25, repo: Optional[str] = None) -> list:
+        """List recent CI/CD scans for a tenant, newest-first."""
+        import json as _json
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if repo:
+                cursor.execute(
+                    "SELECT data FROM cicd_scans WHERE tenant_id=? AND repo=? ORDER BY created_at DESC LIMIT ?",
+                    (tenant_id, repo, limit),
+                )
+            else:
+                cursor.execute(
+                    "SELECT data FROM cicd_scans WHERE tenant_id=? ORDER BY created_at DESC LIMIT ?",
+                    (tenant_id, limit),
+                )
+            rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            try:
+                result.append(_json.loads(row[0] if not hasattr(row, "keys") else row["data"]))
+            except Exception:
+                pass
+        return result
+
+    # ── Hardening Results ─────────────────────────────────────────────────────────
+
+    def save_hardening_result(self, tenant_id: str, result: dict) -> None:
+        """Persist the last hardening run result for a tenant."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_settings (
+                    tenant_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, key)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO tenant_settings (tenant_id, key, value, updated_at)
+                VALUES (?, 'hardening_result', ?, ?)
+                ON CONFLICT(tenant_id, key) DO UPDATE SET
+                  value = excluded.value, updated_at = excluded.updated_at
+            """, (tenant_id, _json.dumps(result), now))
+            conn.commit()
+
+    def get_hardening_result(self, tenant_id: str) -> Optional[dict]:
+        """Fetch the last hardening run result for a tenant."""
+        import json as _json
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_settings (
+                    tenant_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, key)
+                )
+            """)
+            conn.commit()
+            cursor.execute(
+                "SELECT value FROM tenant_settings WHERE tenant_id=? AND key='hardening_result'",
+                (tenant_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return _json.loads(row[0] if not hasattr(row, "keys") else row["value"])
+        except Exception:
+            return None
+
+    # ── Kill Switch ──────────────────────────────────────────────────────────────
+
+    def get_kill_switch(self, tenant_id: str) -> dict:
+        """Return current kill switch state for tenant from DB."""
+        import json as _json
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_settings (
+                    tenant_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, key)
+                )
+            """)
+            conn.commit()
+            cursor.execute(
+                "SELECT value FROM tenant_settings WHERE tenant_id=? AND key='kill_switch'",
+                (tenant_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return {"active": False, "tenant_id": tenant_id}
+        try:
+            return _json.loads(row["value"] if hasattr(row, "keys") else row[0])
+        except Exception:
+            return {"active": False, "tenant_id": tenant_id}
+
+    def set_kill_switch(self, tenant_id: str, state: dict) -> None:
+        """Persist kill switch state to DB."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_settings (
+                    tenant_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, key)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO tenant_settings (tenant_id, key, value, updated_at)
+                VALUES (?, 'kill_switch', ?, ?)
+                ON CONFLICT(tenant_id, key) DO UPDATE SET
+                  value = excluded.value, updated_at = excluded.updated_at
+            """, (tenant_id, _json.dumps(state), now))
+            conn.commit()
+
+    # ── Escalations (human review queue) ─────────────────────────────────────────
+
+    def save_escalation(self, decision_id: str, record: dict) -> None:
+        """Upsert an escalation record. Called on enqueue and on every status change."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS escalations (
+                    decision_id TEXT PRIMARY KEY,
+                    tenant_id   TEXT,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO escalations (decision_id, tenant_id, status, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_id) DO UPDATE SET
+                    status = excluded.status,
+                    data   = excluded.data,
+                    updated_at = excluded.updated_at
+            """, (
+                decision_id,
+                record.get("tenant_id"),
+                record.get("status", "pending"),
+                _json.dumps(record),
+                record.get("created_at", now),
+                now,
+            ))
+            conn.commit()
+
+    def list_escalations(
+        self,
+        tenant_id: Optional[str] = None,
+        status: Optional[str] = "pending",
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return escalation records from DB, newest first."""
+        import json as _json
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS escalations (
+                    decision_id TEXT PRIMARY KEY,
+                    tenant_id   TEXT,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            q = "SELECT data FROM escalations WHERE 1=1"
+            params: List[Any] = []
+            if status:
+                q += " AND status = ?"
+                params.append(status)
+            if tenant_id:
+                q += " AND tenant_id = ?"
+                params.append(tenant_id)
+            q += f" ORDER BY created_at DESC LIMIT {int(limit)}"
+            cursor = conn.execute(q, params)
+            rows = cursor.fetchall()
+        out = []
+        for row in rows:
+            try:
+                raw = row["data"] if hasattr(row, "keys") else row[0]
+                out.append(_json.loads(raw))
+            except Exception:
+                pass
+        return out
+
+    # ── Per-tenant fine-tuned models ──────────────────────────────────────────────
+
+    def save_tenant_model(
+        self,
+        tenant_id: str,
+        job_id: str,
+        model_id: str = "",
+        status: str = "training",
+    ) -> None:
+        """Upsert the fine-tuning job/model record for a tenant."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_models (
+                    tenant_id  TEXT PRIMARY KEY,
+                    job_id     TEXT NOT NULL,
+                    model_id   TEXT NOT NULL DEFAULT '',
+                    status     TEXT NOT NULL DEFAULT 'training',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO tenant_models (tenant_id, job_id, model_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id) DO UPDATE SET
+                    job_id     = excluded.job_id,
+                    model_id   = CASE WHEN excluded.model_id != '' THEN excluded.model_id ELSE model_id END,
+                    status     = excluded.status,
+                    updated_at = excluded.updated_at
+            """, (tenant_id, job_id, model_id, status, now, now))
+            conn.commit()
+
+    def get_tenant_model(self, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Return the active fine-tuned model record for a tenant, or None."""
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tenant_models (
+                    tenant_id  TEXT PRIMARY KEY,
+                    job_id     TEXT NOT NULL,
+                    model_id   TEXT NOT NULL DEFAULT '',
+                    status     TEXT NOT NULL DEFAULT 'training',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            cursor = conn.execute(
+                "SELECT tenant_id, job_id, model_id, status, created_at, updated_at "
+                "FROM tenant_models WHERE tenant_id = ?",
+                (tenant_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        if hasattr(row, "keys"):
+            return dict(row)
+        return {
+            "tenant_id": row[0], "job_id": row[1], "model_id": row[2],
+            "status": row[3], "created_at": row[4], "updated_at": row[5],
+        }
+
+    def count_new_audit_events(self, tenant_id: str, since: str) -> int:
+        """Count labeled audit events for a tenant created after `since` (ISO timestamp)."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """SELECT COUNT(*) FROM audit_events
+                   WHERE customer_id = ? AND created_at > ?
+                   AND decision_explanation IS NOT NULL
+                   AND LENGTH(decision_explanation) >= 20""",
+                (tenant_id, since),
+            )
+            row = cursor.fetchone()
+        return (row[0] if row else 0)
+
+    # ── Fix proposals (shadow engine) ─────────────────────────────────────────────
+
+    def save_fix_proposal(self, proposal_id: str, data: dict) -> None:
+        """Upsert a fix proposal record."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fix_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    tenant_id   TEXT,
+                    status      TEXT NOT NULL DEFAULT 'pending_review',
+                    severity    TEXT,
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO fix_proposals (proposal_id, tenant_id, status, severity, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                    status   = excluded.status,
+                    data     = excluded.data,
+                    updated_at = excluded.updated_at
+            """, (
+                proposal_id,
+                data.get("tenant_id"),
+                data.get("status", "pending_review"),
+                data.get("severity"),
+                _json.dumps(data),
+                data.get("created_at", now),
+                now,
+            ))
+            conn.commit()
+
+    def list_fix_proposals(
+        self,
+        tenant_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Return fix proposal records from DB, newest first."""
+        import json as _json
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fix_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    tenant_id   TEXT,
+                    status      TEXT NOT NULL DEFAULT 'pending_review',
+                    severity    TEXT,
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                )
+            """)
+            q = "SELECT data FROM fix_proposals WHERE 1=1"
+            params: List[Any] = []
+            if status:
+                q += " AND status = ?"
+                params.append(status)
+            if tenant_id:
+                q += " AND tenant_id = ?"
+                params.append(tenant_id)
+            q += f" ORDER BY created_at DESC LIMIT {int(limit)}"
+            cursor = conn.execute(q, params)
+            rows = cursor.fetchall()
+        out = []
+        for row in rows:
+            try:
+                raw = row["data"] if hasattr(row, "keys") else row[0]
+                out.append(_json.loads(raw))
+            except Exception:
+                pass
+        return out
+
+    # ── Assistant Proposals ──────────────────────────────────────────────────────
+
+    def save_assistant_proposal(self, tenant_id: str, proposal_id: str, data: dict) -> None:
+        """Persist a pending assistant proposal so it survives restarts."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_proposals (
+                    proposal_id TEXT NOT NULL PRIMARY KEY,
+                    tenant_id   TEXT NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO assistant_proposals (proposal_id, tenant_id, status, data, created_at)
+                VALUES (?, ?, 'pending', ?, ?)
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                  data=excluded.data, status=excluded.status
+            """, (proposal_id, tenant_id, _json.dumps(data), now))
+            conn.commit()
+
+    def get_assistant_proposal(self, proposal_id: str, tenant_id: str) -> Optional[dict]:
+        """Fetch a pending assistant proposal by ID, scoped to tenant."""
+        import json as _json
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_proposals (
+                    proposal_id TEXT NOT NULL PRIMARY KEY,
+                    tenant_id   TEXT NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    data        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+            row = conn.execute(
+                "SELECT data FROM assistant_proposals WHERE proposal_id=? AND tenant_id=?",
+                (proposal_id, tenant_id),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            val = row[0] if not hasattr(row, "keys") else row["data"]
+            return _json.loads(val)
+        except Exception:
+            return None
+
+    # ── Assistant conversations & memory ──────────────────────────────────────
+
+    def _ensure_assistant_tables(self, conn) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_conversations (
+                id          TEXT PRIMARY KEY,
+                tenant_id   TEXT NOT NULL,
+                user_id     TEXT,
+                title       TEXT,
+                messages    TEXT NOT NULL DEFAULT '[]',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_asst_conv_tenant
+            ON assistant_conversations(tenant_id, updated_at DESC)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_memories (
+                id                      TEXT PRIMARY KEY,
+                tenant_id               TEXT NOT NULL,
+                category                TEXT NOT NULL,
+                fact                    TEXT NOT NULL,
+                confidence              REAL NOT NULL DEFAULT 1.0,
+                source_conversation_id  TEXT,
+                created_at              TEXT NOT NULL,
+                updated_at              TEXT NOT NULL,
+                superseded              INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_asst_mem_tenant
+            ON assistant_memories(tenant_id, superseded, updated_at DESC)
+        """)
+        conn.commit()
+
+    def save_conversation(
+        self,
+        conversation_id: str,
+        tenant_id: str,
+        messages: list,
+        user_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            conn.execute("""
+                INSERT INTO assistant_conversations (id, tenant_id, user_id, title, messages, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    messages   = excluded.messages,
+                    title      = COALESCE(excluded.title, assistant_conversations.title),
+                    updated_at = excluded.updated_at
+            """, (conversation_id, tenant_id, user_id, title, json.dumps(messages), now, now))
+            conn.commit()
+
+    def get_conversations(self, tenant_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            rows = conn.execute("""
+                SELECT id, title, created_at, updated_at,
+                       json_array_length(messages) as turn_count
+                FROM assistant_conversations
+                WHERE tenant_id = ?
+                ORDER BY updated_at DESC LIMIT ?
+            """, (tenant_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_conversation(self, conversation_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            row = conn.execute(
+                "SELECT * FROM assistant_conversations WHERE id=? AND tenant_id=?",
+                (conversation_id, tenant_id),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["messages"] = json.loads(d["messages"])
+        except Exception:
+            d["messages"] = []
+        return d
+
+    def upsert_memory(
+        self,
+        memory_id: str,
+        tenant_id: str,
+        category: str,
+        fact: str,
+        confidence: float = 1.0,
+        source_conversation_id: Optional[str] = None,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            conn.execute("""
+                INSERT INTO assistant_memories
+                    (id, tenant_id, category, fact, confidence, source_conversation_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    fact       = excluded.fact,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at,
+                    superseded = 0
+            """, (memory_id, tenant_id, category, fact, confidence, source_conversation_id, now, now))
+            conn.commit()
+
+    def get_memories(self, tenant_id: str, limit: int = 60) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            rows = conn.execute("""
+                SELECT id, category, fact, confidence, source_conversation_id, updated_at
+                FROM assistant_memories
+                WHERE tenant_id = ? AND superseded = 0
+                ORDER BY confidence DESC, updated_at DESC
+                LIMIT ?
+            """, (tenant_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def supersede_memory(self, memory_id: str, tenant_id: str) -> None:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            conn.execute(
+                "UPDATE assistant_memories SET superseded=1 WHERE id=? AND tenant_id=?",
+                (memory_id, tenant_id),
+            )
+            conn.commit()
 
     # ── Tenant listing ─────────────────────────────────────────────────────────
 

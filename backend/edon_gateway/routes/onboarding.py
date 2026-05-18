@@ -1,0 +1,386 @@
+"""EDON Onboarding Copilot — HTTP API routes.
+
+Drives the 10-step client onboarding flow end-to-end.
+
+Endpoints:
+    POST /v1/onboarding/intake               — Step 1: submit intake questionnaire
+    GET  /v1/onboarding/profiles             — list profiles for tenant
+    GET  /v1/onboarding/profiles/{id}        — get a specific profile
+    POST /v1/onboarding/profiles/{id}/topology       — Step 2: generate enforcement topology
+    POST /v1/onboarding/profiles/{id}/bootstrap      — Step 3: generate policy bootstrap
+    GET  /v1/onboarding/profiles/{id}/deployment     — Step 4: get deployment package
+    POST /v1/onboarding/profiles/{id}/shadow         — Step 6: enable/disable shadow mode
+    POST /v1/onboarding/profiles/{id}/signoff/request — Step 7: request go-live signoff
+    POST /v1/onboarding/signoffs/{id}/approve         — Step 7: approve go-live
+    POST /v1/onboarding/signoffs/{id}/reject          — Step 7: reject go-live
+    GET  /v1/onboarding/profiles/{id}/expansion       — Step 10: check expansion signals
+    GET  /v1/onboarding/profiles/{id}/status          — full pipeline status summary
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+
+from ..tenancy import get_request_tenant_id
+from ..logging_config import get_logger
+from ..onboarding.profile import get_onboarding_store
+from ..onboarding.topology import generate_topology
+from ..onboarding.policy_bootstrap import bootstrap_policies
+from ..onboarding.deployment_package import generate_deployment_package
+from ..onboarding.signoff import get_signoff_store
+from ..onboarding.expansion import check_expansion_signals
+
+logger = get_logger(__name__)
+router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
+
+
+def _assert_owns_profile(profile, tenant_id: str) -> None:
+    """Raise 404 (not 403) if profile doesn't belong to this tenant — avoids leaking existence."""
+    if profile is None or profile.tenant_id != (tenant_id or "default"):
+        raise HTTPException(404, f"Profile not found")
+
+
+# ── Request models ─────────────────────────────────────────────────────────────
+
+class AgentSystemInput(BaseModel):
+    name: str
+    agent_type: str = "llm_agent"
+    actions: list[str] = []
+    data_classes: list[str] = []
+    external_sinks: list[str] = []
+    description: str = ""
+
+
+class IntakeRequest(BaseModel):
+    org_name: str
+    agent_systems: list[AgentSystemInput]
+    identity_provider: str = "none"
+    environments: list[str] = ["saas"]
+    compliance_requirements: list[str] = []
+
+
+class ShadowModeRequest(BaseModel):
+    enabled: bool
+
+
+class SignoffCreateRequest(BaseModel):
+    requested_by: str
+    enforcement_scope: list[str]
+    escalation_rules_accepted: bool = True
+    kill_switch_authority: str = "admin"
+    data_classes_governed: list[str] = []
+
+
+class SignoffResolveRequest(BaseModel):
+    resolved_by: str
+    rejection_reason: Optional[str] = None
+
+
+# ── Step 1: Intake ────────────────────────────────────────────────────────────
+
+@router.post("/intake")
+async def submit_intake(request: Request, body: IntakeRequest):
+    """Submit the onboarding intake questionnaire. Returns GovernanceDeploymentProfile v1."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+
+    profile = store.create(
+        tenant_id=tenant_id or "default",
+        org_name=body.org_name,
+        agent_systems=[a.model_dump() for a in body.agent_systems],
+        identity_provider=body.identity_provider,
+        environments=body.environments,
+        compliance_requirements=body.compliance_requirements,
+    )
+    logger.info(f"[onboarding/intake] profile={profile.profile_id} tenant={tenant_id}")
+    return {
+        "profile": profile.as_dict(),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile.profile_id}/topology",
+            "description": "Generate EDON Enforcement Topology",
+        },
+    }
+
+
+# ── Profile CRUD ──────────────────────────────────────────────────────────────
+
+@router.get("/profiles")
+async def list_profiles(request: Request):
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profiles = store.list_for_tenant(tenant_id or "default")
+    return {"profiles": profiles, "count": len(profiles)}
+
+
+@router.get("/profiles/{profile_id}")
+async def get_profile(profile_id: str, request: Request):
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+    return {"profile": profile.as_dict()}
+
+
+# ── Step 2: Topology ──────────────────────────────────────────────────────────
+
+@router.post("/profiles/{profile_id}/topology")
+async def generate_enforcement_topology(profile_id: str, request: Request):
+    """Generate the EDON Enforcement Topology — exactly where EDON plugs in."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    topology = generate_topology(profile)
+    store.update_stage(profile_id, "topology")
+
+    return {
+        "topology": topology.as_dict(),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile_id}/bootstrap",
+            "description": "Generate 3-layer policy bootstrap",
+        },
+    }
+
+
+# ── Step 3: Policy Bootstrap ──────────────────────────────────────────────────
+
+@router.post("/profiles/{profile_id}/bootstrap")
+async def run_policy_bootstrap(profile_id: str, request: Request):
+    """Generate the 3-layer initial policy set (hard safety, operational, intent contracts)."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    bundle = bootstrap_policies(profile)
+    store.update_stage(profile_id, "bootstrap")
+
+    return {
+        "policy_bundle": bundle.as_dict(),
+        "next_step": {
+            "action": f"GET /v1/onboarding/profiles/{profile_id}/deployment",
+            "description": "Get deployment package for IT review",
+        },
+    }
+
+
+# ── Step 4: Deployment Package ────────────────────────────────────────────────
+
+@router.get("/profiles/{profile_id}/deployment")
+async def get_deployment_package(profile_id: str, request: Request):
+    """Get the IT-approvable deployment package (Helm values, env vars, network rules)."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    topology = generate_topology(profile)
+    package = generate_deployment_package(profile, topology)
+    store.update_stage(profile_id, "deployment")
+
+    return {
+        "deployment_package": package.as_dict(),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile_id}/shadow",
+            "description": "Enable shadow mode to begin observing agent traffic",
+        },
+    }
+
+
+# ── Step 6: Shadow Mode ───────────────────────────────────────────────────────
+
+@router.post("/profiles/{profile_id}/shadow")
+async def set_shadow_mode(profile_id: str, request: Request, body: ShadowModeRequest):
+    """Enable or disable shadow mode for this profile's tenant."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    # Flip the actual gateway shadow mode setting
+    try:
+        from ..persistence import get_db
+        db = get_db()
+        if hasattr(db, "set_shadow_mode"):
+            db.set_shadow_mode(profile.tenant_id, body.enabled)
+    except Exception as e:
+        logger.warning(f"[onboarding/shadow] could not persist setting: {e}")
+
+    store.set_shadow_mode(profile_id, body.enabled)
+
+    return {
+        "shadow_mode": body.enabled,
+        "profile_id": profile_id,
+        "message": (
+            "Shadow mode enabled — EDON is observing all agent actions and logging what it would block. "
+            "No enforcement yet. Review findings in /v1/shadow-findings."
+            if body.enabled else
+            "Shadow mode disabled."
+        ),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile_id}/signoff/request",
+            "description": "When ready, request go-live signoff to activate enforcement",
+        } if body.enabled else None,
+    }
+
+
+# ── Step 7: Signoff ───────────────────────────────────────────────────────────
+
+@router.post("/profiles/{profile_id}/signoff/request")
+async def request_signoff(profile_id: str, request: Request, body: SignoffCreateRequest):
+    """Request go-live signoff. Presents scope for explicit human approval."""
+    tenant_id = get_request_tenant_id(request)
+    profile_store = get_onboarding_store()
+    profile = profile_store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    bundle = bootstrap_policies(profile)
+    signoff_store = get_signoff_store()
+    sr = signoff_store.create(
+        profile_id=profile_id,
+        tenant_id=profile.tenant_id,
+        requested_by=body.requested_by,
+        enforcement_scope=body.enforcement_scope or [a.name for a in profile.agent_systems],
+        escalation_rules_accepted=body.escalation_rules_accepted,
+        kill_switch_authority=body.kill_switch_authority,
+        data_classes_governed=body.data_classes_governed or profile.all_data_classes,
+        policy_count_hard_safety=len(bundle.hard_safety),
+        policy_count_operational=len(bundle.operational),
+        policy_count_intent_contracts=len(bundle.intent_contracts),
+    )
+    profile_store.update_stage(profile_id, "signoff_pending")
+
+    return {
+        "signoff": sr.as_dict(),
+        "instructions": (
+            "Review the signoff scope above. When approved, call "
+            f"POST /v1/onboarding/signoffs/{sr.signoff_id}/approve. "
+            "After approval, EDON switches from shadow to active enforcement."
+        ),
+    }
+
+
+@router.post("/signoffs/{signoff_id}/approve")
+async def approve_signoff(signoff_id: str, request: Request, body: SignoffResolveRequest):
+    """Approve go-live signoff — activates enforcement for this tenant."""
+    tenant_id = get_request_tenant_id(request)
+    signoff_store = get_signoff_store()
+    sr_pre = signoff_store.get(signoff_id)
+    if sr_pre is None or sr_pre.tenant_id != (tenant_id or "default"):
+        raise HTTPException(404, f"Signoff not found")
+    sr = signoff_store.approve(signoff_id, body.resolved_by)
+    if sr is None:
+        raise HTTPException(404, f"Signoff '{signoff_id}' not found")
+
+    profile_store = get_onboarding_store()
+    profile = profile_store.sign_off(sr.profile_id, body.resolved_by)
+
+    # Disable shadow mode — switch to active enforcement
+    try:
+        from ..persistence import get_db
+        _db = get_db()
+        if hasattr(_db, "set_shadow_mode"):
+            _db.set_shadow_mode(sr.tenant_id, False)  # type: ignore[union-attr]
+    except Exception as e:
+        logger.warning(f"[onboarding/signoff] could not disable shadow mode: {e}")
+
+    return {
+        "signoff": sr.as_dict(),
+        "profile": profile.as_dict() if profile else None,
+        "message": (
+            "EDON is now LIVE. Active enforcement is enabled. "
+            "Shadow mode has been disabled. All agent actions are now governed."
+        ),
+    }
+
+
+@router.post("/signoffs/{signoff_id}/reject")
+async def reject_signoff(signoff_id: str, request: Request, body: SignoffResolveRequest):
+    """Reject go-live signoff — stays in shadow mode."""
+    tenant_id = get_request_tenant_id(request)
+    signoff_store = get_signoff_store()
+    sr_pre = signoff_store.get(signoff_id)
+    if sr_pre is None or sr_pre.tenant_id != (tenant_id or "default"):
+        raise HTTPException(404, f"Signoff not found")
+    sr = signoff_store.reject(signoff_id, body.resolved_by, body.rejection_reason or "Rejected")
+    if sr is None:
+        raise HTTPException(404, f"Signoff '{signoff_id}' not found")
+
+    profile_store = get_onboarding_store()
+    profile_store.update_stage(sr.profile_id, "shadow")
+
+    return {
+        "signoff": sr.as_dict(),
+        "message": "Signoff rejected. Profile remains in shadow mode.",
+    }
+
+
+# ── Step 10: Expansion Signals ────────────────────────────────────────────────
+
+@router.get("/profiles/{profile_id}/expansion")
+async def get_expansion_signals(profile_id: str, request: Request):
+    """Check live telemetry for expansion trigger signals (new agents, sinks, stress points)."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    tenant_id = tenant_id or profile.tenant_id
+    signals = check_expansion_signals(tenant_id, profile)
+    high = [s for s in signals if s.severity == "high"]
+
+    return {
+        "signals": [s.as_dict() for s in signals],
+        "count": len(signals),
+        "high_severity_count": len(high),
+        "expansion_recommended": len(high) >= 2,
+    }
+
+
+# ── Full pipeline status ──────────────────────────────────────────────────────
+
+@router.get("/profiles/{profile_id}/status")
+async def get_onboarding_status(profile_id: str, request: Request):
+    """Full pipeline status — where this client is in the 10-step onboarding flow."""
+    tenant_id = get_request_tenant_id(request)
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    signoff_store = get_signoff_store()
+    signoffs = signoff_store.list_for_profile(profile_id)
+
+    stage_labels = {
+        "intake":          "1/7 — Intake complete",
+        "topology":        "2/7 — Enforcement topology generated",
+        "bootstrap":       "3/7 — Policy bootstrap complete",
+        "deployment":      "4/7 — Deployment package ready",
+        "shadow":          "5/7 — Shadow mode active",
+        "signoff_pending": "6/7 — Awaiting go-live signoff",
+        "live":            "7/7 — LIVE — Active enforcement",
+        "expanding":       "Ongoing — Expansion monitoring active",
+    }
+
+    steps = [
+        {"step": 1, "name": "Intake",            "done": True},
+        {"step": 2, "name": "Topology",          "done": profile.stage not in ("intake",)},
+        {"step": 3, "name": "Policy Bootstrap",  "done": profile.stage not in ("intake", "topology")},
+        {"step": 4, "name": "Deployment Package","done": profile.stage not in ("intake", "topology", "bootstrap")},
+        {"step": 5, "name": "Shadow Mode",       "done": profile.shadow_mode_enabled or profile.signed_off},
+        {"step": 6, "name": "Go-Live Signoff",   "done": profile.signed_off},
+        {"step": 7, "name": "Live Enforcement",  "done": profile.stage == "live"},
+    ]
+
+    return {
+        "profile_id": profile_id,
+        "stage": profile.stage,
+        "stage_label": stage_labels.get(profile.stage, profile.stage),
+        "risk_tier": profile.risk_tier,
+        "shadow_mode": profile.shadow_mode_enabled,
+        "signed_off": profile.signed_off,
+        "signed_off_at": profile.signed_off_at,
+        "steps": steps,
+        "signoffs": signoffs,
+    }

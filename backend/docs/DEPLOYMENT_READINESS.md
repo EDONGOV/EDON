@@ -1,6 +1,6 @@
 # Deployment Readiness — Launch Checklist
 
-This doc tracks what’s done and what to do before driving paid users to the gateway and portal.
+This checklist is the production hardening gate. It is not a claim that the platform is enterprise-ready by default.
 
 ---
 
@@ -26,10 +26,10 @@ This doc tracks what’s done and what to do before driving paid users to the ga
 - **Issue:** With `min_machines_running = 2` on Fly, two instances use two SQLite files. Data is not shared.
 - **Options:**
   - **A. Single machine:** In `fly.toml`, set `[http_service] min_machines_running = 1` (or omit). No code change.
-  - **B. PostgreSQL:** Set `EDON_DB_URL=postgresql://...` and use the existing Postgres adapter (gateway uses it when `EDON_DB_URL` is a postgres URL). Both machines share one DB.
+  - **B. PostgreSQL:** Set `DATABASE_URL=postgresql://...` and use the existing Postgres adapter (gateway uses it when `DATABASE_URL` is a postgres URL). Both machines share one DB.
   - **C. Fly Volumes + affinity:** Use a shared volume and affinity so both replicas use the same SQLite file (more ops work).
 
-**Recommendation:** For launch, either run 1 machine or switch to PostgreSQL.
+**Recommendation:** For enterprise launch, switch to PostgreSQL. SQLite remains acceptable only for local development and single-node demos.
 
 ### 3. ~~No governance SDK for JS/TS~~ ✅ Mitigated
 
@@ -42,6 +42,8 @@ This doc tracks what’s done and what to do before driving paid users to the ga
 | Item | Action |
 |------|--------|
 | **CORS wildcard** | In production, set `EDON_CORS_ORIGINS=https://edoncore.com,https://www.edoncore.com` (and agent UI / console domains if different). Do not use `*` in prod. |
+| **Database backend** | Production must use PostgreSQL. SQLite is not an enterprise production store. |
+| **Readiness evidence** | Use `GET /health/dependencies` to verify database backend, schema version, and production control flags before go-live. |
 | **SDK on PyPI** | Publish the Python SDK: `cd sdk/python && python -m build && twine upload dist/*` (after configuring PyPI credentials). |
 | **dev@edon.ai → edoncore.com** | ✅ Fixed in `sdk/python/setup.py`: `author_email="dev@edoncore.com"`. |
 | **API key rotation in dashboard** | Create/revoke are available via API; ensure the portal Account/Billing UI exposes “Create key” and “Revoke” if desired. |
@@ -50,7 +52,7 @@ This doc tracks what’s done and what to do before driving paid users to the ga
 
 ## Recommended path to launch
 
-1. **Data consistency:** Set Fly to 1 machine **or** set `EDON_DB_URL` to a PostgreSQL instance so all replicas share state.
+1. **Data consistency:** Set `DATABASE_URL` to PostgreSQL and verify the database is healthy on startup.
 2. **API keys:** ✅ Enabled in production for authenticated tenants.
 3. **TS snippet:** ✅ On Quick start page in sentinel-core.
 4. **Python SDK:** Publish to PyPI when ready (`twine upload`).
@@ -60,7 +62,7 @@ This doc tracks what’s done and what to do before driving paid users to the ga
 
 ## Env reference (production)
 
-- **fly.toml** already sets `ENVIRONMENT=production`, `EDON_ENV=production`, and `EDON_CORS_ORIGINS` (no wildcard). No code change needed for CORS or production detection on Fly.
+- **fly.toml** already sets `ENVIRONMENT=production`, `EDON_ENV=production`, and `EDON_CORS_ORIGINS` (no wildcard). The gateway now fails fast if production checks are incomplete.
 - Set secrets via `fly secrets set` (never commit .env). **One-shot from .env:** run `.\scripts\fly_secrets_from_env.ps1` from `edon_gateway`; it reads `.env` and sets all of the following in one go:
   - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `CLERK_SECRET_KEY`, `EDON_API_TOKEN`
   - Optional: `EDON_CREDENTIALS_STRICT`, `EDON_ALLOW_ENV_TOKEN_IN_PROD`
@@ -70,7 +72,7 @@ This doc tracks what’s done and what to do before driving paid users to the ga
 EDON_CORS_ORIGINS=https://edoncore.com,https://www.edoncore.com,https://agent.edoncore.com
 
 # Single DB for all instances (if using Postgres)
-EDON_DB_URL=postgresql://user:password@host:5432/edon
+DATABASE_URL=postgresql://user:password@host:5432/edon
 ```
 
 See `.env.example` and `STRIPE_LIVE_SETUP.md` for full Stripe and billing setup.

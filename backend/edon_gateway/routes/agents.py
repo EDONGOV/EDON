@@ -46,6 +46,7 @@ class AgentRegisterRequest(BaseModel):
         None, max_length=100,
         description="Vendor that owns/operates this agent, e.g. 'vendor-a-surgical'",
     )
+    department: Optional[str] = Field(None, max_length=100)
 
 
 class AgentStatusUpdateRequest(BaseModel):
@@ -147,6 +148,7 @@ def _profile_from_agent_row(agent: Dict[str, Any], stats: Dict[str, Any]) -> Dic
         "mag_enabled": bool(agent.get("mag_enabled", False)),
         "cav_enabled": bool(agent.get("cav_enabled", True)),
         "metadata": agent.get("metadata") or {},
+        "department": agent.get("department") or None,
         "status": agent.get("status", "active"),
         "registered_at": agent.get("registered_at"),
         "last_seen_at": agent.get("last_seen_at"),
@@ -198,7 +200,7 @@ def _get_agent_timeline(
             v = verdict.upper()
             cursor.execute(
                 "SELECT COUNT(*) FROM audit_events"
-                " WHERE agent_id = ? AND (customer_id = ? OR customer_id IS NULL)"
+                " WHERE agent_id = ? AND customer_id = ?"
                 " AND timestamp >= ? AND decision_verdict = ?",
                 [agent_id, tenant_id, since, v],
             )
@@ -209,7 +211,7 @@ def _get_agent_timeline(
                 " decision_reason_code, decision_explanation, action_computed_risk,"
                 " action_estimated_risk, context, processing_latency_ms"
                 " FROM audit_events"
-                " WHERE agent_id = ? AND (customer_id = ? OR customer_id IS NULL)"
+                " WHERE agent_id = ? AND customer_id = ?"
                 " AND timestamp >= ? AND decision_verdict = ?"
                 " ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 [agent_id, tenant_id, since, v, limit, offset],
@@ -217,7 +219,7 @@ def _get_agent_timeline(
         else:
             cursor.execute(
                 "SELECT COUNT(*) FROM audit_events"
-                " WHERE agent_id = ? AND (customer_id = ? OR customer_id IS NULL)"
+                " WHERE agent_id = ? AND customer_id = ?"
                 " AND timestamp >= ?",
                 [agent_id, tenant_id, since],
             )
@@ -228,7 +230,7 @@ def _get_agent_timeline(
                 " decision_reason_code, decision_explanation, action_computed_risk,"
                 " action_estimated_risk, context, processing_latency_ms"
                 " FROM audit_events"
-                " WHERE agent_id = ? AND (customer_id = ? OR customer_id IS NULL)"
+                " WHERE agent_id = ? AND customer_id = ?"
                 " AND timestamp >= ?"
                 " ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 [agent_id, tenant_id, since, limit, offset],
@@ -272,7 +274,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
                 COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY day, decision_verdict
             ORDER BY day ASC
@@ -295,7 +297,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
             SELECT decision_verdict, COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY decision_verdict
         """, (agent_id, tenant_id, since))
@@ -311,7 +313,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
                 COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY risk
         """, (agent_id, tenant_id, since))
@@ -322,7 +324,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
             SELECT decision_reason_code, COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
               AND decision_verdict = 'BLOCK'
             GROUP BY decision_reason_code
@@ -339,7 +341,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
             SELECT action_tool, COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY action_tool
             ORDER BY cnt DESC
@@ -356,7 +358,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
             SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS cnt
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY day
             ORDER BY day ASC
@@ -372,7 +374,7 @@ def _get_agent_stats_30d(db, tenant_id: str, agent_id: str) -> Dict[str, Any]:
                 SUM(CASE WHEN decision_verdict = 'ALLOW' THEN 1 ELSE 0 END) AS allows
             FROM audit_events
             WHERE agent_id = ?
-              AND (customer_id = ? OR customer_id IS NULL)
+              AND customer_id = ?
               AND timestamp >= ?
             GROUP BY hour
             ORDER BY hour ASC
@@ -424,7 +426,7 @@ def _detect_anomalies(db, tenant_id: str) -> List[Dict[str, Any]]:
         cursor.execute("""
             SELECT agent_id, COUNT(*) AS cnt
             FROM audit_events
-            WHERE (customer_id = ? OR customer_id IS NULL)
+            WHERE customer_id = ?
               AND timestamp >= ?
             GROUP BY agent_id
             HAVING cnt > 10
@@ -447,7 +449,7 @@ def _detect_anomalies(db, tenant_id: str) -> List[Dict[str, Any]]:
                     SUM(CASE WHEN decision_verdict = 'ERROR'  THEN 1 ELSE 0 END) AS errors
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
             """, (agent_id, tenant_id, since_1h))
             cur = cursor.fetchone()
@@ -461,7 +463,7 @@ def _detect_anomalies(db, tenant_id: str) -> List[Dict[str, Any]]:
             cursor.execute("""
                 SELECT DISTINCT action_tool FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
             """, (agent_id, tenant_id, since_1h))
             cur_tools = {r["action_tool"] for r in cursor.fetchall() if r["action_tool"]}
@@ -474,7 +476,7 @@ def _detect_anomalies(db, tenant_id: str) -> List[Dict[str, Any]]:
                     SUM(CASE WHEN decision_verdict = 'ERROR'  THEN 1 ELSE 0 END) AS errors
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                   AND timestamp < ?
             """, (agent_id, tenant_id, since_30d, since_1h))
@@ -490,7 +492,7 @@ def _detect_anomalies(db, tenant_id: str) -> List[Dict[str, Any]]:
             cursor.execute("""
                 SELECT DISTINCT action_tool FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                   AND timestamp < ?
             """, (agent_id, tenant_id, since_30d, since_1h))
@@ -573,6 +575,7 @@ async def register_agent(request: Request, body: AgentRegisterRequest):
             mag_enabled=body.mag_enabled,
             metadata=body.metadata,
             vendor_id=body.vendor_id,
+            department=body.department,
         )
     except Exception as e:
         logger.exception("Failed to register agent: %s", e)
@@ -593,6 +596,7 @@ async def list_agents(
     request: Request,
     status: Optional[str] = Query(None, pattern="^(active|paused|retired)$"),
     agent_type: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
 ):
     """List all agents registered for the authenticated tenant."""
     tenant_id = get_request_tenant_id(request)
@@ -613,6 +617,8 @@ async def list_agents(
         all_agents = [a for a in all_agents if a.get("status") == status]
     if agent_type:
         all_agents = [a for a in all_agents if a.get("agent_type") == agent_type]
+    if department:
+        all_agents = [a for a in all_agents if a.get("department") == department]
 
     profiles = []
     for agent in all_agents:
@@ -699,7 +705,7 @@ async def get_agent(request: Request, agent_id: str):
                 SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS cnt
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                 GROUP BY day ORDER BY day ASC
             """, (agent_id, tenant_id, since_7d))
@@ -712,7 +718,7 @@ async def get_agent(request: Request, agent_id: str):
                 SELECT action_tool, COUNT(*) AS cnt
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                 GROUP BY action_tool ORDER BY cnt DESC LIMIT 5
             """, (agent_id, tenant_id, since_7d))
@@ -725,7 +731,7 @@ async def get_agent(request: Request, agent_id: str):
                 SELECT decision_reason_code, COUNT(*) AS cnt
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                   AND decision_verdict = 'BLOCK'
                 GROUP BY decision_reason_code ORDER BY cnt DESC LIMIT 5
@@ -740,7 +746,7 @@ async def get_agent(request: Request, agent_id: str):
                 SELECT decision_verdict, COUNT(*) AS cnt
                 FROM audit_events
                 WHERE agent_id = ?
-                  AND (customer_id = ? OR customer_id IS NULL)
+                  AND customer_id = ?
                   AND timestamp >= ?
                 GROUP BY decision_verdict
             """, (agent_id, tenant_id, since_7d))

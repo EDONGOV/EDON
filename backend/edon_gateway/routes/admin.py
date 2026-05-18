@@ -697,3 +697,37 @@ async def unlock_ip(request: Request):
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
     logger.info("[admin/unlock-ip] unlocked ip=%s", ip)
     return {"ip": ip, "status": "unlocked"}
+
+
+# ---------------------------------------------------------------------------
+# Kill switch — admin-scoped (any tenant)
+# ---------------------------------------------------------------------------
+
+@router.get("/kill-switch/{tenant_id}")
+async def admin_get_kill_switch(tenant_id: str, request: Request):
+    """Get kill switch state for a tenant. Protected by X-Bootstrap-Secret."""
+    _check_bootstrap_secret(request)
+    from ..routes.kill_switch import get_kill_switch_state
+    return get_kill_switch_state(tenant_id)
+
+
+@router.post("/kill-switch/{tenant_id}", status_code=200)
+async def admin_activate_kill_switch(tenant_id: str, request: Request):
+    """Activate kill switch for a tenant. Immediately blocks all agent actions."""
+    _check_bootstrap_secret(request)
+    body = await request.json()
+    reason = (body.get("reason") or "Admin emergency halt").strip()
+    from ..routes.kill_switch import activate_kill_switch
+    state = activate_kill_switch(tenant_id=tenant_id, reason=reason, activated_by="admin-panel")
+    logger.warning("[admin/kill-switch] ACTIVATED tenant=%s", tenant_id)
+    return state
+
+
+@router.delete("/kill-switch/{tenant_id}", status_code=200)
+async def admin_deactivate_kill_switch(tenant_id: str, request: Request):
+    """Deactivate kill switch for a tenant. Resumes normal governance."""
+    _check_bootstrap_secret(request)
+    from ..routes.kill_switch import deactivate_kill_switch
+    state = deactivate_kill_switch(tenant_id=tenant_id, deactivated_by="admin-panel")
+    logger.info("[admin/kill-switch] deactivated tenant=%s", tenant_id)
+    return state

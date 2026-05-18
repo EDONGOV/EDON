@@ -100,12 +100,16 @@ def _compute_score(entries: List[_SessionEntry]) -> float:
     return min(total, 1.0)
 
 
+_EVICT_INTERVAL = 500   # sweep expired session keys every N records
+
+
 class SessionRiskTracker:
     """Thread-safe session-level risk accumulator."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: Dict[Tuple[str, str], List[_SessionEntry]] = defaultdict(list)
+        self._record_count: int = 0
 
     def _key(self, tenant_id: Optional[str], session_id: str) -> Tuple[str, str]:
         return (tenant_id or "default", session_id)
@@ -172,6 +176,14 @@ class SessionRiskTracker:
             reasons=reasons,
         )
 
+    def _evict_expired_sessions(self) -> None:
+        """Remove session keys whose entries have all expired."""
+        cutoff = time.time() - _WINDOW_SEC
+        stale = [k for k, entries in self._sessions.items()
+                 if not entries or entries[-1].ts < cutoff]
+        for k in stale:
+            del self._sessions[k]
+
     def record(
         self,
         tenant_id: Optional[str],
@@ -198,6 +210,9 @@ class SessionRiskTracker:
                 pruned.pop(0)
             pruned.append(entry)
             self._sessions[key] = pruned
+            self._record_count += 1
+            if self._record_count % _EVICT_INTERVAL == 0:
+                self._evict_expired_sessions()
 
     def get_summary(self, tenant_id: Optional[str], session_id: str) -> Dict[str, Any]:
         key = self._key(tenant_id, session_id)

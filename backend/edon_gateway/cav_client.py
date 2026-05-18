@@ -140,6 +140,58 @@ class CAVClient:
             self._cache_set(cache_key, data, _ROBOT_CACHE_TTL)
         return data
 
+    def get_humanoid_stability(self, robot_id: str) -> Optional[dict]:
+        """Fetch rich stability telemetry for a humanoid robot.
+
+        Returns a dict with keys:
+          stable (bool), stability_score (float 0-1),
+          balance_margin (float — how far CoM is from tipping, metres),
+          payload_kg (float — current payload),
+          payload_limit_kg (float — max allowed payload),
+          terrain_confidence (float 0-1 — how well terrain is understood),
+          center_of_mass_offset (float — CoM offset from nominal, metres),
+          joint_torques (dict[str, float] — per-joint Nm readings),
+          warning (str — human-readable safety note if any).
+
+        Falls back to basic ``get_robot_stability`` if the CAV endpoint is not
+        available (older CAV versions).  Result cached for 5 seconds.
+
+        Args:
+            robot_id: Unique identifier for the humanoid robot.
+
+        Returns:
+            Humanoid stability dict or None.
+        """
+        cache_key = f"humanoid_stability:{robot_id}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        url = f"{config.CAV_URL}/v1/humanoid/{robot_id}/stability"
+        data = self._cav_get(url)
+        if data is not None:
+            self._cache_set(cache_key, data, _ROBOT_CACHE_TTL)
+            return data
+
+        # Fallback: basic robot stability endpoint (older CAV versions)
+        basic = self.get_robot_stability(robot_id)
+        if basic is not None:
+            # Normalise to the richer schema so callers don't need to branch
+            normalised = {
+                "stable": basic.get("stable", True),
+                "stability_score": basic.get("stability_score", 1.0),
+                "balance_margin": None,
+                "payload_kg": None,
+                "payload_limit_kg": None,
+                "terrain_confidence": None,
+                "center_of_mass_offset": None,
+                "joint_torques": {},
+                "warning": basic.get("warning", ""),
+            }
+            self._cache_set(cache_key, normalised, _ROBOT_CACHE_TTL)
+            return normalised
+        return None
+
     def ingest_operator_telemetry(self, operator_id: str, payload: dict) -> bool:
         """Forward wearable telemetry for an operator to the CAV engine.
 

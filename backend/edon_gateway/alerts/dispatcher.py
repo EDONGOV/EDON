@@ -16,6 +16,7 @@ Channels (all fail-open, all configurable via env):
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import hmac
 import json
@@ -29,6 +30,40 @@ import requests
 from ..logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# ── In-memory alert log (last 200 events, thread-safe) ────────────────────────
+_alert_log: collections.deque = collections.deque(maxlen=200)
+_alert_log_lock = threading.Lock()
+
+
+def get_recent_alerts(limit: int = 50) -> list[dict]:
+    """Return the most recent fired alerts, newest first. Falls back to DB if in-memory log is empty."""
+    with _alert_log_lock:
+        items = list(_alert_log)
+    if items:
+        items.reverse()
+        return items[:limit]
+    # In-memory log empty (fresh boot) — read from DB
+    try:
+        from ..persistence import get_db
+        db = get_db()
+        with db._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_history (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event     TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    payload   TEXT NOT NULL DEFAULT '{}'
+                )
+            """)
+            rows = conn.execute(
+                "SELECT event, timestamp, payload FROM alert_history ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{"event": r["event"], "timestamp": r["timestamp"],
+                 "payload": json.loads(r["payload"] or "{}")} for r in rows]
+    except Exception:
+        return []
 
 _WEBHOOK_URL    = os.getenv("EDON_ALERT_WEBHOOK_URL", "").strip()
 _WEBHOOK_SECRET = os.getenv("EDON_ALERT_WEBHOOK_SECRET", "").strip()
@@ -102,6 +137,47 @@ def _telegram_message(event: str, payload: dict[str, Any]) -> str:
             f"Reason: {payload.get('reason', '?')}\n"
             f"_{ts}_"
         )
+    if event == "physical.comm_loss":
+        return (
+            f"📡 *EDON — Robot Communication Loss*\n\n"
+            f"Robot: `{payload.get('robot_id', '?')}`\n"
+            f"Tenant: `{tenant}`\n"
+            f"TTL: `{payload.get('ttl_s', '?')}s`\n"
+            f"Fail-safe posture: `{payload.get('comm_loss_posture', '?')}`\n"
+            f"E-stop: TRIGGERED\n"
+            f"_{ts}_"
+        )
+    if event == "physical.execution_anomaly":
+        return (
+            f"⚠️ *EDON — Execution Anomaly Detected*\n\n"
+            f"Robot: `{payload.get('robot_id', '?')}`\n"
+            f"Action: `{payload.get('action_id', '?')}`\n"
+            f"Tenant: `{tenant}`\n"
+            f"Reason: {payload.get('reason', '?')}\n"
+            f"E-stop: TRIGGERED\n"
+            f"_{ts}_"
+        )
+    if event == "physical.force_violation":
+        return (
+            f"🦾 *EDON — ISO 15066 Force Violation*\n\n"
+            f"Robot: `{payload.get('robot_id', '?')}`\n"
+            f"Tenant: `{tenant}`\n"
+            f"Violation: {payload.get('violation', '?')}\n"
+            f"Action: BLOCKED\n"
+            f"_{ts}_"
+        )
+    if event == "healing.canary_rollback":
+        block_pct = round(payload.get("block_rate", 0) * 100, 1)
+        base_pct  = round(payload.get("baseline", 0) * 100, 1)
+        return (
+            f"🔁 *EDON — Canary Rollback*\n\n"
+            f"Rule: `{payload.get('rule_id', '?')}`\n"
+            f"Tenant: `{tenant}`\n"
+            f"Block rate: `{block_pct}%` (baseline `{base_pct}%`)\n"
+            f"Samples: `{payload.get('samples', '?')}`\n"
+            f"Rule has been *disabled* automatically.\n"
+            f"_{ts}_"
+        )
     # Generic fallback
     return (
         f"⚠️ *EDON Alert: {event}*\n\n"
@@ -135,11 +211,38 @@ def _sign(payload_bytes: bytes) -> Optional[str]:
 
 def _dispatch(event: str, payload: dict[str, Any]) -> None:
     """Fire all alert channels in parallel daemon threads. Always fail-open."""
+    now = datetime.now(UTC).isoformat()
     body = {
         "event": event,
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": now,
         "payload": payload,
     }
+    entry = {"event": event, "timestamp": now, "payload": payload}
+    with _alert_log_lock:
+        _alert_log.append(entry)
+
+    def _persist_to_db() -> None:
+        try:
+            from ..persistence import get_db
+            db = get_db()
+            with db._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS alert_history (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event     TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        payload   TEXT NOT NULL DEFAULT '{}'
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO alert_history (event, timestamp, payload) VALUES (?, ?, ?)",
+                    (event, now, json.dumps(payload)),
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.debug("[alerts] DB persist failed (non-blocking): %s", exc)
+
+    threading.Thread(target=_persist_to_db, daemon=True, name=f"alert-db-{event}").start()
 
     def _send_webhook() -> None:
         if not _WEBHOOK_URL:

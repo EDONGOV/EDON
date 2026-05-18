@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .database import Database, get_db as _sqlite_get_db
+from ..config import config
 
 __all__ = ["Database", "get_db"]
 
@@ -36,6 +37,11 @@ def get_db():
             logger.info("Using PostgreSQL database: %s", database_url.split("@")[-1])
             _db_instance = PostgreSQLDatabase(database_url)
         except Exception as exc:
+            if config.is_production():
+                raise RuntimeError(
+                    "Failed to connect to PostgreSQL in production. "
+                    "Refusing to fall back to SQLite."
+                ) from exc
             logger.error(
                 "Failed to connect to PostgreSQL (%s). Falling back to SQLite: %s",
                 database_url.split("@")[-1],
@@ -43,6 +49,8 @@ def get_db():
             )
             _db_instance = _sqlite_get_db()
     else:
+        if config.is_production():
+            raise RuntimeError("DATABASE_URL must be configured for PostgreSQL in production")
         _db_instance = _sqlite_get_db()
 
     return _db_instance

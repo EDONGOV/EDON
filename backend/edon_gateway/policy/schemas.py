@@ -101,6 +101,9 @@ class PolicyRule:
     # Equals/Contains rule parameters
     value: Optional[Any] = None
 
+    # Failure mode override for this rule: "fail_open", "fail_closed", or None (inherits global setting)
+    failure_mode: Optional[str] = None
+
     # Metadata
     description: Optional[str] = None
     domain: Optional[str] = None  # Domain pack identifier (e.g., "dod", "healthcare")
@@ -123,6 +126,7 @@ class PolicyRule:
             "range_min": self.range_min,
             "range_max": self.range_max,
             "value": self.value,
+            "failure_mode": self.failure_mode,
             "description": self.description,
             "domain": self.domain,
             "version": self.version,

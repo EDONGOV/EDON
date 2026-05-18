@@ -1,0 +1,94 @@
+name: EDON Security Gate
+description: >
+  Runs an EDON governance security gate scan against your tenant's current
+  failure states and shadow traces. Fails the job if gate_passed=false.
+
+inputs:
+  api-key:
+    description: EDON API key (store as a repo secret)
+    required: true
+  gateway-url:
+    description: EDON gateway base URL
+    required: false
+    default: https://edon-gateway-prod.fly.dev
+  repo:
+    description: Repository in owner/repo format (defaults to github.repository)
+    required: false
+    default: ${{ github.repository }}
+  commit-sha:
+    description: Commit SHA to associate with this scan
+    required: false
+    default: ${{ github.sha }}
+  branch:
+    description: Branch name
+    required: false
+    default: ${{ github.ref_name }}
+  environment:
+    description: Deployment environment (e.g. production, staging)
+    required: false
+    default: ''
+  fail-on-gate-fail:
+    description: Fail the job when gate_passed=false (set to false to warn only)
+    required: false
+    default: 'true'
+
+outputs:
+  scan-id:
+    description: Unique scan ID for polling or audit reference
+    value: ${{ steps.run-scan.outputs.scan_id }}
+  gate-passed:
+    description: true if the security gate passed, false otherwise
+    value: ${{ steps.run-scan.outputs.gate_passed }}
+  gate-reason:
+    description: Human-readable reason for the gate result
+    value: ${{ steps.run-scan.outputs.gate_reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run EDON security gate scan
+      id: run-scan
+      shell: bash
+      env:
+        EDON_API_KEY: ${{ inputs.api-key }}
+        EDON_GATEWAY: ${{ inputs.gateway-url }}
+      run: |
+        RESPONSE=$(curl -sf \
+          -X POST "$EDON_GATEWAY/v1/cicd/scan" \
+          -H "Authorization: Bearer $EDON_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repo":       "${{ inputs.repo }}",
+            "commit_sha": "${{ inputs.commit-sha }}",
+            "branch":     "${{ inputs.branch }}",
+            "environment":"${{ inputs.environment }}"
+          }')
+
+        if [ $? -ne 0 ]; then
+          echo "::error::EDON security gate request failed (gateway unreachable or auth error)"
+          exit 1
+        fi
+
+        SCAN_ID=$(echo "$RESPONSE"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('scan_id',''))")
+        GATE_PASSED=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d.get('gate_passed',False)).lower())")
+        GATE_REASON=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('gate_reason',''))")
+
+        echo "scan_id=$SCAN_ID"     >> "$GITHUB_OUTPUT"
+        echo "gate_passed=$GATE_PASSED" >> "$GITHUB_OUTPUT"
+        echo "gate_reason=$GATE_REASON" >> "$GITHUB_OUTPUT"
+
+        echo "### EDON Security Gate" >> "$GITHUB_STEP_SUMMARY"
+        echo "| Field | Value |"      >> "$GITHUB_STEP_SUMMARY"
+        echo "|-------|-------|"      >> "$GITHUB_STEP_SUMMARY"
+        echo "| Scan ID | \`$SCAN_ID\` |"         >> "$GITHUB_STEP_SUMMARY"
+        echo "| Gate passed | $GATE_PASSED |"     >> "$GITHUB_STEP_SUMMARY"
+        echo "| Reason | $GATE_REASON |"          >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$GATE_PASSED" != "true" ] && [ "${{ inputs.fail-on-gate-fail }}" = "true" ]; then
+          echo "::error::EDON security gate FAILED: $GATE_REASON"
+          exit 1
+        fi
+
+        if [ "$GATE_PASSED" != "true" ]; then
+          echo "::warning::EDON security gate did not pass: $GATE_REASON"
+        fi

@@ -1,74 +1,99 @@
-"""Subscription plan definitions and limits."""
+"""Subscription plan definitions and limits.
+
+Phase 1 pricing — flat tiers with included governed-decision caps.
+Overage rate is tracked internally but not surfaced to customers yet.
+Introduce overage billing after first 3–6 customers (Phase 2).
+
+Tiers:
+  starter    $5,000/mo   — small clinic / pilot          100K decisions
+  growth     $20,000/mo  — regional hospital / mid bank   2M  decisions
+  enterprise $120,000/mo — health system / large bank     10M decisions  (custom limits)
+  hospital   custom      — HIPAA, signed BAA required     unlimited
+"""
 
 import os
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 
-# Per-decision pricing (e.g. FedEx-style: $0.000001 or $0.00001 per governed decision)
-# Used for usage-based billing; set in env or override per plan.
+# Phase 2 overage rate — not surfaced to customers yet.
+# Lock this in before first expansion conversation.
 def get_price_per_decision_usd() -> float:
-    """Price in USD per single governed decision. Default 1e-5 ($0.00001 = one thousandth of a cent)."""
+    """Overage rate in USD per governed decision. Default $0.01 per 1K decisions."""
     return float(os.getenv("EDON_PRICE_PER_DECISION_USD", "0.00001"))
 
 
 @dataclass
 class PlanLimits:
-    """Plan limits for a subscription tier."""
+    """Limits for a subscription tier.
+
+    requests_per_month is the included governed-decision cap.
+    -1 means unlimited.
+    """
     name: str
-    requests_per_month: int
+    requests_per_month: int              # governed decisions included per month; -1 = unlimited
     requests_per_day: Optional[int] = None
     requests_per_minute: Optional[int] = None
     max_agents: int = 1                  # -1 = unlimited
-    audit_retention_days: int = 7        # -1 = unlimited
+    audit_retention_days: int = 30       # -1 = unlimited
     compliance_suite: bool = False
-    monthly_price_usd: float = 0.0       # 0.0 = free or custom pricing
+    monthly_price_usd: float = 0.0       # 0.0 = custom / contact sales
 
 
-# Plan definitions — Free, Scale, Pro
+# ---------------------------------------------------------------------------
+# Plan definitions — Phase 1 flat tiers
+# ---------------------------------------------------------------------------
+
 PLANS: Dict[str, PlanLimits] = {
-    "free": PlanLimits(
-        name="Free",
-        requests_per_month=50_000,
+    # Small clinic, pilot, or proof-of-concept.
+    # Includes 100K governed decisions/month — enough for a 3–5 agent deployment.
+    # Floor set at $5K/mo: healthcare buyers are risk-sensitive, not price-sensitive.
+    "starter": PlanLimits(
+        name="Starter",
+        requests_per_month=100_000,
         requests_per_day=5_000,
-        requests_per_minute=100,
-        max_agents=3,
-        audit_retention_days=7,
-        compliance_suite=False,
-        monthly_price_usd=0.0,
-    ),
-    "scale": PlanLimits(
-        name="Scale",
-        requests_per_month=5_000_000,
-        requests_per_day=200_000,
-        requests_per_minute=2_000,
-        max_agents=100,
+        requests_per_minute=200,
+        max_agents=5,
         audit_retention_days=90,
-        compliance_suite=False,
-        monthly_price_usd=150.0,
+        compliance_suite=True,
+        monthly_price_usd=5_000.0,
     ),
-    "pro": PlanLimits(
-        name="Pro",
-        requests_per_month=25_000_000,
-        requests_per_day=2_000_000,
-        requests_per_minute=5_000,
-        max_agents=1_000,
+    # Regional hospital, mid-size bank, or growing platform team.
+    # Includes 2M governed decisions/month — handles multi-department deployments.
+    "growth": PlanLimits(
+        name="Growth",
+        requests_per_month=2_000_000,
+        requests_per_day=100_000,
+        requests_per_minute=2_000,
+        max_agents=25,
         audit_retention_days=365,
         compliance_suite=True,
-        monthly_price_usd=600.0,
+        monthly_price_usd=20_000.0,
+    ),
+    # Large health system, national bank, or enterprise platform.
+    # Includes 10M governed decisions/month; hard limits negotiated per contract.
+    "enterprise": PlanLimits(
+        name="Enterprise",
+        requests_per_month=10_000_000,
+        requests_per_day=500_000,
+        requests_per_minute=10_000,
+        max_agents=100,
+        audit_retention_days=730,        # 2 years
+        compliance_suite=True,
+        monthly_price_usd=120_000.0,
     ),
     # HIPAA-compliant plan for hospital deployments.
     # Audit retention is 2555 days (7 years) to exceed the HIPAA minimum of 6 years.
     # Custom pricing — contact sales. Requires signed BAA before provisioning.
     "hospital": PlanLimits(
         name="Hospital",
-        requests_per_month=-1,          # unlimited
-        requests_per_day=-1,            # unlimited
+        requests_per_month=-1,           # unlimited governed decisions
+        requests_per_day=-1,
         requests_per_minute=10_000,
-        max_agents=-1,                  # unlimited
-        audit_retention_days=2555,      # 7 years (HIPAA minimum = 6 years / 2190 days)
+        max_agents=-1,
+        audit_retention_days=2555,       # 7 years (HIPAA minimum = 6 years / 2190 days)
         compliance_suite=True,
-        monthly_price_usd=0.0,          # custom — quoted per engagement
+        monthly_price_usd=0.0,           # custom — quoted per engagement
     ),
 }
 
@@ -102,7 +127,7 @@ def get_plan_limits(plan_name: str) -> PlanLimits:
     to the current equivalent names ("growth" and "business").
 
     Args:
-        plan_name: Plan name (free, scale, pro, or legacy aliases starter/growth/business/enterprise)
+        plan_name: Plan name (starter, growth, enterprise, hospital, or legacy aliases free/scale/pro)
 
     Returns:
         PlanLimits object
@@ -114,13 +139,13 @@ def get_plan_limits(plan_name: str) -> PlanLimits:
 
     # Backward-compatibility aliases (old tier names → current)
     _ALIASES: Dict[str, str] = {
-        "starter":    "scale",
-        "growth":     "scale",
-        "business":   "pro",
-        "enterprise": "pro",
-        "pro_plus":   "pro",
-        "pro+":       "pro",
-        "proplus":    "pro",
+        "free":       "starter",
+        "scale":      "growth",
+        "pro":        "enterprise",
+        "pro_plus":   "enterprise",
+        "pro+":       "enterprise",
+        "proplus":    "enterprise",
+        "business":   "enterprise",
         "healthcare": "hospital",
         "hipaa":      "hospital",
         "clinical":   "hospital",

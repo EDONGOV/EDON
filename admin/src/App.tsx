@@ -13,7 +13,7 @@ import {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const GATEWAY     = 'https://edon-gateway-prod.fly.dev'
+const GATEWAY     = import.meta.env.VITE_GATEWAY ?? 'http://localhost:8001'
 const SECRET_KEY  = 'edon_admin_secret'
 
 const getSavedSecret  = () => localStorage.getItem(SECRET_KEY) || ''
@@ -801,6 +801,9 @@ function ClientsTab({ secret, toast }: { secret: string; toast: (m: string, t: '
             const status = contract?.status ?? t.status
             const renewDays = contract?.renewal_date ? daysUntil(contract.renewal_date) : null
             const renewSoon = renewDays !== null && renewDays <= 90 && renewDays > 0
+            const health = (status === 'suspended' || status === 'cancelled') ? 'red'
+              : (status === 'pilot' || renewSoon) ? 'amber' : 'green'
+            const healthDot = health === 'green' ? 'bg-emerald-400' : health === 'amber' ? 'bg-amber-400' : 'bg-red-400'
             return (
               <div key={t.tenant_id} className={`glass-card overflow-hidden ${renewSoon ? 'border-amber-500/20' : ''}`}>
                 <button className="w-full flex items-center gap-3 px-5 py-4 text-left hover:bg-white/[0.02] transition"
@@ -808,6 +811,7 @@ function ClientsTab({ secret, toast }: { secret: string; toast: (m: string, t: '
                   <Building2 size={15} className="text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${healthDot}`} title={`Health: ${health}`} />
                       <span className="font-mono text-sm font-medium">{t.tenant_id}</span>
                       {status === 'pilot' && <FlaskConical size={11} className="text-teal-400" />}
                       {renewSoon && <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 rounded">renews {renewDays}d</span>}
@@ -943,16 +947,21 @@ function BillingTab({ secret, toast }: { secret: string; toast: (m: string, t: '
   const paying = contracts.filter(c => c.status === 'active' && c.acv > 0)
   const tcv = contracts.filter(c => c.acv > 0).reduce((s, c) => s + c.acv * Math.round(c.term_months / 12), 0)
   const renewingSoon = contracts.filter(c => c.renewal_date && daysUntil(c.renewal_date) <= 90 && daysUntil(c.renewal_date) > 0)
+  const thirtyDaysAgo = Date.now() - 30 * 86400_000
+  const newArr = contracts.filter(c => c.acv > 0 && new Date(c.created_at).getTime() > thirtyDaysAgo).reduce((s, c) => s + c.acv, 0)
+  const churnedArr = contracts.filter(c => c.acv > 0 && c.status === 'cancelled' && new Date(c.updated_at).getTime() > thirtyDaysAgo).reduce((s, c) => s + c.acv, 0)
 
   if (loading) return <div className="flex justify-center py-12"><Spinner size={20} /></div>
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         {[
           { label: 'ARR',           value: arr > 0 ? fmtAcv(arr) : '—',  color: 'text-emerald-400', sub: `${paying.length} active contracts` },
           { label: 'Avg ACV',       value: paying.length > 0 ? fmtAcv(Math.round(arr / paying.length)) : '—', color: 'text-blue-400', sub: 'per contract' },
           { label: 'TCV',           value: tcv > 0 ? fmtAcv(tcv) : '—', color: 'text-primary',     sub: 'committed revenue' },
+          { label: 'New ARR (30d)', value: newArr > 0 ? fmtAcv(newArr) : '—', color: 'text-teal-400', sub: 'new contracts this month' },
+          { label: 'Churned (30d)', value: churnedArr > 0 ? fmtAcv(churnedArr) : '—', color: churnedArr > 0 ? 'text-red-400' : 'text-muted-foreground', sub: 'cancelled this month' },
           { label: 'Renewing ≤90d', value: renewingSoon.length,           color: renewingSoon.length > 0 ? 'text-amber-400' : 'text-emerald-400', sub: 'action required' },
         ].map(c => (
           <div key={c.label} className="glass-card p-4 space-y-2">
@@ -1324,6 +1333,48 @@ function SupportKeysTab({ secret, toast }: { secret: string; toast: (m: string, 
 // ── Recovery Tab ──────────────────────────────────────────────────────────────
 
 function RecoveryTab({ secret, toast }: { secret: string; toast: (m: string, t: 'ok' | 'err') => void }) {
+  // ── Kill switch ──────────────────────────────────────────────────────────────
+  const [ksTenant, setKsTenant]   = useState('')
+  const [ksState, setKsState]     = useState<{ active: boolean; reason?: string; activated_at?: string } | null>(null)
+  const [ksFetching, setKsFetching] = useState(false)
+  const [ksReason, setKsReason]   = useState('')
+  const [ksActing, setKsActing]   = useState(false)
+
+  const fetchKs = async () => {
+    if (!ksTenant.trim()) return
+    setKsFetching(true)
+    try {
+      const r = await adminRequest<{ active: boolean; reason?: string; activated_at?: string }>(`/admin/kill-switch/${ksTenant.trim()}`, secret)
+      setKsState(r)
+    } catch { toast('Could not fetch kill switch state', 'err') }
+    finally { setKsFetching(false) }
+  }
+
+  const activateKs = async () => {
+    if (!ksTenant.trim() || !ksReason.trim()) return
+    if (!confirm(`Activate kill switch for "${ksTenant.trim()}"?\n\nAll AI agent actions will be BLOCKED immediately.`)) return
+    setKsActing(true)
+    try {
+      const r = await adminRequest<{ active: boolean }>(`/admin/kill-switch/${ksTenant.trim()}`, secret, {
+        method: 'POST', body: JSON.stringify({ reason: ksReason.trim() }),
+      })
+      setKsState(r); toast(`Kill switch activated for ${ksTenant.trim()}`, 'ok')
+    } catch (err) { toast(err instanceof Error ? err.message : 'Activation failed', 'err') }
+    finally { setKsActing(false) }
+  }
+
+  const deactivateKs = async () => {
+    if (!ksTenant.trim()) return
+    if (!confirm(`Deactivate kill switch for "${ksTenant.trim()}"?\n\nNormal governance will resume immediately.`)) return
+    setKsActing(true)
+    try {
+      const r = await adminRequest<{ active: boolean }>(`/admin/kill-switch/${ksTenant.trim()}`, secret, { method: 'DELETE' })
+      setKsState(r); toast(`Kill switch deactivated for ${ksTenant.trim()}`, 'ok')
+    } catch (err) { toast(err instanceof Error ? err.message : 'Deactivation failed', 'err') }
+    finally { setKsActing(false) }
+  }
+
+  // ── Key recovery ─────────────────────────────────────────────────────────────
   const [tenantId, setTenantId] = useState('')
   const [newKey] = useState(() => `edon-admin-${crypto.randomUUID().replace(/-/g, '')}`)
   const [loading, setLoading]   = useState(false)
@@ -1344,6 +1395,46 @@ function RecoveryTab({ secret, toast }: { secret: string; toast: (m: string, t: 
 
   return (
     <div className="max-w-lg space-y-5">
+
+      {/* Kill switch */}
+      <div className="glass-card p-5 border-red-500/20 space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold flex items-center gap-2 text-red-400"><Power size={14} /> Emergency Kill Switch</h3>
+          <p className="text-xs text-muted-foreground">Instantly halt all AI agent actions for a tenant. Every activation is audit-logged.</p>
+        </div>
+        <div className="flex gap-2">
+          <input value={ksTenant} onChange={e => { setKsTenant(e.target.value); setKsState(null) }} placeholder="tenant-id"
+            className="flex-1 px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
+          <button onClick={fetchKs} disabled={!ksTenant.trim() || ksFetching}
+            className="px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground transition disabled:opacity-40">
+            {ksFetching ? <Spinner size={12} /> : 'Check'}
+          </button>
+        </div>
+        {ksState && (
+          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium ${ksState.active ? 'bg-red-500/10 border-red-500/25 text-red-400' : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400'}`}>
+            <div className={`w-2 h-2 rounded-full ${ksState.active ? 'bg-red-400 animate-pulse' : 'bg-emerald-400'}`} />
+            {ksState.active ? `ACTIVE — ${ksState.reason || 'no reason given'}` : 'Inactive — agents running normally'}
+          </div>
+        )}
+        {ksState && !ksState.active && (
+          <div className="space-y-2">
+            <input value={ksReason} onChange={e => setKsReason(e.target.value)} placeholder="Reason for activation (required)"
+              className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            <button onClick={activateKs} disabled={ksActing || !ksReason.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-500/20 border border-red-500/30 text-red-400 text-sm font-semibold hover:bg-red-500/30 transition disabled:opacity-50">
+              {ksActing ? <Spinner size={13} /> : <Power size={13} />} Activate Kill Switch
+            </button>
+          </div>
+        )}
+        {ksState && ksState.active && (
+          <button onClick={deactivateKs} disabled={ksActing}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-sm font-semibold hover:bg-emerald-500/25 transition disabled:opacity-50">
+            {ksActing ? <Spinner size={13} /> : <CheckCircle2 size={13} />} Deactivate — Resume Governance
+          </button>
+        )}
+      </div>
+
+      {/* Emergency key recovery */}
       <div className="glass-card p-5 border-amber-500/20 space-y-2">
         <h3 className="text-sm font-semibold flex items-center gap-2 text-amber-400"><KeyRound size={14} /> Emergency Admin Key Recovery</h3>
         <p className="text-xs text-muted-foreground">Provision a fresh admin key for any client using only the bootstrap secret. Every recovery is logged immutably in the admin audit trail.</p>
@@ -1450,26 +1541,9 @@ function AuditLogTab({ secret, toast }: { secret: string; toast: (m: string, t: 
 
 const OPENAI_KEY_STORAGE = 'edon_openai_key'
 const ANTHROPIC_KEY_STORAGE = 'edon_anthropic_key'
-const MULTICA_TOKEN_STORAGE = 'edon_multica_token'
 // const GITHUB_TOKEN_STORAGE = 'edon_github_token' // kept for future workflow dispatch
 
 interface Message { id: string; role: 'user' | 'assistant'; text: string; ts: Date }
-
-const AGENTS = [
-  { id: 'ef9f0db2-a950-4da5-855e-d93ba5bd368e', name: 'Chief of Staff' },
-  { id: '69a47ffe-4946-4d93-9684-a44778e81eb1', name: 'Follow-up Agent' },
-  { id: '1207bbe1-7366-4f50-8696-2b10f37719d8', name: 'Content Agent' },
-  { id: '452cc1a2-25d9-4b38-afb6-c443bd071213', name: 'Competitor Monitor' },
-  { id: 'bb8b01dd-03f1-4941-8835-8a55fc74b4e0', name: 'Ops Agent' },
-  { id: 'e741e622-0fe9-45df-9304-30e27235641f', name: 'Security Monitor' },
-  { id: '3662f54d-f95b-4394-9157-c8f11e03ed24', name: 'Regulatory Watcher' },
-  { id: 'a513778b-c811-485c-8a8e-ded276920838', name: 'Product Intelligence' },
-  { id: '2bb1f44d-df03-4bb2-9438-8b68a6229677', name: 'Account Manager' },
-  { id: 'fca62eac-b056-4ad4-aeda-6e17a3545ec6', name: 'Incident Agent' },
-  { id: 'e5c71521-f2a0-496d-bb33-6b9aff88aa68', name: 'Nightly QA' },
-  { id: '4de2c22c-c6fc-4ef8-b850-f27ae81b76ab', name: 'Code Agent' },
-  { id: 'a9696685-b394-4375-a3c6-6cb3ead19503', name: 'Integration Agent' },
-]
 
 // GitHub workflow dispatch kept for future use
 // async function triggerGitHubWorkflow(workflow: string, githubToken: string, inputs: Record<string, string> = {}) { ... }
@@ -1506,12 +1580,9 @@ async function askJarvis(
 
 // Fallback: direct Claude call when no bootstrap secret (dev / no server key)
 async function chiefOfStaffReason(transcript: string, anthropicKey: string): Promise<string> {
-  const system = `You are the Chief of Staff AI for EDON, an AI governance startup. The founder is talking to you directly.
-You manage a team of agents through Multica: ${AGENTS.map(a => `${a.name} (id: ${a.id})`).join(', ')}.
-All agent tasks are dispatched through Multica. When the founder asks you to delegate, take action, or assign a task — respond with a clear plan and include a JSON block at the end:
-{"action": "multica_issue" | "none", "agent": "<agent_id>", "task": "<brief task description>"}
-Use "multica_issue" any time an agent should do something. Use "none" only for pure conversation or status questions.
-Keep responses concise and direct. You are the founder's right hand.`
+  const system = `You are Jarvis, the AI assistant for EDON, an AI governance platform. The founder is talking to you directly.
+You have no access to live EDON data in this mode. Answer governance questions, help think through architecture, and advise on EDON operations.
+Keep responses concise and direct.`
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1548,13 +1619,12 @@ async function speakText(text: string, openaiKey: string) {
   audio.play()
 }
 
-function CommandTab() {
+function CommandTab({ secret }: { secret: string }) {
   const [openaiKey, setOpenaiKey]       = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
   const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
-  const [multicaToken, setMulticaToken] = useState(() => localStorage.getItem(MULTICA_TOKEN_STORAGE) || '')
-  const [savedSecret]                   = useState(() => localStorage.getItem(SECRET_KEY) || '')
+  const savedSecret                     = secret || localStorage.getItem(SECRET_KEY) || ''
   const [messages, setMessages]         = useState<Message[]>([
-    { id: 'welcome', role: 'assistant', text: "Jarvis online. Ask me anything about EDON — client health, governance stats, open findings, healing status. Or say 'run <agent>' to dispatch a task.", ts: new Date() }
+    { id: 'welcome', role: 'assistant', text: "Jarvis online. Ask me anything about EDON — client health, governance stats, open findings, healing status.", ts: new Date() }
   ])
   const conversationRef = useRef<Array<{role: string; content: unknown}>>([])
 
@@ -1562,7 +1632,6 @@ function CommandTab() {
   const [processing, setProcessing]     = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [textInput, setTextInput]       = useState('')
-  const [selectedAgent, setSelectedAgent] = useState(AGENTS[0].id)
   const [showConfig, setShowConfig]     = useState(false)
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -1572,20 +1641,6 @@ function CommandTab() {
 
   const addMessage = (role: 'user' | 'assistant', text: string) =>
     setMessages(prev => [...prev, { id: Date.now().toString(), role, text, ts: new Date() }])
-
-  const dispatchToMultica = async (task: string, agentId: string) => {
-    if (!multicaToken) {
-      addMessage('assistant', '⚠ Multica token not set — open Config to add it.')
-      return
-    }
-    const agent = AGENTS.find(a => a.id === agentId)
-    await fetch('https://edon-multica-api.fly.dev/api/issues', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${multicaToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: task, assignee: agentId }),
-    })
-    addMessage('assistant', `✓ Task sent to ${agent?.name ?? agentId}. The agent will handle it now.`)
-  }
 
   const processInput = async (text: string) => {
     if (!text.trim()) return
@@ -1602,34 +1657,14 @@ function CommandTab() {
           { role: 'user', content: text },
           { role: 'assistant', content: [{ type: 'text', text: reply }] },
         ].slice(-20) // keep last 10 turns
-        // Check if Claude is also dispatching an agent task
-        const match = reply.match(/\{[\s\S]*?\}/)
-        if (match) {
-          try {
-            const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
-            if (action.action === 'multica_issue' && action.agent) {
-              await dispatchToMultica(action.task || text, action.agent)
-            }
-          } catch { /* not a dispatch block */ }
-        }
         if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
       } else if (anthropicKey) {
         // Fallback: direct Claude (no live data, but works without bootstrap secret)
         const reply = await chiefOfStaffReason(text, anthropicKey)
         addMessage('assistant', reply)
-        const match = reply.match(/\{[\s\S]*?\}/)
-        if (match) {
-          try {
-            const action = JSON.parse(match[0]) as { action: string; agent: string; task: string }
-            if (action.action === 'multica_issue' && action.agent) {
-              await dispatchToMultica(action.task || text, action.agent)
-            }
-          } catch { /* parse failed */ }
-        }
         if (voiceEnabled && openaiKey) speakText(reply, openaiKey)
       } else {
-        // Direct mode — no API key needed, go straight to Multica
-        await dispatchToMultica(text, selectedAgent)
+        addMessage('assistant', 'No backend secret or Anthropic key configured. Open Config to add your bootstrap secret.')
       }
     } catch (e) {
       addMessage('assistant', `Error: ${e instanceof Error ? e.message : 'Something went wrong'}`)
@@ -1672,11 +1707,10 @@ function CommandTab() {
   const saveConfig = () => {
     localStorage.setItem(OPENAI_KEY_STORAGE, openaiKey)
     localStorage.setItem(ANTHROPIC_KEY_STORAGE, anthropicKey)
-    localStorage.setItem(MULTICA_TOKEN_STORAGE, multicaToken)
     setShowConfig(false)
   }
 
-  const configured = !!multicaToken
+  const configured = !!savedSecret
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] max-w-3xl mx-auto">
@@ -1689,8 +1723,7 @@ function CommandTab() {
           <div>
             <h2 className="font-semibold text-sm">Jarvis</h2>
             <p className="text-[10px] text-muted-foreground">
-              {savedSecret ? 'Live data mode · backend Claude' : anthropicKey ? 'Direct Claude · no live data' : 'Direct dispatch mode'}
-              {' · Multica'}
+              {savedSecret ? 'Live data mode · backend Claude' : anthropicKey ? 'Direct Claude · no live data' : 'Setup required'}
             </p>
           </div>
         </div>
@@ -1713,11 +1746,6 @@ function CommandTab() {
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="mb-4 rounded-xl border border-border bg-black/30 p-4 space-y-3 overflow-hidden">
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Config</h3>
-            <div>
-              <label className="text-[10px] text-muted-foreground mb-1 block">Multica Token <span className="text-primary font-semibold">required</span></label>
-              <input type="password" value={multicaToken} onChange={e => setMulticaToken(e.target.value)}
-                placeholder="multica_..." className="w-full text-xs bg-muted/30 border border-border rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/40" />
-            </div>
             <p className="text-[10px] text-muted-foreground/50">Optional — unlock Claude reasoning + voice:</p>
             <div>
               <label className="text-[10px] text-muted-foreground mb-1 block">Anthropic API Key (Claude enhanced mode)</label>
@@ -1735,17 +1763,6 @@ function CommandTab() {
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Agent selector — only shown in direct mode (no Anthropic key) */}
-      {!anthropicKey && (
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-[10px] text-muted-foreground shrink-0">Assign to:</span>
-          <select value={selectedAgent} onChange={e => setSelectedAgent(e.target.value)}
-            className="flex-1 text-xs bg-muted/30 border border-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/40 text-foreground">
-            {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
-        </div>
-      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-1">
@@ -2227,7 +2244,7 @@ function UsageTab({ secret, toast }: { secret: string; toast: (m: string, t: 'ok
 
 export default function App() {
   const [secret, setSecret]   = useState('')
-  const [tab, setTab]         = useState<Tab>('command')
+  const [tab, setTab]         = useState<Tab>('overview')
   const [toastData, setToastData] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
 
   const toast = useCallback((msg: string, type: 'ok' | 'err') => setToastData({ msg, type }), [])
@@ -2282,7 +2299,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-6">
         <AnimatePresence mode="wait">
           <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
-            {tab === 'command'  && <CommandTab />}
+            {tab === 'command'  && <CommandTab secret={secret} />}
             {tab === 'overview' && <OverviewTab secret={secret} toast={toast} />}
             {tab === 'scale'    && <ScaleTab    secret={secret} toast={toast} />}
             {tab === 'clients'  && <ClientsTab  secret={secret} toast={toast} />}

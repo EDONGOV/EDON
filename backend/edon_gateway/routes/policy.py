@@ -827,3 +827,108 @@ async def disable_rule(rule_id: str, request: Request, body: Optional[PolicyRule
         changed_by=tenant_id,
     )
     return {"rule_id": rule_id, "enabled": False}
+
+
+# ── Policy Sandbox ─────────────────────────────────────────────────────────────
+
+class SandboxTestRequest(BaseModel):
+    rule: dict = Field(..., description="The proposed policy rule to test (same schema as POST /policy/rules body)")
+    sample_size: int = Field(default=500, ge=1, le=5000, description="Number of recent audit events to test against")
+
+
+@router.post("/sandbox/test")
+async def sandbox_test(body: SandboxTestRequest, request: Request):
+    """Test a proposed policy rule against historical audit data before deploying it.
+
+    Fetches the last `sample_size` audit events for this tenant and re-evaluates
+    each action against the proposed rule in isolation. Returns:
+      - How many decisions would change (and in which direction)
+      - A sample of the changed decisions for human review
+      - The false-positive rate estimate (actions that would move from ALLOW → BLOCK/ESCALATE)
+
+    The rule is NEVER deployed. This is a pure read-only dry run.
+
+    Example: "Would this new rule have blocked 3% or 30% of recent traffic?"
+    """
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+
+    db = get_db()
+    events = db.query_audit_events(customer_id=tenant_id, limit=body.sample_size)
+    if not events:
+        return {
+            "sample_size": 0,
+            "message": "No audit events found for this tenant.",
+            "changed": 0,
+            "unchanged": 0,
+            "false_positive_rate": 0.0,
+            "changed_decisions": [],
+        }
+
+    proposed_rule = dict(body.rule)
+    proposed_rule.setdefault("enabled", True)
+    proposed_rules = [proposed_rule]
+
+    changed = []
+    unchanged_count = 0
+    false_positive_count = 0  # ALLOW → BLOCK/ESCALATE
+
+    from ..schemas import Action, Tool, IntentContract, RiskLevel, ActionSource
+    from ..governor import EDONGovernor
+
+    gov = EDONGovernor()
+
+    for ev in events:
+        action_data = ev.get("action") or {}
+        decision_data = ev.get("decision") or {}
+        original_verdict = (decision_data.get("verdict") or "ALLOW").upper()
+
+        tool_str = action_data.get("tool", "custom")
+        try:
+            tool_enum = Tool(tool_str)
+        except ValueError:
+            tool_enum = Tool.CUSTOM
+
+        action = Action(
+            tool=tool_enum,
+            op=action_data.get("op") or action_data.get("operation") or "unknown",
+            params=action_data.get("params") or {},
+            source=ActionSource.AGENT,
+            tags=action_data.get("tags") or [],
+            estimated_risk=RiskLevel(action_data.get("estimated_risk", "low")),
+        )
+
+        # Run just the tenant-rule matching, not the full governor pipeline
+        sandbox_decision = gov._apply_tenant_rules(proposed_rules, action)
+        new_verdict = sandbox_decision.verdict.value if sandbox_decision else original_verdict
+
+        if new_verdict != original_verdict:
+            changed.append({
+                "action_id": action_data.get("id", ev.get("id", "")),
+                "tool": tool_str,
+                "op": action.op,
+                "original_verdict": original_verdict,
+                "new_verdict": new_verdict,
+                "explanation": sandbox_decision.explanation if sandbox_decision else "",
+            })
+            if original_verdict == "ALLOW" and new_verdict in ("BLOCK", "ESCALATE"):
+                false_positive_count += 1
+        else:
+            unchanged_count += 1
+
+    total = len(events)
+    fp_rate = false_positive_count / total if total > 0 else 0.0
+
+    return {
+        "sample_size": total,
+        "changed": len(changed),
+        "unchanged": unchanged_count,
+        "false_positive_count": false_positive_count,
+        "false_positive_rate": round(fp_rate, 4),
+        "changed_decisions": changed[:50],  # cap response size
+        "summary": (
+            f"Out of {total} recent actions, this rule would change {len(changed)} decision(s). "
+            f"Estimated false-positive rate: {fp_rate:.1%}."
+        ),
+    }

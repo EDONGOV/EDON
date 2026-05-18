@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDON Jarvis — Voice Interface</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0a0a0f;
+      color: #e8e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #a78bfa;
+      letter-spacing: -0.5px;
+    }
+    header p {
+      font-size: 0.85rem;
+      color: #6b7280;
+      margin-top: 0.3rem;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 720px;
+      background: #13131e;
+      border: 1px solid #2d2d42;
+      border-radius: 16px;
+      padding: 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    /* Config */
+    .config-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .config-row input {
+      flex: 1;
+      min-width: 0;
+      background: #0d0d16;
+      border: 1px solid #3d3d58;
+      border-radius: 8px;
+      color: #e8e8f0;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.85rem;
+    }
+    .config-row input::placeholder { color: #4b5563; }
+    .config-row label {
+      font-size: 0.8rem;
+      color: #6b7280;
+      white-space: nowrap;
+    }
+
+    /* Mic + input */
+    .ask-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-top: 1rem;
+    }
+    #questionInput {
+      flex: 1;
+      background: #0d0d16;
+      border: 1px solid #3d3d58;
+      border-radius: 10px;
+      color: #e8e8f0;
+      padding: 0.65rem 0.85rem;
+      font-size: 0.95rem;
+      resize: vertical;
+      min-height: 48px;
+    }
+    #questionInput:focus { outline: none; border-color: #7c3aed; }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 0.65rem 1.1rem;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: 0.45; cursor: default; }
+
+    #micBtn {
+      background: #1e1e30;
+      color: #a78bfa;
+      border: 1px solid #4c1d95;
+      font-size: 1.3rem;
+      padding: 0.5rem 0.75rem;
+    }
+    #micBtn.listening {
+      background: #4c1d95;
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(139,92,246,0.4); }
+      50%       { box-shadow: 0 0 0 8px rgba(139,92,246,0); }
+    }
+
+    #askBtn {
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+    }
+
+    /* Status */
+    #status {
+      font-size: 0.8rem;
+      color: #6b7280;
+      margin-top: 0.75rem;
+      min-height: 1.2em;
+    }
+    #status.active { color: #a78bfa; }
+    #status.error  { color: #f87171; }
+    #status.ok     { color: #34d399; }
+
+    /* Answer area */
+    #answerCard { display: none; }
+    #answerText {
+      font-size: 0.95rem;
+      line-height: 1.65;
+      color: #d1d5db;
+      white-space: pre-wrap;
+    }
+    .answer-label {
+      font-size: 0.75rem;
+      color: #4b5563;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.6rem;
+    }
+
+    /* Audio player */
+    #audioPlayer {
+      width: 100%;
+      margin-top: 1rem;
+      accent-color: #7c3aed;
+      display: none;
+    }
+
+    /* History */
+    #historyCard { display: none; }
+    #historyList {
+      list-style: none;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    #historyList li {
+      padding: 0.55rem 0;
+      border-bottom: 1px solid #1e1e30;
+      font-size: 0.85rem;
+    }
+    #historyList li:last-child { border: none; }
+    .hist-q { color: #a78bfa; }
+    .hist-a { color: #9ca3af; margin-top: 0.2rem; }
+
+    .row-between {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .clear-btn {
+      background: transparent;
+      color: #4b5563;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid #2d2d42;
+      border-radius: 6px;
+    }
+    .clear-btn:hover { color: #e8e8f0; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⬡ EDON Jarvis</h1>
+  <p>Ask anything about your governance platform — live data, no hallucinations.</p>
+</header>
+
+<!-- Config -->
+<div class="card">
+  <div class="config-row">
+    <label>Gateway</label>
+    <input id="gatewayUrl" type="text" placeholder="https://edon-gateway-prod.fly.dev" />
+    <label>Secret</label>
+    <input id="secretInput" type="password" placeholder="X-Bootstrap-Secret" />
+  </div>
+</div>
+
+<!-- Ask -->
+<div class="card">
+  <div class="ask-row">
+    <textarea id="questionInput" placeholder="What decisions did EDON make today? Any critical findings?" rows="2"></textarea>
+    <button id="micBtn" title="Hold to speak">🎤</button>
+    <button id="askBtn">Ask</button>
+  </div>
+  <div id="status">Ready.</div>
+
+  <audio id="audioPlayer" controls></audio>
+</div>
+
+<!-- Answer -->
+<div class="card" id="answerCard">
+  <div class="answer-label">Jarvis says</div>
+  <div id="answerText"></div>
+</div>
+
+<!-- History -->
+<div class="card" id="historyCard">
+  <div class="row-between">
+    <span class="card-title">Conversation</span>
+    <button class="clear-btn" id="clearBtn">Clear</button>
+  </div>
+  <ul id="historyList"></ul>
+</div>
+
+<script>
+  const gatewayInput = document.getElementById('gatewayUrl');
+  const secretInput  = document.getElementById('secretInput');
+  const questionEl   = document.getElementById('questionInput');
+  const micBtn       = document.getElementById('micBtn');
+  const askBtn       = document.getElementById('askBtn');
+  const statusEl     = document.getElementById('status');
+  const answerCard   = document.getElementById('answerCard');
+  const answerText   = document.getElementById('answerText');
+  const audioPlayer  = document.getElementById('audioPlayer');
+  const historyCard  = document.getElementById('historyCard');
+  const historyList  = document.getElementById('historyList');
+  const clearBtn     = document.getElementById('clearBtn');
+
+  // Restore from localStorage
+  gatewayInput.value = localStorage.getItem('edon_gateway') || '';
+  secretInput.value  = localStorage.getItem('edon_secret')  || '';
+  gatewayInput.addEventListener('change', () => localStorage.setItem('edon_gateway', gatewayInput.value));
+  secretInput.addEventListener('change',  () => localStorage.setItem('edon_secret',  secretInput.value));
+
+  let conversation = [];
+
+  function setStatus(msg, cls = '') {
+    statusEl.textContent = msg;
+    statusEl.className = cls;
+  }
+
+  // ── Speech recognition ──────────────────────────────────────────────────────
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (e) => {
+      const transcript = Array.from(e.results)
+        .map(r => r[0].transcript).join('');
+      questionEl.value = transcript;
+    };
+    recognition.onend = () => {
+      micBtn.classList.remove('listening');
+      if (questionEl.value.trim()) ask();
+    };
+    recognition.onerror = (e) => {
+      micBtn.classList.remove('listening');
+      setStatus('Mic error: ' + e.error, 'error');
+    };
+
+    micBtn.addEventListener('click', () => {
+      if (micBtn.classList.contains('listening')) {
+        recognition.stop();
+      } else {
+        micBtn.classList.add('listening');
+        setStatus('Listening…', 'active');
+        recognition.start();
+      }
+    });
+  } else {
+    micBtn.disabled = true;
+    micBtn.title = 'Speech recognition not supported in this browser';
+  }
+
+  // ── Ask ─────────────────────────────────────────────────────────────────────
+  askBtn.addEventListener('click', ask);
+  questionEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+
+  async function ask() {
+    const question = questionEl.value.trim();
+    if (!question) return;
+
+    const gateway = (gatewayInput.value || 'http://localhost:8000').replace(/\/$/, '');
+    const secret  = secretInput.value.trim();
+
+    askBtn.disabled = true;
+    setStatus('Thinking…', 'active');
+    answerCard.style.display = 'none';
+    audioPlayer.style.display = 'none';
+
+    try {
+      const res = await fetch(`${gateway}/v1/voice/ask`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(secret ? { 'X-Bootstrap-Secret': secret } : {}),
+        },
+        body: JSON.stringify({
+          question,
+          return_audio: true,
+          conversation: conversation.slice(-10),  // last 10 turns
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`${res.status}: ${err}`);
+      }
+
+      const data = await res.json();
+      const answer = data.answer || '(no answer)';
+
+      // Show answer
+      answerText.textContent = answer;
+      answerCard.style.display = 'block';
+      setStatus('Done.', 'ok');
+
+      // Play audio if available
+      if (data.audio_b64) {
+        const binary = atob(data.audio_b64);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: data.audio_mime || 'audio/mpeg' });
+        audioPlayer.src = URL.createObjectURL(blob);
+        audioPlayer.style.display = 'block';
+        audioPlayer.play().catch(() => {}); // autoplay may be blocked
+      }
+
+      // Add to conversation memory (for multi-turn)
+      conversation.push({ role: 'user', content: question });
+      conversation.push({ role: 'assistant', content: answer });
+
+      // Add to history UI
+      addHistory(question, answer);
+      questionEl.value = '';
+
+    } catch (err) {
+      setStatus('Error: ' + err.message, 'error');
+    } finally {
+      askBtn.disabled = false;
+    }
+  }
+
+  function addHistory(q, a) {
+    historyCard.style.display = 'block';
+    const li = document.createElement('li');
+    li.innerHTML = `<div class="hist-q">You: ${escHtml(q)}</div>
+                    <div class="hist-a">Jarvis: ${escHtml(a.slice(0, 200))}${a.length > 200 ? '…' : ''}</div>`;
+    historyList.prepend(li);
+  }
+
+  clearBtn.addEventListener('click', () => {
+    conversation = [];
+    historyList.innerHTML = '';
+    historyCard.style.display = 'none';
+    answerCard.style.display = 'none';
+    audioPlayer.style.display = 'none';
+    setStatus('Cleared.', '');
+  });
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+</script>
+</body>
+</html>

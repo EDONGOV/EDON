@@ -183,6 +183,18 @@ class V1ActionResponse(BaseModel):
             "Advisory only — the agent decides whether to act on this."
         ),
     )
+    invariant_results: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Structured evidence from each governance check (INV-000 through INV-013). "
+            "Each entry has check_id, result (pass/fail/advisory), and contribution. "
+            "Useful for explainability, debugging, and audit trail verification."
+        ),
+    )
+    request_hash: Optional[str] = Field(
+        None,
+        description="SHA-256 of the canonicalised action params. Ties this response to the exact request payload.",
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {

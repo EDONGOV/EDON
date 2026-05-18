@@ -18,6 +18,8 @@ def _dev_environment(monkeypatch):
     monkeypatch.setenv("EDON_CREDENTIALS_STRICT", "false")
     monkeypatch.setenv("EDON_STRICT_FAIL_CLOSED", "false")
     monkeypatch.setenv("EDON_DB_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("EDON_AI_ENABLED", "false")    # never burn credits in tests
+    monkeypatch.setenv("EDON_PROBE_ENABLED", "false") # probe needs real policies; disable in tests
 
     import edon_gateway.config as cfg
     monkeypatch.setattr(cfg.config, "_AUTH_ENABLED", False)

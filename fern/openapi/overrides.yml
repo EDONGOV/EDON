@@ -1,0 +1,11 @@
+x-fern-global-headers:
+  - header: X-EDON-TOKEN
+    name: token
+    type: string
+    env: EDON_API_KEY
+    docs: Your EDON API key (eak_...)
+
+x-fern-sdk-name: EdonClient
+
+x-fern-audiences:
+  - external

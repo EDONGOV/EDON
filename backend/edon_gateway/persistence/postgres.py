@@ -384,6 +384,7 @@ class PostgreSQLDatabase:
                 ("stated_intent", "TEXT"),
                 ("user_message", "TEXT"),
                 ("chain_sig", "TEXT"),
+                ("request_hash", "TEXT"),
             ]:
                 cur.execute(f"ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS {col} {typ}")  # safe: schema-only
             cur.execute("UPDATE api_keys SET role = 'user' WHERE role = 'agent'")
@@ -614,6 +615,8 @@ class PostgreSQLDatabase:
         stated_intent: Optional[str] = None,
         user_message: Optional[str] = None,
         created_at_override: Optional[str] = None,
+        request_hash: Optional[str] = None,
+        decision_id_override: Optional[str] = None,
     ) -> str:
         now = created_at_override if created_at_override else datetime.now(UTC).isoformat()
         ts = action.get("requested_at", now)
@@ -632,6 +635,7 @@ class PostgreSQLDatabase:
         action_summary = action_summary or decision.get("action_summary")
         stated_intent = stated_intent or context.get("stated_intent")
         user_message = user_message or context.get("user_message")
+        request_hash = request_hash or context.get("request_hash")
         context_json = json.dumps(context)
 
         is_payload_encrypted = False
@@ -649,7 +653,7 @@ class PostgreSQLDatabase:
             intent_id or "", agent_id or "", context_json, now,
             customer_id or "", str(anomaly_score) if anomaly_score is not None else "",
             "1" if human_override else "0", human_override_actor_id or "", human_override_reason or "",
-            str(processing_latency_ms) if processing_latency_ms is not None else "", edge_node_id or "",
+            str(processing_latency_ms) if processing_latency_ms is not None else "", edge_node_id or "", request_hash or "",
         ])
         prev_hash = self._get_previous_chain_hash()
         chain_hash = self._compute_chain_hash(prev_hash, entry_payload)
@@ -666,18 +670,18 @@ class PostgreSQLDatabase:
                     intent_id, agent_id, context, created_at,
                     chain_hash, chain_sig, customer_id, anomaly_score, human_override,
                     human_override_actor_id, human_override_reason, processing_latency_ms,
-                    edge_node_id, is_payload_encrypted
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    edge_node_id, is_payload_encrypted, request_hash
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
                 ts, action_id, tool, op, params_json, source, est_risk, comp_risk,
                 verdict, reason_code, explanation, policy_version, policy_rule_id, action_summary, stated_intent, user_message,
                 intent_id, agent_id,
                 context_json, now, chain_hash, chain_sig, customer_id, anomaly_score, human_override,
                 human_override_actor_id, human_override_reason, processing_latency_ms,
-                edge_node_id, is_payload_encrypted,
+                edge_node_id, is_payload_encrypted, request_hash,
             ))
 
-            decision_id = f"dec-{action_id}-{now}" if action_id else f"dec-{now}"
+            decision_id = decision_id_override or (f"dec-{action_id}-{now}" if action_id else f"dec-{now}")
             cur.execute("""
                 INSERT INTO decisions (decision_id, action_id, verdict, reason_code, explanation,
                     policy_version, intent_id, agent_id, created_at)
@@ -792,7 +796,7 @@ class PostgreSQLDatabase:
     def verify_audit_chain(self, limit: Optional[int] = None) -> Dict[str, Any]:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            q = "SELECT id, chain_hash, chain_sig, timestamp, action_id, action_tool, action_op, action_params, action_source, action_estimated_risk, action_computed_risk, decision_verdict, decision_reason_code, decision_explanation, decision_policy_version, policy_rule_id, action_summary, stated_intent, user_message, intent_id, agent_id, context, created_at, customer_id, anomaly_score, human_override, human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id FROM audit_events ORDER BY id ASC"
+            q = "SELECT id, chain_hash, chain_sig, timestamp, action_id, action_tool, action_op, action_params, action_source, action_estimated_risk, action_computed_risk, decision_verdict, decision_reason_code, decision_explanation, decision_policy_version, policy_rule_id, action_summary, stated_intent, user_message, intent_id, agent_id, context, created_at, customer_id, anomaly_score, human_override, human_override_actor_id, human_override_reason, processing_latency_ms, edge_node_id, request_hash FROM audit_events ORDER BY id ASC"
             if limit:
                 q += f" LIMIT {int(limit)}"
             cur.execute(q)
@@ -814,7 +818,7 @@ class PostgreSQLDatabase:
                 row[22] or "",
                 row[23] or "", str(row[24]) if row[24] is not None else "",
                 "1" if row[25] else "0", row[26] or "", row[27] or "",
-                str(row[28]) if row[28] is not None else "", row[29] or "",
+                str(row[28]) if row[28] is not None else "", row[29] or "", row[30] or "",
             ])
             expected = self._compute_chain_hash(prev_hash, entry_payload)
             if row[1] != expected:
@@ -2790,4 +2794,37 @@ class PostgreSQLDatabase:
                     ON CONFLICT (tenant_id, key) DO UPDATE
                         SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
                 """, (tenant_id, value, now))
+                conn.commit()
+
+    # ── Kill Switch ──────────────────────────────────────────────────────────────
+
+    def get_kill_switch(self, tenant_id: str) -> dict:
+        """Return current kill switch state for tenant from DB."""
+        import json as _json
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT value FROM tenant_settings WHERE tenant_id=%s AND key='kill_switch'",
+                    (tenant_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return {"active": False, "tenant_id": tenant_id}
+        try:
+            return _json.loads(row[0])
+        except Exception:
+            return {"active": False, "tenant_id": tenant_id}
+
+    def set_kill_switch(self, tenant_id: str, state: dict) -> None:
+        """Persist kill switch state to DB."""
+        import json as _json
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO tenant_settings (tenant_id, key, value, updated_at)
+                    VALUES (%s, 'kill_switch', %s, %s)
+                    ON CONFLICT (tenant_id, key) DO UPDATE
+                        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                """, (tenant_id, _json.dumps(state), now))
                 conn.commit()

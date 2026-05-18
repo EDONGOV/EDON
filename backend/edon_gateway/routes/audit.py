@@ -1,5 +1,6 @@
 """Audit trail management routes: export, chain verification, human review queue."""
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -132,18 +133,156 @@ async def verify_audit_chain(request: Request, limit: Optional[int] = Query(None
     return JSONResponse(content=result, status_code=status_code)
 
 
+@router.get("/stream")
+async def stream_audit_events(request: Request):
+    """SSE stream of real-time audit events for SIEM integration (Splunk, Datadog, Elastic).
+
+    Connect once; each governance decision fires an event within milliseconds.
+    Events are JSON objects encoded as SSE data frames.
+    A keep-alive comment (`: heartbeat`) is sent every 15 s so proxies don't close idle connections.
+
+    Tenant-scoped: only events belonging to the caller's tenant are pushed.
+
+    Example frame:
+        data: {"timestamp":"2026-04-25T10:00:00Z","verdict":"BLOCK","reason_code":"INV-003-RISK-GATE",...}
+    """
+    from ..audit_queue import subscribe_sse, unsubscribe_sse
+
+    tenant_id = get_request_tenant_id(request)
+
+    async def event_generator():
+        q = subscribe_sse(maxsize=200)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    # Tenant isolation: drop events not belonging to this tenant
+                    if tenant_id and event.get("tenant_id") not in (tenant_id, None):
+                        continue
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            unsubscribe_sse(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── CEF / JSON-LD helpers ──────────────────────────────────────────────────────
+
+_CEF_VERDICT_SEVERITY: dict = {
+    "ALLOW": 3, "DEGRADE": 4, "PAUSE": 5, "ESCALATE": 6, "BLOCK": 8, "ERROR": 8,
+}
+
+
+def _cef_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n").replace("\r", "")
+
+
+def _event_to_cef(event: dict) -> str:
+    """Render one audit event as a CEF:0 line (ArcSight Common Event Format)."""
+    action  = event.get("action") or {}
+    decision = event.get("decision") or {}
+    verdict    = (decision.get("verdict") or event.get("decision_verdict") or "UNKNOWN").upper()
+    reason     = decision.get("reason_code") or event.get("decision_reason_code") or "UNKNOWN"
+    explanation = decision.get("explanation") or event.get("decision_explanation") or ""
+    agent_id   = action.get("agent_id") or event.get("agent_id") or ""
+    tool       = action.get("tool") or event.get("action_tool") or ""
+    op         = action.get("op") or event.get("action_op") or ""
+    intent_id  = event.get("intent_id") or action.get("intent_id") or ""
+    ts         = event.get("timestamp") or event.get("created_at") or ""
+    tenant_id  = event.get("customer_id") or event.get("tenant_id") or ""
+
+    # CEF severity 0-10
+    severity = _CEF_VERDICT_SEVERITY.get(verdict, 5)
+
+    # rt = epoch milliseconds
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else datetime.now(UTC)
+        rt = int(dt.timestamp() * 1000)
+    except Exception:
+        rt = ""
+
+    ext_parts = [
+        f"suser={_cef_escape(agent_id)}",
+        f"sproc={_cef_escape(f'{tool}.{op}')}",
+        f"act={_cef_escape(verdict)}",
+        f"outcome={_cef_escape(verdict)}",
+        f"dvchost=edon-gateway",
+        f"tenantId={_cef_escape(tenant_id)}",
+    ]
+    if intent_id:
+        ext_parts.append(f"cs1={_cef_escape(intent_id)}")
+        ext_parts.append("cs1Label=IntentId")
+    if rt:
+        ext_parts.append(f"rt={rt}")
+
+    name = _cef_escape(explanation[:255])
+    sig_id = _cef_escape(reason)
+
+    return f"CEF:0|EDON|GovernanceGateway|1.0|{sig_id}|{name}|{severity}|{' '.join(ext_parts)}"
+
+
+_JSONLD_CONTEXT = {
+    "@vocab": "https://edoncore.com/schema/governance#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "schema": "https://schema.org/",
+    "timestamp": {"@type": "xsd:dateTime"},
+    "verdict": {"@id": "https://edoncore.com/schema/governance#Verdict"},
+    "agent": {"@id": "schema:softwareAgent"},
+}
+
+
+def _event_to_jsonld(event: dict) -> dict:
+    """Render one audit event as a JSON-LD node."""
+    action   = event.get("action") or {}
+    decision = event.get("decision") or {}
+    action_id = action.get("id") or event.get("action_id") or ""
+    return {
+        "@type": "GovernanceDecision",
+        "@id": f"urn:edon:decision:{action_id}" if action_id else None,
+        "timestamp": event.get("timestamp") or event.get("created_at"),
+        "agentId": action.get("agent_id") or event.get("agent_id"),
+        "tool": action.get("tool") or event.get("action_tool"),
+        "operation": action.get("op") or event.get("action_op"),
+        "verdict": decision.get("verdict") or event.get("decision_verdict"),
+        "reasonCode": decision.get("reason_code") or event.get("decision_reason_code"),
+        "explanation": decision.get("explanation") or event.get("decision_explanation"),
+        "intentId": event.get("intent_id"),
+        "tenantId": event.get("customer_id"),
+        "anomalyScore": event.get("anomaly_score"),
+        "latencyMs": event.get("processing_latency_ms"),
+    }
+
+
 @router.get("/export")
 async def export_audit_trail(
     request: Request,
-    format: str = Query("json", pattern="^(json|csv|parquet)$"),
+    format: str = Query("json", pattern="^(json|csv|parquet|cef|jsonld)$"),
     agent_id: Optional[str] = Query(None),
     verdict: Optional[str] = Query(None),
     limit: int = Query(10000, le=100000),
     include_chain_proof: bool = Query(False),
+    from_ts: Optional[str] = Query(None, description="ISO-8601 start (inclusive)"),
+    to_ts: Optional[str] = Query(None, description="ISO-8601 end (inclusive)"),
 ):
     """Export audit trail in JSON, CSV, or Parquet format.
 
     Implements Spec 4.8: paginated export with optional chain verification proof.
+
+    SIEM formats:
+      cef    — ArcSight Common Event Format (CEF:0), one line per decision, for Splunk/QRadar/ArcSight
+      jsonld — JSON-LD graph document for semantic/RDF-based SIEM pipelines
     """
     db = get_db()
     tenant_id = get_request_tenant_id(request)
@@ -155,9 +294,46 @@ async def export_audit_trail(
         limit=limit,
     )
 
+    if from_ts or to_ts:
+        def _in_range(ev: dict) -> bool:
+            ts = ev.get("timestamp") or ev.get("created_at") or ""
+            if from_ts and ts < from_ts:
+                return False
+            if to_ts and ts > to_ts:
+                return False
+            return True
+        events = [e for e in events if _in_range(e)]
+
     chain_proof = None
     if include_chain_proof:
         chain_proof = db.verify_audit_chain()
+
+    ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+
+    if format == "cef":
+        lines = [_event_to_cef(e) for e in events]
+        content = "\n".join(lines) + ("\n" if lines else "")
+        return StreamingResponse(
+            iter([content.encode()]),
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename=edon_audit_{ts_str}.cef"},
+        )
+
+    if format == "jsonld":
+        nodes = [_event_to_jsonld(e) for e in events]
+        doc = {
+            "@context": _JSONLD_CONTEXT,
+            "@graph": nodes,
+            "exportedAt": datetime.now(UTC).isoformat(),
+            "tenantId": tenant_id,
+            "count": len(nodes),
+        }
+        content = json.dumps(doc, indent=2, default=str).encode()
+        return StreamingResponse(
+            iter([content]),
+            media_type="application/ld+json",
+            headers={"Content-Disposition": f"attachment; filename=edon_audit_{ts_str}.jsonld"},
+        )
 
     if format == "json":
         payload = {"events": events, "count": len(events), "tenant_id": tenant_id}
