@@ -1,0 +1,66 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/EdonLP"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/admin"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/backend/ui/console-ui"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/console"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/demos/admin-demo"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/demos/healthcare-demo"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/demos/logistics"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/demos/law"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: "/sdk/javascript"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: "/backend"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: "/load_tests"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule:
+      interval: weekly

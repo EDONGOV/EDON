@@ -8,6 +8,7 @@ backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/*.pyc
+sdk/python/edon_sdk/__pycache__/
 backend/.env
 backend/edon_gateway/.env
 **/.env
