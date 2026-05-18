@@ -1,5 +1,6 @@
 # Frontend
 frontend/node_modules/
+EdonLP/node_modules/
 frontend/dist/
 frontend/.env.local
 
