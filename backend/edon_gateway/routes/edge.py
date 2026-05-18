@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..logging_config import get_logger
+from ..config import config
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 
@@ -37,6 +38,25 @@ class EdgeNodeRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     capabilities: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    cert_fingerprint: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="Fingerprint of the client certificate used by the node.",
+    )
+    signed_config_bundle: Optional[str] = Field(
+        None,
+        max_length=4096,
+        description="Base64 or hex signature for the node's initial config bundle.",
+    )
+    attestation: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Periodic health attestation metadata for high-risk environments.",
+    )
+    identity_provider: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Identity provider used to register the node (e.g. mTLS proxy, service account).",
+    )
 
 
 class EdgeNodeRegisterResponse(BaseModel):
@@ -75,6 +95,10 @@ def _ensure_edge_tables(db) -> None:
                 last_seen TEXT,
                 policy_version TEXT NOT NULL DEFAULT '0',
                 metadata TEXT DEFAULT '{}',
+                cert_fingerprint TEXT,
+                signed_config_bundle TEXT,
+                attestation TEXT,
+                identity_provider TEXT,
                 registered_at TEXT NOT NULL
             )
         """)
@@ -101,7 +125,51 @@ def _ensure_edge_tables(db) -> None:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_edge_sync_tenant ON edge_sync_queue(tenant_id)
         """)
+
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(edge_nodes)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        for column_def, column_name in [
+            ("cert_fingerprint TEXT", "cert_fingerprint"),
+            ("signed_config_bundle TEXT", "signed_config_bundle"),
+            ("attestation TEXT", "attestation"),
+            ("identity_provider TEXT", "identity_provider"),
+        ]:
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE edge_nodes ADD COLUMN {column_def}")
         conn.commit()
+
+
+def _resolve_edge_tenant(request: Request) -> str:
+    tenant_id = get_request_tenant_id(request)
+    if tenant_id:
+        return tenant_id
+    if config.ENTERPRISE_MODE or config.AUTH_ENABLED:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return "default"
+
+
+def _require_edge_identity(request: Request, req: Optional[EdgeNodeRegisterRequest] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    cert_fingerprint = (
+        request.headers.get("X-Client-Cert-Fingerprint")
+        or request.headers.get("X-Edge-Cert-Fingerprint")
+        or (req.cert_fingerprint if req else None)
+    )
+    signed_config_bundle = (
+        request.headers.get("X-Edge-Signed-Config")
+        or (req.signed_config_bundle if req else None)
+    )
+    attestation = request.headers.get("X-Edge-Attestation")
+    if not attestation and req and req.attestation:
+        attestation = json.dumps(req.attestation, sort_keys=True)
+
+    if config.ENTERPRISE_MODE or config.EDGE_REQUIRE_NODE_CERTIFICATE:
+        if not cert_fingerprint:
+            raise HTTPException(status_code=403, detail="Edge node certificate fingerprint is required")
+    if config.ENTERPRISE_MODE or config.EDGE_REQUIRE_ATTESTATION:
+        if not attestation:
+            raise HTTPException(status_code=403, detail="Edge node attestation is required")
+    return cert_fingerprint, signed_config_bundle, attestation
 
 
 # ---------------------------------------------------------------------------
@@ -162,9 +230,10 @@ def _compile_bundle(tenant_id: str, db) -> Dict[str, Any]:
 @router.post("/register", response_model=EdgeNodeRegisterResponse)
 async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
     """Register an edge node for a tenant and return initial policy bundle."""
-    tenant_id = get_request_tenant_id(request) or "default"
+    tenant_id = _resolve_edge_tenant(request)
     db = get_db()
     _ensure_edge_tables(db)
+    cert_fingerprint, signed_config_bundle, attestation = _require_edge_identity(request, req)
 
     now = datetime.now(UTC).isoformat()
     bundle = _compile_bundle(tenant_id, db)
@@ -174,14 +243,19 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
         conn.execute(
             """
             INSERT INTO edge_nodes (id, tenant_id, name, capabilities, status,
-                                    last_seen, policy_version, metadata, registered_at)
-            VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                                    last_seen, policy_version, metadata, cert_fingerprint,
+                                    signed_config_bundle, attestation, identity_provider, registered_at)
+            VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 capabilities=excluded.capabilities,
                 last_seen=excluded.last_seen,
                 policy_version=excluded.policy_version,
-                metadata=excluded.metadata
+                metadata=excluded.metadata,
+                cert_fingerprint=excluded.cert_fingerprint,
+                signed_config_bundle=excluded.signed_config_bundle,
+                attestation=excluded.attestation,
+                identity_provider=excluded.identity_provider
             """,
             (
                 req.node_id,
@@ -191,6 +265,10 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
                 now,
                 policy_version,
                 json.dumps(req.metadata),
+                cert_fingerprint,
+                signed_config_bundle,
+                attestation,
+                (req.identity_provider or "mtls-proxy"),
                 now,
             ),
         )
@@ -208,7 +286,7 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
 @router.get("/{node_id}/policy-bundle")
 async def get_policy_bundle(node_id: str, request: Request):
     """Return a compiled PolicyBundle for the edge node."""
-    tenant_id = get_request_tenant_id(request) or "default"
+    tenant_id = _resolve_edge_tenant(request)
     db = get_db()
     _ensure_edge_tables(db)
 
@@ -221,6 +299,12 @@ async def get_policy_bundle(node_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Edge node '{node_id}' not found")
     if row[0] != tenant_id:
         raise HTTPException(status_code=403, detail="Not authorised for this edge node")
+    cert_fingerprint, _, _ = _require_edge_identity(request)
+    if cert_fingerprint and config.ENTERPRISE_MODE:
+        with db._get_connection() as conn:
+            stored = conn.execute("SELECT cert_fingerprint FROM edge_nodes WHERE id = ?", (node_id,)).fetchone()
+        if stored and stored[0] and stored[0] != cert_fingerprint:
+            raise HTTPException(status_code=403, detail="Edge node certificate fingerprint mismatch")
 
     bundle = _compile_bundle(tenant_id, db)
 
@@ -247,7 +331,7 @@ async def get_policy_bundle(node_id: str, request: Request):
 @router.post("/{node_id}/sync", response_model=EdgeSyncResponse)
 async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest):
     """Accept offline-queued actions from an edge node and add to audit trail."""
-    tenant_id = get_request_tenant_id(request) or "default"
+    tenant_id = _resolve_edge_tenant(request)
     db = get_db()
     _ensure_edge_tables(db)
 
@@ -260,6 +344,12 @@ async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest
         raise HTTPException(status_code=404, detail=f"Edge node '{node_id}' not found")
     if row[0] != tenant_id:
         raise HTTPException(status_code=403, detail="Not authorised for this edge node")
+    cert_fingerprint, _, _ = _require_edge_identity(request)
+    if cert_fingerprint and config.ENTERPRISE_MODE:
+        with db._get_connection() as conn:
+            stored = conn.execute("SELECT cert_fingerprint FROM edge_nodes WHERE id = ?", (node_id,)).fetchone()
+        if stored and stored[0] and stored[0] != cert_fingerprint:
+            raise HTTPException(status_code=403, detail="Edge node certificate fingerprint mismatch")
 
     now = datetime.now(UTC).isoformat()
     accepted = 0
@@ -320,7 +410,7 @@ async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest
 @router.get("")
 async def list_edge_nodes(request: Request):
     """List all edge nodes for the current tenant."""
-    tenant_id = get_request_tenant_id(request) or "default"
+    tenant_id = _resolve_edge_tenant(request)
     db = get_db()
     _ensure_edge_tables(db)
 

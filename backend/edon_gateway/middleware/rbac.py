@@ -11,12 +11,17 @@ logger = logging.getLogger(__name__)
 
 # Permissions granted per role
 ROLE_PERMISSIONS: Dict[str, List[str]] = {
-    'admin':     ['*'],                              # All permissions
-    'operator':  ['read', 'write', 'action', 'audit', 'api_keys'],
-    'user':      ['action', 'read', 'audit', 'write'],  # Product default (console + governed actions)
-    'agent':     ['action', 'read', 'audit', 'write'],  # Backward-compatible alias
-    'read_only': ['read', 'audit'],
-    'auditor':   ['read', 'audit', 'export'],        # External auditor: read + export evidence, no writes
+    'super_admin':     ['*'],  # Full tenant control
+    'admin':           ['*'],  # Backward-compatible alias for legacy bootstrap flows
+    'governance_admin': ['read', 'write', 'action', 'audit', 'export', 'approvals', 'api_keys'],
+    'security_admin':   ['read', 'audit', 'export', 'api_keys', 'incidents'],
+    'operator':         ['read', 'write', 'action', 'audit'],
+    'developer':        ['read', 'action', 'sandbox'],
+    'auditor':          ['read', 'audit', 'export'],
+    'viewer':           ['read'],
+    'read_only':        ['read'],
+    'user':             ['action', 'read', 'audit', 'write'],  # Legacy alias
+    'agent':            ['action', 'read', 'audit', 'write'],  # Legacy alias
 }
 
 # Permission required per endpoint (None = public)

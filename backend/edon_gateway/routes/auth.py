@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from ..middleware.auth import get_token_from_header, verify_token, verify_clerk_token, resolve_tenant_for_clerk
 from ..middleware.rate_limit import check_rate_limit, increment_rate_limit
+from ..config import config
 from ..persistence import get_db
 from ..security.hashing import hash_api_key_fast
 
@@ -88,6 +89,12 @@ async def register(request: Request, body: RegisterRequest):
         raise HTTPException(status_code=429, detail=f"Too many attempts. {rate_err}", headers={"Retry-After": "3600"})
     increment_rate_limit(rate_key)
 
+    if config.ENTERPRISE_MODE or config.ENTERPRISE_SSO_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail="Password registration is disabled in enterprise SSO-only mode.",
+        )
+
     db = get_db()
 
     # Reject duplicate emails
@@ -105,13 +112,18 @@ async def register(request: Request, body: RegisterRequest):
         email=body.email,
         auth_provider="email",
         auth_subject=pw_hash,
-        role="admin",
+        role="viewer" if config.ENTERPRISE_MODE else "admin",
     )
     db.create_tenant(tenant_id=tenant_id, user_id=user_id)
 
     raw_key = f"edon-{secrets.token_urlsafe(32)}"
     key_hash = hash_api_key_fast(raw_key)
-    key_id = db.create_api_key(tenant_id=tenant_id, key_hash=key_hash, name="Default Key", role="admin")
+    key_id = db.create_api_key(
+        tenant_id=tenant_id,
+        key_hash=key_hash,
+        name="Default Key",
+        role="operator" if config.ENTERPRISE_MODE else "admin",
+    )
 
     return {
         "tenant_id": tenant_id,
@@ -135,6 +147,12 @@ async def login(request: Request, body: RegisterRequest):
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Too many login attempts. {rate_err}")
     increment_rate_limit(rate_key)
+
+    if config.ENTERPRISE_MODE or config.ENTERPRISE_SSO_ONLY:
+        raise HTTPException(
+            status_code=403,
+            detail="Password login is disabled in enterprise SSO-only mode.",
+        )
 
     db = get_db()
     user = db.get_user_by_auth("email", body.email)
@@ -164,7 +182,12 @@ async def login(request: Request, body: RegisterRequest):
     if not active_keys:
         raw_key = f"edon-{secrets.token_urlsafe(32)}"
         key_hash = hash_api_key_fast(raw_key)
-        key_id = db.create_api_key(tenant_id=tenant_id, key_hash=key_hash, name="Default Key", role="admin")
+        key_id = db.create_api_key(
+            tenant_id=tenant_id,
+            key_hash=key_hash,
+            name="Default Key",
+            role="operator" if config.ENTERPRISE_MODE else "admin",
+        )
 
     response: dict = {
         "tenant_id": tenant_id,
@@ -203,7 +226,7 @@ def _provision_api_key_if_missing(db, tenant_id: str):
         tenant_id=tenant_id,
         key_hash=key_hash,
         name="Default Key",
-        role="admin",
+        role="operator" if config.ENTERPRISE_MODE else "admin",
     )
     return raw_key, key_id
 

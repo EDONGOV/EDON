@@ -81,6 +81,27 @@ class Config:
         # Security
         # =========================
         self._CREDENTIALS_STRICT = os.getenv("EDON_CREDENTIALS_STRICT", "false").lower() == "true"
+        self._ENTERPRISE_MODE = os.getenv("EDON_ENTERPRISE_MODE", "false").lower() == "true"
+        self._ENTERPRISE_SSO_ONLY = os.getenv("EDON_ENTERPRISE_SSO_ONLY", "false").lower() == "true"
+        self._REQUIRE_ADMIN_MFA = os.getenv("EDON_REQUIRE_ADMIN_MFA", "false").lower() == "true"
+        self._REQUIRE_PHISHING_RESISTANT_MFA = (
+            os.getenv("EDON_REQUIRE_PHISHING_RESISTANT_MFA", "false").lower() == "true"
+        )
+        self._EDGE_REQUIRE_NODE_CERTIFICATE = (
+            os.getenv("EDON_EDGE_REQUIRE_NODE_CERTIFICATE", "false").lower() == "true"
+        )
+        self._EDGE_REQUIRE_ATTESTATION = os.getenv("EDON_EDGE_REQUIRE_ATTESTATION", "false").lower() == "true"
+        self._ENTERPRISE_IDENTITY_PROVIDERS = [
+            p.strip().lower()
+            for p in (os.getenv("EDON_ENTERPRISE_IDENTITY_PROVIDERS", "clerk,oidc,saml")).split(",")
+            if p.strip()
+        ]
+        self._ENTERPRISE_DEFAULT_USER_ROLE = (
+            os.getenv("EDON_ENTERPRISE_DEFAULT_USER_ROLE", "viewer" if self._ENTERPRISE_MODE else "user")
+        ).strip().lower()
+        self._ENTERPRISE_DEFAULT_API_KEY_ROLE = (
+            os.getenv("EDON_ENTERPRISE_DEFAULT_API_KEY_ROLE", "operator" if self._ENTERPRISE_MODE else "admin")
+        ).strip().lower()
 
         # Environment
         self._ENVIRONMENT = os.getenv("ENVIRONMENT") or os.getenv("EDON_ENV") or "development"
@@ -222,6 +243,42 @@ class Config:
     @property
     def CREDENTIALS_STRICT(self) -> bool:
         return self._CREDENTIALS_STRICT
+
+    @property
+    def ENTERPRISE_MODE(self) -> bool:
+        return self._ENTERPRISE_MODE
+
+    @property
+    def ENTERPRISE_SSO_ONLY(self) -> bool:
+        return self._ENTERPRISE_SSO_ONLY
+
+    @property
+    def REQUIRE_ADMIN_MFA(self) -> bool:
+        return self._REQUIRE_ADMIN_MFA
+
+    @property
+    def REQUIRE_PHISHING_RESISTANT_MFA(self) -> bool:
+        return self._REQUIRE_PHISHING_RESISTANT_MFA
+
+    @property
+    def EDGE_REQUIRE_NODE_CERTIFICATE(self) -> bool:
+        return self._EDGE_REQUIRE_NODE_CERTIFICATE
+
+    @property
+    def EDGE_REQUIRE_ATTESTATION(self) -> bool:
+        return self._EDGE_REQUIRE_ATTESTATION
+
+    @property
+    def ENTERPRISE_IDENTITY_PROVIDERS(self) -> List[str]:
+        return self._ENTERPRISE_IDENTITY_PROVIDERS
+
+    @property
+    def ENTERPRISE_DEFAULT_USER_ROLE(self) -> str:
+        return self._ENTERPRISE_DEFAULT_USER_ROLE
+
+    @property
+    def ENTERPRISE_DEFAULT_API_KEY_ROLE(self) -> str:
+        return self._ENTERPRISE_DEFAULT_API_KEY_ROLE
 
     @property
     def TOKEN_HARDENING(self) -> bool:
@@ -493,6 +550,24 @@ class Config:
             audience = (os.getenv("CLERK_AUDIENCE") or "").strip()
             if not issuer or not audience:
                 violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set when Clerk auth is enabled")
+
+        if self.ENTERPRISE_MODE:
+            if not self.ENTERPRISE_SSO_ONLY:
+                violations.append("EDON_ENTERPRISE_SSO_ONLY must be true in enterprise mode")
+            if not self.REQUIRE_ADMIN_MFA:
+                violations.append("EDON_REQUIRE_ADMIN_MFA must be true in enterprise mode")
+            if not self.REQUIRE_PHISHING_RESISTANT_MFA:
+                violations.append("EDON_REQUIRE_PHISHING_RESISTANT_MFA must be true in enterprise mode")
+            if not self.EDGE_REQUIRE_NODE_CERTIFICATE:
+                violations.append("EDON_EDGE_REQUIRE_NODE_CERTIFICATE must be true in enterprise mode")
+            if not self.EDGE_REQUIRE_ATTESTATION:
+                violations.append("EDON_EDGE_REQUIRE_ATTESTATION must be true in enterprise mode")
+            if not self.ENTERPRISE_IDENTITY_PROVIDERS:
+                violations.append("EDON_ENTERPRISE_IDENTITY_PROVIDERS must list at least one provider in enterprise mode")
+            if not self.CLERK_SECRET_KEY:
+                violations.append("CLERK_SECRET_KEY must be set in enterprise mode")
+            if not issuer or not audience:
+                violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set in enterprise mode")
 
         return violations
 

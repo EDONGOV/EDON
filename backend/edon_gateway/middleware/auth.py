@@ -183,7 +183,13 @@ def resolve_tenant_for_clerk(claims: Dict[str, Any], fallback_email: Optional[st
     user = db.get_user_by_auth("clerk", clerk_sub)
     if not user:
         user_id = str(uuid.uuid4())
-        db.create_user(user_id=user_id, email=email, auth_provider="clerk", auth_subject=clerk_sub, role="user")
+        db.create_user(
+            user_id=user_id,
+            email=email,
+            auth_provider="clerk",
+            auth_subject=clerk_sub,
+            role="viewer" if config.ENTERPRISE_MODE else "user",
+        )
     else:
         user_id = user["id"]
         # Update stored email if we now have a real one (fixes unknown@edoncore.com)
