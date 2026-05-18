@@ -13,7 +13,15 @@ Usage:
   EDON_RUN_LIVE_TESTS=true EDON_GATEWAY_URL=http://localhost:8000 pytest tests/
 """
 import os
+import sys
+from pathlib import Path
+
 import pytest
+
+
+_BACKEND_ROOT = Path(__file__).resolve().parent
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
 
 
 def pytest_collection_modifyitems(config, items):

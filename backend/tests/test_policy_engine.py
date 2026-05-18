@@ -49,11 +49,11 @@ class TestPolicyEngine:
         assert decision.verdict == "BLOCK"
         assert decision.rule_id == "cost_limit"
 
-        # Test case 2: Cost within threshold - should ALLOW
+        # Test case 2: Cost within threshold - should ESCALATE when no rule matches
         context = {"estimated_cost": 50}
         decision = engine.evaluate("purchase", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
         assert decision.rule_id is None
 
     def test_threshold_rule_less_than(self):
@@ -80,11 +80,11 @@ class TestPolicyEngine:
         assert decision.verdict == "BLOCK"
         assert decision.rule_id == "min_altitude"
 
-        # Test case 2: Altitude above threshold - should ALLOW
+        # Test case 2: Altitude above threshold - should ESCALATE when no rule matches
         context = {"altitude_m": 100}
         decision = engine.evaluate("fly", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_range_rule(self):
         """Test range rule - triggers when value is outside range."""
@@ -116,11 +116,11 @@ class TestPolicyEngine:
 
         assert decision.verdict == "DEGRADE"
 
-        # Test case 3: Velocity within range - should ALLOW
+        # Test case 3: Velocity within range - should ESCALATE when no rule matches
         context = {"velocity_ms": 25}
         decision = engine.evaluate("move", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_equals_rule(self):
         """Test equals rule."""
@@ -145,10 +145,10 @@ class TestPolicyEngine:
         assert decision.verdict == "BLOCK"
         assert decision.rule_id == "dangerous_action"
 
-        # Test case 2: Action doesn't match - should ALLOW
+        # Test case 2: Action doesn't match - should ESCALATE when no rule matches
         decision = engine.evaluate("delete_one", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_contains_rule_string(self):
         """Test contains rule with string value."""
@@ -173,11 +173,11 @@ class TestPolicyEngine:
         assert decision.verdict == "BLOCK"
         assert decision.rule_id == "dangerous_command"
 
-        # Test case 2: Command doesn't contain pattern - should ALLOW
+        # Test case 2: Command doesn't contain pattern - should ESCALATE when no rule matches
         context = {"command": "ls -la"}
         decision = engine.evaluate("shell", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_contains_rule_list(self):
         """Test contains rule with list value."""
@@ -202,11 +202,11 @@ class TestPolicyEngine:
         assert decision.verdict == "HUMAN_REQUIRED"
         assert decision.rule_id == "sensitive_data"
 
-        # Test case 2: Tags don't contain "sensitive" - should ALLOW
+        # Test case 2: Tags don't contain "sensitive" - should ESCALATE when no rule matches
         context = {"tags": ["public", "read-only"]}
         decision = engine.evaluate("access", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_rule_priority_ordering(self):
         """Test that higher priority rules are evaluated first."""
@@ -313,11 +313,11 @@ class TestPolicyEngine:
         # Rule should not be in cache since it's disabled
         assert "disabled_rule" not in engine.rules_cache
 
-        # Action should be allowed since rule is disabled
+        # Action should escalate since no rule matches in governed mode
         context = {}
         decision = engine.evaluate("test_action", context)
 
-        assert decision.verdict == "ALLOW"
+        assert decision.verdict == "ESCALATE"
 
     def test_fail_safe_block_mode(self):
         """Test fail-safe behavior in BLOCK mode."""
@@ -349,9 +349,8 @@ class TestPolicyEngine:
 
         decision = engine.evaluate("test", context)
 
-        # In block mode, should still allow since field not found means rule doesn't match
-        # But if we force an actual error in evaluation, it should block
-        assert decision.verdict == "ALLOW"  # No rule matched
+        # No rule matched, so governed mode escalates by default.
+        assert decision.verdict == "ESCALATE"
 
     def test_fail_safe_allow_mode(self):
         """Test fail-safe behavior in ALLOW mode."""
@@ -380,8 +379,8 @@ class TestPolicyEngine:
         context = {}  # Missing field
         decision = engine.evaluate("test", context)
 
-        # Should allow since field not found means rule doesn't match
-        assert decision.verdict == "ALLOW"
+        # No rule matched, so governed mode escalates by default.
+        assert decision.verdict == "ESCALATE"
 
     def test_cache_size_limit(self):
         """Test that cache respects size limits."""

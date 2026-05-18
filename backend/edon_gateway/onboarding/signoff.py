@@ -24,7 +24,30 @@ from ..logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_DB_PATH = os.getenv("EDON_ONBOARDING_DB", "onboarding.db")
+_DEFAULT_DB_PATH = "onboarding.db"
+
+
+def _is_production_env() -> bool:
+    return os.getenv("ENVIRONMENT") == "production" or os.getenv("EDON_ENV") == "production"
+
+
+def _resolve_db_path() -> str:
+    db_path = (os.getenv("EDON_ONBOARDING_DB") or "").strip()
+    if db_path:
+        return db_path
+    if _is_production_env():
+        raise RuntimeError(
+            "EDON_ONBOARDING_DB must be set in production. "
+            "The signoff store cannot silently fall back to the local SQLite file."
+        )
+    return _DEFAULT_DB_PATH
+
+
+def _require_tenant_id(tenant_id: str, *, context: str) -> str:
+    tenant_id = (tenant_id or "").strip()
+    if tenant_id in ("", "default", "unknown"):
+        raise ValueError(f"Tenant ID is required to {context}.")
+    return tenant_id
 
 
 @dataclass
@@ -55,7 +78,9 @@ class SignoffRequest:
 
 
 class SignoffStore:
-    def __init__(self, db_path: str = _DB_PATH) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
+        if db_path is None:
+            db_path = _resolve_db_path()
         self._db_path = db_path
         self._lock = threading.Lock()
         self._mem_conn: Optional[sqlite3.Connection] = None
@@ -101,6 +126,7 @@ class SignoffStore:
         policy_count_operational: int = 0,
         policy_count_intent_contracts: int = 0,
     ) -> SignoffRequest:
+        tenant_id = _require_tenant_id(tenant_id, context="create a signoff request")
         signoff_id = f"so-{uuid.uuid4().hex[:10]}"
         now = datetime.now(UTC).isoformat()
         sr = SignoffRequest(
@@ -177,6 +203,7 @@ class SignoffStore:
         return [json.loads(r["data"]) for r in rows]
 
     def latest_approved(self, tenant_id: str) -> Optional[dict]:
+        tenant_id = _require_tenant_id(tenant_id, context="look up the latest approved signoff")
         with self._lock, self._conn() as conn:
             row = conn.execute(
                 "SELECT data FROM signoffs WHERE tenant_id=? AND status='approved' "

@@ -207,7 +207,11 @@ def activate_kill_switch(
         if stopped:
             logger.warning("[kill_switch] triggered e-stop for %d robots: %s", len(stopped), stopped)
     except Exception as _exc:
-        logger.debug("[kill_switch] e-stop propagation failed (non-blocking): %s", _exc)
+        logger.error("[kill_switch] e-stop propagation failed (fail-closed): %s", _exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Kill switch activation could not propagate to physical safety controls",
+        )
 
     return dict(entry)
 

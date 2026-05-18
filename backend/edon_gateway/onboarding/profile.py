@@ -23,7 +23,23 @@ from ..logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_DB_PATH = os.getenv("EDON_ONBOARDING_DB", "onboarding.db")
+_DEFAULT_DB_PATH = "onboarding.db"
+
+
+def _is_production_env() -> bool:
+    return os.getenv("ENVIRONMENT") == "production" or os.getenv("EDON_ENV") == "production"
+
+
+def _resolve_db_path() -> str:
+    db_path = (os.getenv("EDON_ONBOARDING_DB") or "").strip()
+    if db_path:
+        return db_path
+    if _is_production_env():
+        raise RuntimeError(
+            "EDON_ONBOARDING_DB must be set in production. "
+            "The onboarding store cannot silently fall back to the local SQLite file."
+        )
+    return _DEFAULT_DB_PATH
 
 # Risk tier derivation weights
 _DATA_CLASS_RISK: dict[str, int] = {
@@ -101,8 +117,17 @@ def _derive_risk(profile: GovernanceDeploymentProfile) -> tuple[int, str]:
     return score, tier
 
 
+def _require_tenant_id(tenant_id: str, *, context: str) -> str:
+    tenant_id = (tenant_id or "").strip()
+    if tenant_id in ("", "default", "unknown"):
+        raise ValueError(f"Tenant ID is required to {context}.")
+    return tenant_id
+
+
 class OnboardingStore:
-    def __init__(self, db_path: str = _DB_PATH) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
+        if db_path is None:
+            db_path = _resolve_db_path()
         self._db_path = db_path
         self._lock = threading.Lock()
         self._mem_conn: Optional[sqlite3.Connection] = None
@@ -143,6 +168,7 @@ class OnboardingStore:
         environments: list[str],
         compliance_requirements: list[str],
     ) -> GovernanceDeploymentProfile:
+        tenant_id = _require_tenant_id(tenant_id, context="create an onboarding profile")
         profile_id = f"gdp-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC).isoformat()
 
@@ -199,6 +225,7 @@ class OnboardingStore:
         return _from_dict(json.loads(row["data"]))
 
     def list_for_tenant(self, tenant_id: str) -> list[dict]:
+        tenant_id = _require_tenant_id(tenant_id, context="list onboarding profiles")
         with self._lock, self._conn() as conn:
             rows = conn.execute(
                 "SELECT data FROM profiles WHERE tenant_id=? ORDER BY created_at DESC",

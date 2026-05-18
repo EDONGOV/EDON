@@ -1,101 +1,58 @@
 # How to Get Your EDON Gateway API Token
 
-## Current Token Status
+## Token policy
 
-Based on your configuration, here are your token options:
+EDON does not ship a shared production token. Use a unique secret for local
+gateway auth, or use tenant-scoped credentials for production access.
 
-### Option 1: Environment Variable Token (Legacy)
+## Production options
 
-If `EDON_AUTH_ENABLED=true`, the gateway uses `EDON_API_TOKEN` from environment variables.
+### Option 1: Clerk JWT
 
-**Check your token:**
+For production deployments that use Clerk, authenticate with a Clerk-issued JWT
+and set `CLERK_SECRET_KEY` plus issuer/audience configuration as required by
+your deployment.
+
+### Option 2: Tenant API key
+
+For tenant-scoped access, create an API key through the billing / key-management
+surface exposed by your deployment.
+
+## Local development
+
+If you are running the gateway locally and want token auth enabled:
+
 ```powershell
-cd C:\Users\cjbig\Desktop\EDON\edon-cav-engine\edon_gateway
-python -c "import os; print(os.getenv('EDON_API_TOKEN', 'Not set'))"
+# In .env
+EDON_AUTH_ENABLED=true
+EDON_API_TOKEN=<strong-random-token>
 ```
 
-**Default token** (if not set): `your-secret-token`
+Then send the same value in the `X-EDON-TOKEN` header when calling the gateway.
 
-**Set a custom token:**
+If you do not need auth during local development, disable it explicitly:
+
 ```powershell
-# In .env file
-EDON_API_TOKEN=your-custom-token-here
-```
-
----
-
-### Option 2: Tenant-Scoped API Keys (Recommended)
-
-If you have a tenant account, you can create API keys via the API:
-
-**Create API Key:**
-```powershell
-# First, authenticate (if using Clerk)
-# Then create API key:
-curl -X POST http://localhost:8000/billing/api-keys `
-  -H "Content-Type: application/json" `
-  -H "Authorization: Bearer YOUR_CLERK_TOKEN" `
-  -d '{"name": "Test Key"}'
-```
-
-**List API Keys:**
-```powershell
-curl http://localhost:8000/billing/api-keys `
-  -H "Authorization: Bearer YOUR_CLERK_TOKEN"
-```
-
----
-
-### Option 3: Demo Mode Token
-
-If demo mode is enabled, you can use:
-```
-Token: edon_demo_key_12345
-```
-
-**Enable demo mode:**
-```env
-EDON_DEMO_MODE=true
-EDON_DEMO_API_KEY=edon_demo_key_12345
-```
-
----
-
-## Quick Check
-
-**Check if auth is enabled:**
-```powershell
-cd C:\Users\cjbig\Desktop\EDON\edon-cav-engine\edon_gateway
-python -c "from config import Config; print(f'Auth Enabled: {Config.AUTH_ENABLED}'); print(f'Token: {Config.API_TOKEN}')"
-```
-
-**If auth is disabled:**
-- No token needed! ✅
-- All endpoints are public
-- Perfect for local development/testing
-
-**If auth is enabled:**
-- Use `EDON_API_TOKEN` value from `.env`
-- Or create tenant API key via `/billing/api-keys`
-- Or use demo token if demo mode enabled
-
----
-
-## For Testing
-
-**Easiest option:** Disable auth for local testing
-```env
 EDON_AUTH_ENABLED=false
 ```
 
-Then no token needed! ✅
+## Demo mode
 
----
+Demo mode may expose a separate non-production token or mock path. Keep that
+token isolated to local testing and never reuse it in production.
 
-## Next Steps
+## Quick check
 
-1. **Check your current config** (run the command above)
-2. **Choose your approach:**
-   - Local dev: Disable auth
-   - Testing: Use demo token
-   - Production: Create tenant API keys
+To confirm whether auth is enabled, inspect the gateway configuration from the
+project root:
+
+```powershell
+cd backend
+python -c "from edon_gateway.config import config; print(f'Auth Enabled: {config.AUTH_ENABLED}')"
+```
+
+## Next steps
+
+1. Decide whether your deployment uses Clerk JWTs or tenant API keys.
+2. Set a unique gateway token only for local development and test harnesses.
+3. Keep production secrets in a secrets manager, not in the repository or docs.

@@ -33,13 +33,13 @@ Robot → EDON Gateway (FastAPI/uvicorn)
                  ↓
          PolicyEngine (50ms timeout, fail-safe)
                  ↓
-         SQLite (dev) / PostgreSQL (prod)
+         SQLite (development only) / PostgreSQL (required for production)
                  ↓
          Audit trail (append-only, SHA-256 chain, optional Fernet encryption)
 ```
 
 **Ports:** 8000 (HTTP)
-**Database:** SQLite (default) or PostgreSQL (set `DATABASE_URL=postgresql://...`)
+**Database:** SQLite (development only) or PostgreSQL (required for production, set `DATABASE_URL=postgresql://...`)
 **Metrics:** `/metrics` (Prometheus text format)
 **Health:** `/health` or `/healthz`
 
@@ -132,9 +132,9 @@ curl http://localhost:8000/metrics | grep edon_
 |----------|---------|-------------|
 | `EDON_API_TOKEN` | — | Master API token for auth (required in production) |
 | `EDON_AUTH_ENABLED` | `true` | Set `false` only in local dev |
-| `EDON_DB_URL` | (see persistence) | DB connection: `sqlite:///./path.db` or `postgresql://...` (used by gateway and by `validate_audit_chain.py`) |
-| `DATABASE_URL` | — | Legacy alias; prefer `EDON_DB_URL` for PostgreSQL |
-| `EDON_DATABASE_PATH` | `edon_gateway.db` | SQLite DB path (legacy) |
+| `DATABASE_URL` | — | PostgreSQL connection string; required for production |
+| `EDON_DB_URL` | (see persistence) | DB connection for gateway scripts and local dev. Use SQLite only for development; use PostgreSQL in production. |
+| `EDON_DATABASE_PATH` | `edon_gateway.db` | SQLite DB path (development only; legacy) |
 | `EDON_DB_ENCRYPTION_KEY` | — | Fernet key for audit payload encryption |
 | `EDON_AUDIT_ASYNC` | `true` | When `true`, audit writes run in a background thread (p99 latency); response returns immediately with a precomputed `decision_id`. Set `false` for synchronous audit. |
 | `EDON_ENCRYPT_AUDIT_PAYLOAD` | `false` | Set `true` to encrypt audit payloads at rest |
@@ -198,7 +198,7 @@ Key panels to create:
 
 ## 7. Database Operations
 
-### SQLite (development)
+### SQLite (development only)
 ```bash
 # Inspect audit events
 sqlite3 edon_gateway.db "SELECT id, agent_id, timestamp, verdict FROM audit_events LIMIT 20;"
@@ -214,7 +214,7 @@ EDON_DB_URL=sqlite:///./edon_gateway.db python edon_gateway/scripts/validate_aud
 ```
 Output: `{"valid": true, "checked": N, "message": "Chain valid"}` or `{"valid": false, "broken_at_id": ...}`.
 
-### SQLite vacuum (reclaim space)
+### SQLite vacuum (reclaim space, development only)
 ```bash
 sqlite3 edon_gateway.db "VACUUM;"
 ```
@@ -402,9 +402,9 @@ python scripts/restore_gateway_db.py /backups/edon_gateway_postgres_TIMESTAMP.sq
 
 Before going live, ensure:
 
-- [ ] **Env vars:** `EDON_API_TOKEN`, `EDON_DB_URL` (or `DATABASE_URL`), `EDON_DB_ENCRYPTION_KEY` (production), `EDON_AUTH_ENABLED=true`, `EDON_CORS_ORIGINS` set to your frontend origins. If using Clerk: `CLERK_SECRET_KEY`, optionally `CLERK_ISSUER` and `CLERK_AUDIENCE`. See [Key Environment Variables](#4-key-environment-variables).
+- [ ] **Env vars:** `EDON_API_TOKEN`, `DATABASE_URL` (production) or `EDON_DB_URL` (development only), `EDON_DB_ENCRYPTION_KEY` (production), `EDON_AUTH_ENABLED=true`, `EDON_CORS_ORIGINS` set to your frontend origins. If using Clerk: `CLERK_SECRET_KEY`, optionally `CLERK_ISSUER` and `CLERK_AUDIENCE`. See [Key Environment Variables](#4-key-environment-variables).
 - [ ] **Health:** `GET /healthz` returns 200 and `components.database.status` is healthy.
 - [ ] **Auth:** Protected endpoints return 401 without a valid token; with token, 200.
 - [ ] **Audit:** After a few requests, run `EDON_DB_URL=<same-as-gateway> python edon_gateway/scripts/validate_audit_chain.py` and confirm `valid: true`.
 - [ ] **Latency:** p99 under SLO (default 100 ms); use `edon_gateway/scripts/load_test_v1_action.py --p99-max-ms 100` against the live URL (or a staging copy).
-- [ ] **Frontend:** If deploying a separate frontend (e.g. edon-sentinel-core), complete its production checklist (env vars, console cleanup) per that repo’s docs.
+- [ ] **Console:** If deploying the separate console, complete its production checklist (env vars, build/publish, auth) per that repo’s docs.

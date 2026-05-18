@@ -1,0 +1,36 @@
+name: Docs Alignment
+
+on:
+  push:
+    paths:
+      - "README.md"
+      - "backend/docs/**"
+      - "docs/**"
+      - "scripts/docs_alignment_audit.py"
+      - ".github/workflows/docs_alignment.yml"
+  pull_request:
+    paths:
+      - "README.md"
+      - "backend/docs/**"
+      - "docs/**"
+      - "scripts/docs_alignment_audit.py"
+      - ".github/workflows/docs_alignment.yml"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run docs alignment audit
+        run: python scripts/docs_alignment_audit.py

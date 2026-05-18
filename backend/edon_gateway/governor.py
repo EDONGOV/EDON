@@ -14,8 +14,8 @@ from .policy.engine import PolicyEngine, PolicyConfig
 from .mag_client import mag_enabled_for_tenant, authorize_action
 from .degradation_registry import get_degraded_action, get_degradation_explanation
 
-# ── Blast-radius risk table ───────────────────────────────────────────────────
-# Maps (tool_value, op) → minimum RiskLevel the governor will assign, regardless
+# Ã¢â€â‚¬Ã¢â€â‚¬ Blast-radius risk table Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+# Maps (tool_value, op) Ã¢â€ â€™ minimum RiskLevel the governor will assign, regardless
 # of the agent's self-estimate.  Add entries whenever a new high-impact tool/op
 # is onboarded.  The governor takes max(agent_estimate, table_floor).
 _BLAST_RADIUS_FLOOR: Dict[Tuple[str, str], RiskLevel] = {
@@ -31,7 +31,7 @@ _BLAST_RADIUS_FLOOR: Dict[Tuple[str, str], RiskLevel] = {
     # Shell (any execute is at least HIGH; dangerous-command check may upgrade to CRITICAL)
     ("shell", "execute"): RiskLevel.HIGH,
     ("shell", "run"): RiskLevel.HIGH,
-    # Physical systems — any actuator op is at least HIGH
+    # Physical systems Ã¢â‚¬â€ any actuator op is at least HIGH
     ("robot", "execute"): RiskLevel.HIGH,
     ("robot", "actuate"): RiskLevel.HIGH,
     ("humanoid", "execute"): RiskLevel.HIGH,
@@ -55,19 +55,19 @@ _RISK_ORDER = [RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITIC
 # Wire transfers and financial ops must always fail-closed; emergency clinical access
 # should fail-open (blocking is more dangerous than allowing in a break-glass scenario).
 _FAILURE_MODE_REGISTRY: Dict[Tuple[str, str], str] = {
-    # Wire transfers and financial operations — always fail-closed
+    # Wire transfers and financial operations Ã¢â‚¬â€ always fail-closed
     ("payment", "wire_transfer"): "fail_closed",
     ("payment", "transfer"): "fail_closed",
     ("finance", "transfer"): "fail_closed",
-    # Destructive database ops — always fail-closed
+    # Destructive database ops Ã¢â‚¬â€ always fail-closed
     ("database", "truncate"): "fail_closed",
     ("database", "drop"): "fail_closed",
-    # Emergency clinical access — fail-open (blocking is more dangerous than allowing)
+    # Emergency clinical access Ã¢â‚¬â€ fail-open (blocking is more dangerous than allowing)
     ("ehr", "emergency_access"): "fail_open",
     ("ehr", "break_glass"): "fail_open",
 }
 
-# Tools that govern physical actuators — e-stop and safety envelope checks apply to these
+# Tools that govern physical actuators Ã¢â‚¬â€ e-stop and safety envelope checks apply to these
 _PHYSICAL_TOOLS = frozenset({
     Tool.ROBOT, Tool.VEHICLE, Tool.DRONE,
     Tool.FORKLIFT, Tool.CONVEYOR, Tool.GATE, Tool.DOCK,
@@ -86,9 +86,10 @@ logger = logging.getLogger(__name__)
 POLICY_FAIL_SAFE = os.getenv("EDON_POLICY_FAIL_SAFE", "block").strip().lower()
 _IS_PRODUCTION = (os.getenv("ENVIRONMENT") == "production" or os.getenv("EDON_ENV") == "production")
 # Strict fail-closed defaults ON regardless of environment. Must be explicitly opted out via
-# EDON_STRICT_FAIL_CLOSED=false — only appropriate in test harnesses, never in production.
+# EDON_STRICT_FAIL_CLOSED=false Ã¢â‚¬â€ only appropriate in test harnesses, never in production.
 _STRICT_FAIL_CLOSED = os.getenv("EDON_STRICT_FAIL_CLOSED", "true").strip().lower() == "true"
-FAIL_SAFE_ALLOW = (not _STRICT_FAIL_CLOSED) and POLICY_FAIL_SAFE in ("allow", "allow_with_log")
+def _global_fail_safe_allow() -> bool:
+    return (not _STRICT_FAIL_CLOSED) and (not _IS_PRODUCTION) and POLICY_FAIL_SAFE in ("allow", "allow_with_log")
 
 
 class EDONGovernor:
@@ -131,7 +132,7 @@ class EDONGovernor:
         )
     
     def _resolve_failure_mode(self, action: Action, context: dict) -> Optional[str]:
-        """Return the effective failure mode for this action: 'fail_open', 'fail_closed', or None (→ global)."""
+        """Return the effective failure mode for this action: 'fail_open', 'fail_closed', or None (Ã¢â€ â€™ global)."""
         # Per-rule takes precedence (stored by _evaluate_impl after policy engine returns)
         rule_mode = (context or {}).get("_last_failure_mode")
         if rule_mode:
@@ -156,7 +157,7 @@ class EDONGovernor:
             context: Additional context dict (agent_id, session_id, etc.)
             tenant_rules: Tenant-specific policy rules
             tenant_id: Explicit tenant identifier. Takes precedence over context["tenant_id"].
-                       Absence triggers a warning — audit records will lack customer_id.
+                       Absence triggers a warning Ã¢â‚¬â€ audit records will lack customer_id.
 
         Returns:
             Decision with verdict and reasoning. Fail-safe is always BLOCK unless
@@ -171,11 +172,11 @@ class EDONGovernor:
         if tenant_id is not None:
             context["tenant_id"] = tenant_id
         elif "tenant_id" not in context:
-            logger.warning("[governor] evaluate() called without tenant_id — audit records will lack customer_id")
+            logger.warning("[governor] evaluate() called without tenant_id Ã¢â‚¬â€ audit records will lack customer_id")
         policy_snapshot_hash = self._compute_policy_snapshot_hash(intent, tenant_rules)
         context["_policy_snapshot_hash"] = policy_snapshot_hash
         context.setdefault("_invariant_results", [])
-        # Hard gate invariants — any "fail" here must produce a non-ALLOW verdict.
+        # Hard gate invariants Ã¢â‚¬â€ any "fail" here must produce a non-ALLOW verdict.
         # Hard gates return early from _evaluate_impl so this check should always
         # pass; it is a defensive guard against future regressions or custom paths.
         _HARD_GATE_INVARIANTS = frozenset({
@@ -193,7 +194,7 @@ class EDONGovernor:
             ]
             if _hard_failures and decision.verdict == Verdict.ALLOW:
                 logger.error(
-                    "[governor] ML invariant violation: hard gate(s) %s failed but verdict is ALLOW — reverting to BLOCK",
+                    "[governor] ML invariant violation: hard gate(s) %s failed but verdict is ALLOW Ã¢â‚¬â€ reverting to BLOCK",
                     [r["id"] for r in _hard_failures],
                 )
                 self._record_invariant(
@@ -211,9 +212,9 @@ class EDONGovernor:
             return self._attach_provenance(decision, context, policy_snapshot_hash)
         except Exception as e:
             logger.exception("Policy engine error during evaluate: %s", e)
-            # Resolve per-action failure mode: per-rule → static registry → global setting
+            # Resolve per-action failure mode: per-rule Ã¢â€ â€™ static registry Ã¢â€ â€™ global setting
             _eff_mode = self._resolve_failure_mode(action, context)
-            _fail_open = (_eff_mode == "fail_open") or (_eff_mode is None and FAIL_SAFE_ALLOW)
+            _fail_open = (_eff_mode == "fail_open") or (_eff_mode is None and _global_fail_safe_allow())
             if _fail_open:
                 decision = Decision(
                     verdict=Verdict.ALLOW,
@@ -270,7 +271,7 @@ class EDONGovernor:
             decision.meta.setdefault("policy_snapshot_hash", policy_snapshot_hash)
             decision.meta.setdefault("invariant_results", decision.invariant_results)
 
-        # Ed25519 signature — allows customers to verify decisions offline
+        # Ed25519 signature Ã¢â‚¬â€ allows customers to verify decisions offline
         try:
             from .security.signing import sign_decision, get_key_id
             decision_dict = decision.to_dict()
@@ -375,7 +376,7 @@ class EDONGovernor:
         """Internal evaluation logic (called by evaluate with try/except)."""
         current_time = action.requested_at
 
-        # -2. E-stop check — physical tools only, checked before all other governance.
+        # -2. E-stop check Ã¢â‚¬â€ physical tools only, checked before all other governance.
         #     If an e-stop is active for this robot, no command gets through.
         if action.tool in _PHYSICAL_TOOLS:
             robot_id = (context or {}).get("robot_id")
@@ -392,7 +393,7 @@ class EDONGovernor:
                 pass
             self._record_invariant(context, "INV-000-ESTOP", "pass", "No active e-stop")
 
-        # -1. Intent freshness — check before anything else (INV-006-INTENT-FRESH)
+        # -1. Intent freshness Ã¢â‚¬â€ check before anything else (INV-006-INTENT-FRESH)
         now_utc = datetime.now(UTC)
         if intent.revoked:
             self._record_invariant(context, "INV-006-INTENT-FRESH", "fail", "Intent revoked")
@@ -422,7 +423,7 @@ class EDONGovernor:
         self._record_invariant(context, "INV-001-TENANT-RULES", "pass", "No tenant rule override")
 
         # 0. Compute server-side risk using blast-radius floor table + dangerous-command check.
-        #    The governor always takes max(agent_estimate, table_floor) — agents cannot
+        #    The governor always takes max(agent_estimate, table_floor) Ã¢â‚¬â€ agents cannot
         #    self-report a lower risk than the operation warrants.
         tool_val = action.tool.value if hasattr(action.tool, "value") else str(action.tool)
         floor = _BLAST_RADIUS_FLOOR.get((tool_val, action.op))
@@ -448,33 +449,69 @@ class EDONGovernor:
         # Store computed risk in action for audit
         action.computed_risk = computed_risk
 
-        # ── MAG Authorization Signal ─────────────────────────────────────────
-        # Fail-open: if MAG is unreachable or errors, governance continues normally.
+        # â”€â”€ MAG Authorization Signal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Fail-closed on MAG-enabled tenants: execution must be bound to a
+        # validated decision bundle and MAG must return an explicit verdict.
         mag_result = None
         _mag_constraints: list = []
         tenant_id = context.get("tenant_id") if context else None
         if mag_enabled_for_tenant(tenant_id):
+            mag_binding_id = None
+            mag_binding_bundle = None
+            if isinstance(context, dict):
+                mag_binding_id = context.get("mag_decision_id") or context.get("decision_id")
+                mag_binding_bundle = context.get("mag_decision_bundle") or context.get("decision_bundle")
+            if isinstance(mag_binding_bundle, dict) and not mag_binding_id:
+                mag_binding_id = mag_binding_bundle.get("decision_id") or mag_binding_bundle.get("id")
+            if not mag_binding_id or not mag_binding_bundle:
+                self._record_invariant(
+                    context, "INV-005-MAG-AUTH", "fail",
+                    "MAG enabled but execution binding is missing decision_id/decision_bundle",
+                )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.POLICY_ENGINE_ERROR,
+                    explanation="MAG-enabled execution requires a validated decision_id and decision_bundle",
+                )
             mag_result = authorize_action(action, intent, tenant_id, context)
-            if mag_result:
-                mag_verdict = (mag_result.get("verdict") or "").lower()
-                if mag_verdict == "deny":
-                    self._record_invariant(context, "INV-005-MAG-AUTH", "fail", "MAG denied action")
-                    return Decision(
-                        verdict=Verdict.BLOCK,
-                        reason_code=ReasonCode.SCOPE_VIOLATION,
-                        explanation=f"MAG authorization denied: {mag_result.get('reason', 'policy violation')}",
-                        meta={"mag_verdict": mag_result.get("verdict")},
-                    )
-                elif mag_verdict == "degrade":
-                    # Apply MAG constraints — continue but flag for degrade after standard checks
-                    _mag_constraints = mag_result.get("constraints", [])
-                    self._record_invariant(context, "INV-005-MAG-AUTH", "pass", "MAG degraded action")
-                else:
-                    self._record_invariant(context, "INV-005-MAG-AUTH", "pass", "MAG allowed action")
+            if not mag_result:
+                self._record_invariant(
+                    context, "INV-005-MAG-AUTH", "fail",
+                    "MAG authorization unavailable for a MAG-enabled tenant",
+                )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.POLICY_ENGINE_ERROR,
+                    explanation="MAG authorization is required but unavailable for this tenant",
+                )
+            mag_verdict = (mag_result.get("verdict") or "").lower()
+            if mag_verdict == "deny":
+                self._record_invariant(context, "INV-005-MAG-AUTH", "fail", "MAG denied action")
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.SCOPE_VIOLATION,
+                    explanation=f"MAG authorization denied: {mag_result.get('reason', 'policy violation')}",
+                    meta={"mag_verdict": mag_result.get("verdict")},
+                )
+            if mag_verdict == "degrade":
+                # Apply MAG constraints â€” continue but flag for degrade after standard checks
+                _mag_constraints = mag_result.get("constraints", [])
+                self._record_invariant(context, "INV-005-MAG-AUTH", "pass", "MAG degraded action")
+            elif mag_verdict == "allow":
+                self._record_invariant(context, "INV-005-MAG-AUTH", "pass", "MAG allowed action")
+            else:
+                self._record_invariant(
+                    context, "INV-005-MAG-AUTH", "fail",
+                    f"MAG returned unsupported verdict: {mag_result.get('verdict')}",
+                )
+                return Decision(
+                    verdict=Verdict.BLOCK,
+                    reason_code=ReasonCode.POLICY_ENGINE_ERROR,
+                    explanation="MAG authorization returned an unsupported verdict",
+                )
         else:
             self._record_invariant(context, "INV-005-MAG-AUTH", "skip", "MAG disabled for tenant")
-                # "allow" → fall through to normal governance flow
-        # ─────────────────────────────────────────────────────────────────────
+        # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
         # 1. Check drafts_only constraint FIRST (before scope, so we can degrade send->draft)
         if intent.constraints.get("drafts_only", False):
@@ -508,7 +545,7 @@ class EDONGovernor:
                 return Decision(
                     verdict=Verdict.DEGRADE,
                     reason_code=ReasonCode.DEGRADED_TO_SAFE_ALTERNATIVE,
-                    explanation=expl or f"Action degraded: {action.tool.value}.{action.op} → {degraded.op}",
+                    explanation=expl or f"Action degraded: {action.tool.value}.{action.op} Ã¢â€ â€™ {degraded.op}",
                     safe_alternative=degraded,
                 )
             return Decision(
@@ -634,7 +671,7 @@ class EDONGovernor:
                         ],
                     )
         
-        # 9.5. Physical safety envelope — applies to all physical tool actions.
+        # 9.5. Physical safety envelope Ã¢â‚¬â€ applies to all physical tool actions.
         #      Checks intent constraints: max_joint_torque_nm, max_velocity_ms,
         #      no_go_zones, require_clearance.  Blocks or escalates on violation.
         if action.tool in _PHYSICAL_TOOLS:
@@ -861,8 +898,8 @@ class EDONGovernor:
                             required_confirmation=True,
                             escalation_question=f"Zone '{workspace_zone}' is occupied by '{h.robot_id}'. Proceed anyway?",
                             escalation_options=[
-                                {"id": "wait", "label": "Wait — retry after zone is free"},
-                                {"id": "proceed", "label": "Proceed — I confirm no collision risk"},
+                                {"id": "wait", "label": "Wait Ã¢â‚¬â€ retry after zone is free"},
+                                {"id": "proceed", "label": "Proceed Ã¢â‚¬â€ I confirm no collision risk"},
                                 {"id": "cancel", "label": "Cancel"},
                             ],
                         )
@@ -908,7 +945,7 @@ class EDONGovernor:
                                 required_confirmation=True,
                                 escalation_question=f"Robot '{robot_id}' has low balance margin ({balance_margin:.3f}m). Proceed with action?",
                                 escalation_options=[
-                                    {"id": "approve", "label": "Approve — I confirm the robot is stable"},
+                                    {"id": "approve", "label": "Approve Ã¢â‚¬â€ I confirm the robot is stable"},
                                     {"id": "cancel", "label": "Cancel"},
                                 ],
                             )
@@ -999,9 +1036,9 @@ class EDONGovernor:
             )
         self._record_invariant(context, "INV-004-INTENT-ALIGNMENT", "pass", "Action aligns with objective")
 
-        # 11.5. Multi-step sequence drift — session-level attack chain detection.
+        # 11.5. Multi-step sequence drift Ã¢â‚¬â€ session-level attack chain detection.
         #       Each action may pass individually; this catches accumulation patterns
-        #       like read_config → read_secret → send_email (exfil chain).
+        #       like read_config Ã¢â€ â€™ read_secret Ã¢â€ â€™ send_email (exfil chain).
         try:
             from .state.sequence_scorer import get_scorer as _get_scorer, _DRIFT_THRESHOLD, _CROSS_INTENT_THRESHOLD
             _scorer = _get_scorer()
@@ -1009,10 +1046,10 @@ class EDONGovernor:
             _a_id = context.get("agent_id") if context else None
             _i_id = context.get("intent_id") if context else None
 
-            # Per-intent check (fast, sensitive — catches same-session chains)
+            # Per-intent check (fast, sensitive Ã¢â‚¬â€ catches same-session chains)
             drift_score, chain_name = _scorer.record_and_score(_t_id, _a_id, _i_id, tool_val, action.op)
 
-            # Cross-intent check (conservative — catches slow-burn across intent boundaries)
+            # Cross-intent check (conservative Ã¢â‚¬â€ catches slow-burn across intent boundaries)
             xi_score, xi_chain = _scorer.record_cross_intent(_t_id, _a_id, tool_val, action.op)
             if xi_score >= _CROSS_INTENT_THRESHOLD and xi_score > drift_score:
                 drift_score, chain_name = xi_score, f"cross_intent:{xi_chain}"
@@ -1044,7 +1081,7 @@ class EDONGovernor:
         except Exception as _seq_err:
             logger.debug("Sequence drift check failed (fail-open): %s", _seq_err)
 
-        # ── CAV State Signal ──────────────────────────────────────────────────
+        # Ã¢â€â‚¬Ã¢â€â‚¬ CAV State Signal Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         cav_state = None
         operator_id = (context or {}).get("operator_id") if context else None
         if operator_id:
@@ -1058,7 +1095,7 @@ class EDONGovernor:
                         context["cav_state"] = cav_state
                         context["cav_score"] = cav_data.get("cav_score")
                         context["cav_z_score"] = cav_data.get("z_score")
-                    # Overload + HIGH/CRITICAL risk → escalate
+                    # Overload + HIGH/CRITICAL risk Ã¢â€ â€™ escalate
                     if cav_state == "overload" and action.computed_risk and action.computed_risk.value in ("high", "critical"):
                         try:
                             from .main import prometheus_anomalies_detected_total
@@ -1094,7 +1131,7 @@ class EDONGovernor:
                 meta=mag_meta,
             )
 
-        # All checks passed — ALLOW
+        # All checks passed Ã¢â‚¬â€ ALLOW
         # For physical tools: register execution state and embed comm_loss_posture
         if action.tool in _PHYSICAL_TOOLS:
             robot_id_ctx = (context or {}).get("robot_id")
@@ -1142,7 +1179,7 @@ class EDONGovernor:
         except Exception:
             pass
 
-    # ── Semantic alignment thresholds ────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Semantic alignment thresholds Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     _AI_ALIGN_BLOCK_THRESHOLD: float = float(
         __import__("os").getenv("EDON_AI_ALIGN_BLOCK_THRESHOLD", "0.15")
     )
@@ -1204,7 +1241,7 @@ class EDONGovernor:
             return True
         return any(kw in objective_lower or kw in scope_lower for kw in keywords)
 
-    # ── Physical safety envelope ──────────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Physical safety envelope Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     def _check_physical_safety_envelope(
         self,
@@ -1215,10 +1252,10 @@ class EDONGovernor:
         """Enforce physical safety constraints declared in the intent.
 
         Supported constraints:
-          max_joint_torque_nm (float)  — block if action param joint_torque_nm exceeds this
-          max_velocity_ms (float)      — block if action param velocity_ms exceeds this
-          no_go_zones (list[str])      — block/escalate if action param target_zone matches
-          require_clearance (bool)     — escalate if context does not contain clearance_granted=True
+          max_joint_torque_nm (float)  Ã¢â‚¬â€ block if action param joint_torque_nm exceeds this
+          max_velocity_ms (float)      Ã¢â‚¬â€ block if action param velocity_ms exceeds this
+          no_go_zones (list[str])      Ã¢â‚¬â€ block/escalate if action param target_zone matches
+          require_clearance (bool)     Ã¢â‚¬â€ escalate if context does not contain clearance_granted=True
 
         Returns a Decision to block/escalate, or None to continue.
         All violations record an INV-009-PHYS-SAFETY invariant.
@@ -1300,7 +1337,7 @@ class EDONGovernor:
                     explanation=f"Target zone '{target_zone}' is designated no-go. Action blocked.",
                 )
 
-        # require_clearance — a human operator must have explicitly granted clearance
+        # require_clearance Ã¢â‚¬â€ a human operator must have explicitly granted clearance
         if c.get("require_clearance", False):
             clearance_granted = (context or {}).get("clearance_granted", False)
             if not clearance_granted:
@@ -1315,7 +1352,7 @@ class EDONGovernor:
                     required_confirmation=True,
                     escalation_question="Grant physical clearance for this action?",
                     escalation_options=[
-                        {"id": "grant_clearance", "label": "Grant clearance — I confirm the area is safe"},
+                        {"id": "grant_clearance", "label": "Grant clearance Ã¢â‚¬â€ I confirm the area is safe"},
                         {"id": "cancel", "label": "Cancel"},
                     ],
                 )
@@ -1323,14 +1360,14 @@ class EDONGovernor:
         self._record_invariant(context, "INV-009-PHYS-SAFETY", "pass", "Physical safety envelope OK")
         return None
 
-    # ── Contextual blast-radius upgrade ──────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Contextual blast-radius upgrade Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     _SENSITIVE_PARAM_PATTERNS = frozenset([
         "password", "passwd",
         "secret",
-        "token",        # substring — matches access_token, auth_token, bearer_token, etc.
+        "token",        # substring Ã¢â‚¬â€ matches access_token, auth_token, bearer_token, etc.
         "api_key",
-        "_key",         # substring — matches signing_key, encryption_key, private_key, etc.
+        "_key",         # substring Ã¢â‚¬â€ matches signing_key, encryption_key, private_key, etc.
         "private_key",
         "ssn", "dob", "phi", "pii", "hipaa", "credit_card", "cvv",
     ])
@@ -1355,7 +1392,7 @@ class EDONGovernor:
         """Upgrade risk based on runtime context: entity count and sensitive param patterns."""
         risk = current_risk
 
-        # Many recipients or bulk target entities → at least MEDIUM
+        # Many recipients or bulk target entities Ã¢â€ â€™ at least MEDIUM
         for count_key in ("recipients", "targets", "users", "files", "records"):
             val = action.params.get(count_key)
             if isinstance(val, list) and len(val) > 10:
@@ -1363,7 +1400,7 @@ class EDONGovernor:
             if isinstance(val, list) and len(val) > 50:
                 risk = _max_risk(risk, RiskLevel.HIGH)
 
-        # Sensitive param names (keys only — never inspect values to avoid exfil)
+        # Sensitive param names (keys only Ã¢â‚¬â€ never inspect values to avoid exfil)
         # Substring matching: "token" matches "access_token", "_key" matches "signing_key"
         param_keys_lower = {k.lower() for k in action.params}
         if any(pat in k for k in param_keys_lower for pat in self._SENSITIVE_PARAM_PATTERNS):

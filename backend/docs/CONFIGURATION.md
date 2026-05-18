@@ -24,9 +24,9 @@ Complete guide to configuring EDON Gateway for production use.
 
 #### `EDON_API_TOKEN`
 - **Type:** String
-- **Default:** `your-secret-token`
-- **Description:** API token for authentication
-- **Production:** **CHANGE THIS!** Use a strong, random token
+- **Default:** none
+- **Description:** API token for authentication when using gateway-token auth
+- **Production:** Use a unique secret from your secrets manager. There is no safe shared default.
 
 #### `EDON_TOKEN_BINDING_ENABLED`
 - **Type:** Boolean
@@ -73,8 +73,8 @@ Complete guide to configuring EDON Gateway for production use.
 #### `EDON_DATABASE_PATH`
 - **Type:** String (file path)
 - **Default:** `edon_gateway.db`
-- **Description:** Path to the SQLite database file used in development/single-node demos
-- **Production:** Not supported for enterprise production. Set `DATABASE_URL` to PostgreSQL instead.
+- **Description:** Path to the SQLite database file used in development and single-node demos
+- **Production:** Development/demo only. Set `DATABASE_URL` to PostgreSQL for enterprise production.
 
 ---
 
@@ -202,7 +202,7 @@ Complete guide to configuring EDON Gateway for production use.
 ```bash
 # Authentication
 EDON_AUTH_ENABLED=true
-EDON_API_TOKEN=your-strong-random-token-here
+EDON_API_TOKEN=<strong-random-token>
 EDON_TOKEN_BINDING_ENABLED=true
 
 # Security (REQUIRED)
@@ -229,10 +229,10 @@ EDON_METRICS_ENABLED=true
 ## Configuration Validation
 
 The gateway validates configuration on startup and logs warnings for:
-- Using default API token in production
-- CORS allowing all origins in production
-- Token hardening without strict credentials
-- Missing required settings
+- Using placeholder or shared API token in production
+ - CORS allowing all origins in production
+ - Token hardening without strict credentials
+ - Missing required settings
 
 ---
 
@@ -255,7 +255,7 @@ The gateway validates configuration on startup and logs warnings for:
 ### Configuration warnings on startup
 
 Check the startup logs for warnings. Common issues:
-- Default API token → Change `EDON_API_TOKEN`
+- Placeholder or shared API token → Replace `EDON_API_TOKEN` with a unique secret
 - CORS allows all → Restrict `EDON_CORS_ORIGINS`
 - Missing strict mode → Set `EDON_CREDENTIALS_STRICT=true`
 

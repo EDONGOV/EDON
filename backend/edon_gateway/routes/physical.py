@@ -48,6 +48,21 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["physical"])
 
 
+def _require_request_tenant(request: Request, purpose: str) -> str:
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(400, f"Tenant context is required to {purpose}.")
+    return tenant_id
+
+
+def _require_websocket_tenant(websocket: WebSocket, purpose: str) -> Optional[str]:
+    tenant_id = getattr(websocket.state, "tenant_id", None)
+    if not tenant_id:
+        logger.warning("tenant_context_missing: websocket path=%s purpose=%s", websocket.url.path, purpose)
+        return None
+    return tenant_id
+
+
 # ── Heartbeat ──────────────────────────────────────────────────────────────────
 
 class HeartbeatBody(BaseModel):
@@ -75,7 +90,10 @@ async def heartbeat(robot_id: str, body: HeartbeatBody, request: Request):
     The comm_loss_posture is embedded in every governance ALLOW response so
     the robot knows its fallback behavior before a connection drop.
     """
-    tenant_id = body.tenant_id or get_request_tenant_id(request) or "unknown"
+    tenant_id = (body.tenant_id or "").strip() or _require_request_tenant(
+        request,
+        "register a robot heartbeat",
+    )
     if body.comm_loss_posture not in VALID_POSTURES:
         raise HTTPException(
             status_code=422,
@@ -102,7 +120,7 @@ async def deregister_heartbeat(robot_id: str):
 @router.get("/robots/heartbeats")
 async def list_heartbeats(request: Request):
     """List all registered robots and their heartbeat status for this tenant."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "list robot heartbeats")
     return {"robots": list_registrations(tenant_id=tenant_id)}
 
 
@@ -130,6 +148,7 @@ async def ingest_robot_telemetry(robot_id: str, body: TelemetryBody, request: Re
     If an anomaly is detected, the monitor triggers an e-stop and returns
     anomaly=true with the reason. The robot should halt immediately.
     """
+    tenant_id = _require_request_tenant(request, "record physical telemetry")
     import time
     reading = TelemetryReading(
         timestamp=time.monotonic(),
@@ -143,7 +162,6 @@ async def ingest_robot_telemetry(robot_id: str, body: TelemetryBody, request: Re
 
     anomaly = ingest_telemetry(robot_id, body.action_id, reading)
     if anomaly:
-        tenant_id = get_request_tenant_id(request) or "unknown"
         trigger_estop(
             robot_id=robot_id,
             reason=anomaly,
@@ -201,8 +219,11 @@ async def telemetry_websocket(robot_id: str, websocket: WebSocket):
     On anomaly the server sends the halt frame and closes the connection.
     The robot must treat a closed connection as an implicit e-stop signal.
     """
+    tenant_id = _require_websocket_tenant(websocket, "stream telemetry")
+    if not tenant_id:
+        await websocket.close(code=1008, reason="tenant_required")
+        return
     await websocket.accept()
-    tenant_id = "unknown"
     try:
         while True:
             try:
@@ -263,8 +284,12 @@ async def telemetry_websocket(robot_id: str, websocket: WebSocket):
 
 
 @router.post("/robots/{robot_id}/execution/{action_id}/complete")
-async def complete_execution(robot_id: str, action_id: str):
+async def complete_execution(robot_id: str, action_id: str, request: Request):
     """Mark an action as completed (releases workspace zone claims)."""
+    tenant_id = _require_request_tenant(request, "complete a physical execution")
+    state = get_execution(robot_id, action_id)
+    if state is None or state.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Execution not found")
     mark_completed(robot_id, action_id)
     # Release workspace zones claimed by this action
     try:
@@ -279,10 +304,11 @@ async def complete_execution(robot_id: str, action_id: str):
 
 
 @router.get("/robots/{robot_id}/execution/{action_id}")
-async def get_execution_state(robot_id: str, action_id: str):
+async def get_execution_state(robot_id: str, action_id: str, request: Request):
     """Get the current governance execution state for a specific action."""
+    tenant_id = _require_request_tenant(request, "view a physical execution state")
     state = get_execution(robot_id, action_id)
-    if state is None:
+    if state is None or state.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Execution not found")
     return {
         "robot_id": state.robot_id,
@@ -295,9 +321,10 @@ async def get_execution_state(robot_id: str, action_id: str):
 
 
 @router.get("/robots/{robot_id}/execution")
-async def list_executions(robot_id: str):
+async def list_executions(robot_id: str, request: Request):
     """List active (running) executions for a robot."""
-    states = get_active_executions(robot_id)
+    tenant_id = _require_request_tenant(request, "list physical executions")
+    states = [s for s in get_active_executions(robot_id) if s.tenant_id == tenant_id]
     return {
         "robot_id": robot_id,
         "active_count": len(states),
@@ -360,13 +387,13 @@ async def validate_trajectory_endpoint(body: TrajectoryValidateBody):
 @router.get("/workspace/zones")
 async def get_workspace_zones(request: Request):
     """List all active workspace zone claims for this tenant."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "list workspace zones")
     return {"zones": list_claims(tenant_id=tenant_id)}
 
 
 @router.delete("/workspace/zones/{zone_name}")
 async def release_zone(zone_name: str, robot_id: str, request: Request):
     """Manually release a workspace zone claim."""
-    tenant_id = get_request_tenant_id(request) or "unknown"
+    tenant_id = _require_request_tenant(request, "release a workspace zone")
     released = release_claim(tenant_id, zone_name, robot_id)
     return {"zone_name": zone_name, "robot_id": robot_id, "released": released}

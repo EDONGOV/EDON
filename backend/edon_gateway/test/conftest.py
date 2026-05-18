@@ -21,7 +21,7 @@ def _dev_environment(monkeypatch):
     monkeypatch.setenv("EDON_AI_ENABLED", "false")    # never burn credits in tests
     monkeypatch.setenv("EDON_PROBE_ENABLED", "false") # probe needs real policies; disable in tests
 
-    import edon_gateway.config as cfg
+    import backend.edon_gateway.config as cfg
     monkeypatch.setattr(cfg.config, "_AUTH_ENABLED", False)
     monkeypatch.setattr(cfg.config, "_ENVIRONMENT", "development")
     monkeypatch.setattr(cfg.config, "_CREDENTIALS_STRICT", False)

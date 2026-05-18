@@ -25,6 +25,7 @@ from ..schemas import (
 )
 from ..persistence import get_db
 from ..logging_config import get_logger
+from ..config import config
 from ..tenancy import get_request_tenant_id
 from ..monitoring.metrics import metrics as metrics_collector
 from ..fleet_learning import get_fleet_learning_engine
@@ -128,7 +129,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Resolve tool — known tools get their enum, unknown tools become CUSTOM.
+    # Resolve tool Ã¢â‚¬â€ known tools get their enum, unknown tools become CUSTOM.
     # This lets tenants govern any tool name (e.g. "myrobot", "erp_system")
     # without needing a code change. The original name is preserved in the
     # action params so audit logs and custom policy rules can match on it.
@@ -179,13 +180,19 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except HTTPException:
             raise
         except Exception as _agent_err:
+            if config.is_production():
+                logger.exception("Agent limit check failed in production: %s", _agent_err)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Unable to verify agent limit for governed action",
+                )
             logger.warning(f"Agent limit check failed (non-blocking): {_agent_err}")
 
-    # ── Device binding + mutex check ────────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Device binding + mutex check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     # If the action targets a specific physical device, enforce:
     #   1. Agent must have a valid binding for that device.
     #   2. Device must not be locked by a different agent (mutex).
-    #   3. If binding or device requires supervision → override verdict to ESCALATE.
+    #   3. If binding or device requires supervision Ã¢â€ â€™ override verdict to ESCALATE.
     # This runs before policy evaluation so it can short-circuit the entire request.
     _device_id = req.device_id
     _device_requires_supervision = False
@@ -199,7 +206,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             if not _check.get("allowed"):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Device access denied — {_check.get('reason')}",
+                    detail=f"Device access denied Ã¢â‚¬â€ {_check.get('reason')}",
                 )
             # Check device mutex
             _device = db.get_device(device_id=_device_id, tenant_id=tenant_id)
@@ -262,14 +269,14 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     req_context: dict = dict(req.context or {})
 
-    # Auto session_id — group by agent + hour so session risk accumulates
+    # Auto session_id Ã¢â‚¬â€ group by agent + hour so session risk accumulates
     # even when callers don't supply one.
     if "session_id" not in req_context:
         req_context["session_id"] = f"auto:{req.agent_id}:{datetime.now(UTC).strftime('%Y%m%d%H')}"
 
-    # ── Preflight pipeline ───────────────────────────────────────────────────
-    # Runs kill-switch → quota → PHI → intent → causal → fleet → coordination
-    # → prediction → policy-rules → trust in that order.
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Preflight pipeline Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    # Runs kill-switch Ã¢â€ â€™ quota Ã¢â€ â€™ PHI Ã¢â€ â€™ intent Ã¢â€ â€™ causal Ã¢â€ â€™ fleet Ã¢â€ â€™ coordination
+    # Ã¢â€ â€™ prediction Ã¢â€ â€™ policy-rules Ã¢â€ â€™ trust in that order.
     # Mutates req_context, populates tenant_rules and prediction on ctx.
     # Returns a V1ActionResponse to short-circuit, or None to continue.
     _pf_ctx = PreflightContext(
@@ -310,15 +317,28 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 decision_id=_pf_decision_id,
                 created_at_override=_pf_created_at,
             )
-            import asyncio as _asyncio
-            _asyncio.create_task(enqueue_audit(_pf_audit_task, db))
+            _pf_audit_id = await enqueue_audit(_pf_audit_task, db)
+            if not _pf_audit_id:
+                raise RuntimeError("audit queue did not return a decision_id")
         except Exception as _pf_audit_err:
-            logger.warning("Preflight audit write failed (non-blocking): %s", _pf_audit_err)
+            logger.exception("Preflight audit write failed: %s", _pf_audit_err)
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to persist governed preflight decision to audit trail",
+            )
         return _pf_hard
 
     req_context   = _pf_ctx.req_context
     tenant_rules  = _pf_ctx.tenant_rules
     prediction    = _pf_ctx.prediction
+    _mag_decision_id = getattr(request.state, "mag_decision_id", None)
+    _mag_decision_bundle = getattr(request.state, "mag_decision_bundle", None)
+    if _mag_decision_id:
+        req_context["mag_decision_id"] = _mag_decision_id
+        req_context["decision_id"] = _mag_decision_id
+    if _mag_decision_bundle:
+        req_context["mag_decision_bundle"] = _mag_decision_bundle
+        req_context["decision_bundle"] = _mag_decision_bundle
 
     # Evaluate action through governor (use shared module-level instance for loop detection).
     # Fall back to a fresh instance in test environments where startup event hasn't fired.
@@ -406,7 +426,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             meta={**(decision.meta or {}), "device_supervision_required": True},
         )
 
-    # Compute request hash — SHA-256 of canonicalised action params.
+    # Compute request hash Ã¢â‚¬â€ SHA-256 of canonicalised action params.
     # Ties the audit record and response to the exact payload received.
     _request_hash = hashlib.sha256(
         _json_stdlib.dumps(action_params, sort_keys=True).encode()
@@ -463,11 +483,11 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                     audit_context["vendor_id"] = _vendor_id
             except Exception:
                 pass
-        # Extract anomaly score (0–100 scale) from decision meta for audit
+        # Extract anomaly score (0Ã¢â‚¬â€œ100 scale) from decision meta for audit
         _anomaly_meta = (decision.meta or {}).get("anomaly", {})
         _anomaly_score_raw = _anomaly_meta.get("score")
         _anomaly_score_100 = round(_anomaly_score_raw * 100) if _anomaly_score_raw is not None else None
-        # Persist to audit trail (async — returns immediately, write happens in background)
+        # Persist to audit trail. This is governance-critical and must succeed.
         from ..audit_queue import AuditTask, enqueue_audit
         _audit_task = AuditTask(
             action=action.to_dict(),
@@ -486,13 +506,17 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
             decision_id=_canonical_decision_id,
             created_at_override=_decision_created_at,
         )
-        decision_id = await enqueue_audit(_audit_task, db) or _canonical_decision_id
+        decision_id = await enqueue_audit(_audit_task, db)
+        if not decision_id:
+            raise RuntimeError("audit queue did not return a decision_id")
     except Exception as e:
         logger.exception(f"Failed to persist decision to audit trail: {e}")
-        # Generate fallback decision_id
-        decision_id = f"dec-{action.id}-{datetime.now(UTC).isoformat()}"
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to persist governed decision to audit trail",
+        )
 
-    # ── Shadow execution — probabilistic adversarial replay ──────────────────
+    # â”€â”€ Shadow execution â€” probabilistic adversarial replay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Capture this trace and, at the configured sample rate, re-run it through
     # the governor under adversarial perturbation (async, never blocks response).
     try:
@@ -518,7 +542,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _shadow_err:
         logger.debug("[shadow] capture/dispatch failed (non-blocking): %s", _shadow_err)
 
-    # Acquire device lock on ALLOW (non-blocking; never raises)
+    # Acquire device lock on ALLOW. If the mutex cannot be acquired, the
+    # governed action must not proceed.
     if _device_id and tenant_id and verdict_str == "ALLOW":
         try:
             _session_id = db.acquire_device_lock(
@@ -528,20 +553,28 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 action_id=decision_id,
             )
             if _session_id is None:
-                # Race: another agent grabbed it between our check and now — log but don't fail
-                logger.warning(
-                    "Device lock race condition: device=%s agent=%s tenant=%s",
-                    _device_id, req.agent_id, tenant_id,
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Device '{_device_id}' is no longer available for agent '{req.agent_id}'. "
+                        "Retry after the current holder releases the mutex."
+                    ),
                 )
             else:
                 logger.debug(
                     "Device lock acquired: device=%s agent=%s session=%s",
                     _device_id, req.agent_id, _session_id,
                 )
+        except HTTPException:
+            raise
         except Exception as _lock_err:
-            logger.warning("Device lock acquire failed (non-blocking): %s", _lock_err)
+            logger.error("Device lock acquire failed (fail-closed): %s", _lock_err)
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to acquire required device lock",
+            )
 
-    # Update per-agent verdict counters — background thread so DB write never adds latency
+    # Update per-agent verdict counters â€” background thread so DB write never adds latency
     try:
         import threading as _thr
         _thr.Thread(
@@ -551,7 +584,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _stats_err:
         logger.warning("update_agent_stats failed (non-blocking): %s", _stats_err)
 
-    # Continuous learning signal — run in background thread; never blocks response.
+    # Continuous learning signal Ã¢â‚¬â€ run in background thread; never blocks response.
     try:
         import threading as _thr
         _auto_label = "safe"
@@ -596,7 +629,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _learning_err:
         logger.warning("auto learning thread spawn failed: %s", _learning_err)
 
-    # ── Audit-ready reason formatting ────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Audit-ready reason formatting Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     # Rewrite the explanation into regulation-mapped, auditor-friendly language.
     try:
         decision.explanation = fmt_audit_reason(
@@ -609,7 +642,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception:
         pass  # Never block on formatter failure
 
-    # ── Dispatch governance event webhooks (non-blocking) ────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Dispatch governance event webhooks (non-blocking) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     if tenant_id:
         try:
             import asyncio as _asyncio
@@ -631,7 +664,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 "escalation_options": decision.escalation_options or [],
                 "review_url": "https://console.edoncore.com",
             }
-            # Legacy dispatcher moved to background thread — it retries with sleep(backoff)
+            # Legacy dispatcher moved to background thread Ã¢â‚¬â€ it retries with sleep(backoff)
             # which could block the request path for up to 30s on webhook failure.
             import threading as _thr
             _thr.Thread(
@@ -639,12 +672,12 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                 args=(_legacy_event, _decision_data, tenant_id, db),
                 daemon=True,
             ).start()
-            # New async deliver_webhook — fires per the new /webhooks route events
+            # New async deliver_webhook Ã¢â‚¬â€ fires per the new /webhooks route events
             if _verdict in ("BLOCK", "ERROR"):
                 _asyncio.create_task(_deliver_webhook(tenant_id, "decision.blocked", _decision_data, db))
             elif _verdict in ("ESCALATE", "PAUSE"):
                 _asyncio.create_task(_deliver_webhook(tenant_id, "decision.escalated", _decision_data, db))
-            # risk.high — fire whenever risk_score > 0.7 (from prediction or anomaly)
+            # risk.high Ã¢â‚¬â€ fire whenever risk_score > 0.7 (from prediction or anomaly)
             _risk_score = (decision.meta or {}).get("predictive_oob_risk") or 0.0
             if not _risk_score:
                 _anomaly = (decision.meta or {}).get("anomaly", {})
@@ -654,8 +687,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _wh_err:
             logger.warning("Webhook dispatch failed (non-blocking): %s", _wh_err)
 
-    # ── Enqueue HUMAN_REQUIRED escalations for review + Telegram notify ──────
-    # Runs as a fire-and-forget task — the ESCALATE verdict is already in the
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Enqueue HUMAN_REQUIRED escalations for review + Telegram notify Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    # Runs as a fire-and-forget task Ã¢â‚¬â€ the ESCALATE verdict is already in the
     # audit trail so the escalation queue entry is recoverable if this drops.
     if verdict_str in ("ESCALATE", "PAUSE") and tenant_id:
         try:
@@ -684,9 +717,9 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _esq_err:
             logger.warning("Escalation task spawn failed (non-blocking): %s", _esq_err)
 
-    # ── Anomaly Telegram alert ────────────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Anomaly Telegram alert Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     # If anomaly score is high (>= 75), send Telegram alert immediately.
-    # This is advisory — we alert, we don't claim to detect every threat.
+    # This is advisory Ã¢â‚¬â€ we alert, we don't claim to detect every threat.
     _anomaly_meta_v = (decision.meta or {}).get("anomaly", {})
     _anomaly_score_v = _anomaly_meta_v.get("score", 0.0) if _anomaly_meta_v else 0.0
     if _anomaly_score_v >= 0.75 and tenant_id:
@@ -700,7 +733,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                     return
                 _pattern = _anomaly_meta_v.get("pattern_name", "unknown")
                 _msg = (
-                    f"⚠️ *Anomaly Detected*\n\n"
+                    f"Ã¢Å¡Â Ã¯Â¸Â *Anomaly Detected*\n\n"
                     f"*Agent:* `{req.agent_id}`\n"
                     f"*Action:* `{req.action_type}`\n"
                     f"*Pattern:* `{_pattern}`\n"
@@ -708,7 +741,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
                     f"*Verdict:* `{verdict_str}`\n"
                     f"*Tenant:* `{tenant_id}`\n"
                     f"*Decision:* `{decision_id}`\n\n"
-                    f"_This is an advisory alert — review at console.edoncore.com_"
+                    f"_This is an advisory alert Ã¢â‚¬â€ review at console.edoncore.com_"
                 )
                 try:
                     _rq.post(
@@ -722,7 +755,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         except Exception as _anom_err:
             logger.warning("Anomaly alert failed (non-blocking): %s", _anom_err)
 
-    # ── Evaluate anomaly/threshold alert rules (non-blocking, fire-and-forget) ─
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Evaluate anomaly/threshold alert rules (non-blocking, fire-and-forget) Ã¢â€â‚¬
     if tenant_id:
         try:
             import asyncio as _asyncio
@@ -743,8 +776,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     except Exception as _meter_err:
         logger.debug("Metering record dispatch failed (non-blocking): %s", _meter_err)
 
-    # ── Observe-Only (Shadow / Sandbox) Mode ────────────────────────────────
-    # Shadow mode is an OBSERVE-ONLY deployment state — not a security bypass.
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Observe-Only (Shadow / Sandbox) Mode Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    # Shadow mode is an OBSERVE-ONLY deployment state Ã¢â‚¬â€ not a security bypass.
     # The governor still runs its full 12-step pipeline; the real verdict is
     # computed, logged, and audit-trailed exactly as in enforcing mode.
     # Only the *response* to the caller is flipped to ALLOW so the agent under
@@ -800,7 +833,7 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     if decision.escalation_options:
         response.escalation_options = decision.escalation_options
 
-    # Intervention strategy — when blocked/degraded, generate a co-pilot strategy.
+    # Intervention strategy Ã¢â‚¬â€ when blocked/degraded, generate a co-pilot strategy.
     # Returned as advisory: the agent/orchestrator decides whether to act on it.
     if verdict_str in ("BLOCK", "DEGRADE", "ESCALATE"):
         try:
@@ -835,8 +868,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         response.predicted_oob_reasons = predictive_meta.get("predictive_oob_reasons", [])
         response.predicted_oob_breakdown = predictive_meta.get("predictive_oob_breakdown", {})
 
-    # ── Record in coordination graph (Fix 2) ────────────────────────────────
-    # Only record when the action wasn't blocked — blocked actions didn't execute.
+    # Ã¢â€â‚¬Ã¢â€â‚¬ Record in coordination graph (Fix 2) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    # Only record when the action wasn't blocked Ã¢â‚¬â€ blocked actions didn't execute.
     if tenant_id and response_decision == "ALLOW":
         try:
             from ..coordination import get_coordination_graph as _gcg

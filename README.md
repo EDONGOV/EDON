@@ -7,10 +7,9 @@ Enterprise AI governance — monorepo.
 ```
 edongov/
 ├── backend/         # FastAPI gateway — governance engine (Python)
-├── frontend/        # React SPA — customer dashboard (TypeScript)
-├── shared/          # Shared types used by frontend + SDK
+├── console/         # React governance console
+├── shared/          # Shared types and UI helpers
 ├── demos/           # Standalone offline demo apps
-├── infrastructure/  # Deploy configs (Render, Fly.io)
 ├── docs/            # Architecture and API docs
 └── sdk/             # Client SDKs (Python, JavaScript)
 ```
@@ -48,7 +47,7 @@ pip install -r requirements.gateway.txt
 # Configure environment
 cp .env.example .env
 # Open .env and set at minimum:
-#   EDON_API_TOKEN=any-secret-you-choose
+#   EDON_API_TOKEN=<strong-random-token>
 #   EDON_AUTH_ENABLED=true
 
 # Run
@@ -58,25 +57,19 @@ python -m uvicorn edon_gateway.main:app --host 0.0.0.0 --port 8000
 Gateway is now running at `http://localhost:8000`.  
 Health check: `curl http://localhost:8000/health`
 
-### 3. Frontend
+### 3. Console
 
 ```bash
-cd frontend
+cd console
 npm install
 npm run dev   # http://localhost:8080
 ```
 
-Open `http://localhost:8080` — you'll be prompted for a token and gateway URL.  
-Enter the token you set in `.env` and `http://localhost:8000`.
-
-Or pass them via URL directly:
-```
-http://localhost:8080/#token=your-token&base=http://localhost:8000
-```
+Open the console URL in the browser and select a role-based view.
 
 ### 4. No backend? Use mock mode
 
-The frontend has a built-in mock mode with demo data — no backend needed:
+The console has a built-in mock mode with demo data — no backend needed:
 
 ```
 http://localhost:8080/#token=demo
@@ -88,10 +81,10 @@ http://localhost:8080/#token=demo
 # Backend
 cd backend
 pip install pytest
-EDON_API_TOKEN=test-token EDON_AUTH_ENABLED=false pytest tests/ -v
+EDON_API_TOKEN=<test-only-token> EDON_AUTH_ENABLED=false pytest tests/ -v
 
-# Frontend
-cd frontend
+# Console
+cd console
 npm run test
 ```
 
@@ -100,7 +93,7 @@ npm run test
 | Service | Platform | Config |
 |---------|----------|--------|
 | Backend | Fly.io | `backend/fly.toml` |
-| Frontend | Vercel | `agent.edoncore.com` |
+| Console | Static host or local dev | `console/` |
 
 Deploy backend:
 ```bash
@@ -114,3 +107,4 @@ fly deploy
 - `backend/docs/AUTHENTICATION_METHODS.md` — auth setup
 - `backend/docs/DEMO_MODE_GUIDE.md` — running demos
 - `backend/docs/FLY_DEPLOY.md` — Fly.io deployment guide
+- `docs/repeatable-architecture-standard.md` — invariant runtime, execution binding, and customer pack contract

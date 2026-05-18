@@ -28,6 +28,7 @@ from ..onboarding.profile import get_onboarding_store
 from ..onboarding.topology import generate_topology
 from ..onboarding.policy_bootstrap import bootstrap_policies
 from ..onboarding.deployment_package import generate_deployment_package
+from ..onboarding.repeatable_architecture import build_repeatable_architecture_standard
 from ..onboarding.signoff import get_signoff_store
 from ..onboarding.expansion import check_expansion_signals
 
@@ -35,9 +36,16 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
 
 
+def _require_request_tenant(request: Request, purpose: str) -> str:
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(400, f"Tenant context is required to {purpose}.")
+    return tenant_id
+
+
 def _assert_owns_profile(profile, tenant_id: str) -> None:
     """Raise 404 (not 403) if profile doesn't belong to this tenant — avoids leaking existence."""
-    if profile is None or profile.tenant_id != (tenant_id or "default"):
+    if profile is None or not tenant_id or profile.tenant_id != tenant_id:
         raise HTTPException(404, f"Profile not found")
 
 
@@ -82,11 +90,11 @@ class SignoffResolveRequest(BaseModel):
 @router.post("/intake")
 async def submit_intake(request: Request, body: IntakeRequest):
     """Submit the onboarding intake questionnaire. Returns GovernanceDeploymentProfile v1."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "submit onboarding intake")
     store = get_onboarding_store()
 
     profile = store.create(
-        tenant_id=tenant_id or "default",
+        tenant_id=tenant_id,
         org_name=body.org_name,
         agent_systems=[a.model_dump() for a in body.agent_systems],
         identity_provider=body.identity_provider,
@@ -107,15 +115,15 @@ async def submit_intake(request: Request, body: IntakeRequest):
 
 @router.get("/profiles")
 async def list_profiles(request: Request):
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "list onboarding profiles")
     store = get_onboarding_store()
-    profiles = store.list_for_tenant(tenant_id or "default")
+    profiles = store.list_for_tenant(tenant_id)
     return {"profiles": profiles, "count": len(profiles)}
 
 
 @router.get("/profiles/{profile_id}")
 async def get_profile(profile_id: str, request: Request):
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "view an onboarding profile")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -127,7 +135,7 @@ async def get_profile(profile_id: str, request: Request):
 @router.post("/profiles/{profile_id}/topology")
 async def generate_enforcement_topology(profile_id: str, request: Request):
     """Generate the EDON Enforcement Topology — exactly where EDON plugs in."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "generate an onboarding topology")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -149,7 +157,7 @@ async def generate_enforcement_topology(profile_id: str, request: Request):
 @router.post("/profiles/{profile_id}/bootstrap")
 async def run_policy_bootstrap(profile_id: str, request: Request):
     """Generate the 3-layer initial policy set (hard safety, operational, intent contracts)."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "bootstrap onboarding policies")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -171,7 +179,7 @@ async def run_policy_bootstrap(profile_id: str, request: Request):
 @router.get("/profiles/{profile_id}/deployment")
 async def get_deployment_package(profile_id: str, request: Request):
     """Get the IT-approvable deployment package (Helm values, env vars, network rules)."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "view an onboarding deployment package")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -189,12 +197,34 @@ async def get_deployment_package(profile_id: str, request: Request):
     }
 
 
+@router.get("/profiles/{profile_id}/architecture-standard")
+async def get_repeatable_architecture_standard(profile_id: str, request: Request):
+    """Get the repeatable architecture contract for this tenant."""
+    tenant_id = _require_request_tenant(request, "view the repeatable architecture standard")
+    store = get_onboarding_store()
+    profile = store.get(profile_id)
+    _assert_owns_profile(profile, tenant_id)
+
+    topology = generate_topology(profile)
+    bundle = bootstrap_policies(profile)
+    package = generate_deployment_package(profile, topology)
+    standard = build_repeatable_architecture_standard(profile, topology, package, bundle)
+
+    return {
+        "architecture_standard": standard.as_dict(),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile_id}/shadow",
+            "description": "Exercise the standard in shadow mode before signoff",
+        },
+    }
+
+
 # ── Step 6: Shadow Mode ───────────────────────────────────────────────────────
 
 @router.post("/profiles/{profile_id}/shadow")
 async def set_shadow_mode(profile_id: str, request: Request, body: ShadowModeRequest):
     """Enable or disable shadow mode for this profile's tenant."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "change shadow mode")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -231,7 +261,7 @@ async def set_shadow_mode(profile_id: str, request: Request, body: ShadowModeReq
 @router.post("/profiles/{profile_id}/signoff/request")
 async def request_signoff(profile_id: str, request: Request, body: SignoffCreateRequest):
     """Request go-live signoff. Presents scope for explicit human approval."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "request go-live signoff")
     profile_store = get_onboarding_store()
     profile = profile_store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
@@ -265,10 +295,10 @@ async def request_signoff(profile_id: str, request: Request, body: SignoffCreate
 @router.post("/signoffs/{signoff_id}/approve")
 async def approve_signoff(signoff_id: str, request: Request, body: SignoffResolveRequest):
     """Approve go-live signoff — activates enforcement for this tenant."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "approve a go-live signoff")
     signoff_store = get_signoff_store()
     sr_pre = signoff_store.get(signoff_id)
-    if sr_pre is None or sr_pre.tenant_id != (tenant_id or "default"):
+    if sr_pre is None or sr_pre.tenant_id != tenant_id:
         raise HTTPException(404, f"Signoff not found")
     sr = signoff_store.approve(signoff_id, body.resolved_by)
     if sr is None:
@@ -299,10 +329,10 @@ async def approve_signoff(signoff_id: str, request: Request, body: SignoffResolv
 @router.post("/signoffs/{signoff_id}/reject")
 async def reject_signoff(signoff_id: str, request: Request, body: SignoffResolveRequest):
     """Reject go-live signoff — stays in shadow mode."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "reject a go-live signoff")
     signoff_store = get_signoff_store()
     sr_pre = signoff_store.get(signoff_id)
-    if sr_pre is None or sr_pre.tenant_id != (tenant_id or "default"):
+    if sr_pre is None or sr_pre.tenant_id != tenant_id:
         raise HTTPException(404, f"Signoff not found")
     sr = signoff_store.reject(signoff_id, body.resolved_by, body.rejection_reason or "Rejected")
     if sr is None:
@@ -322,12 +352,10 @@ async def reject_signoff(signoff_id: str, request: Request, body: SignoffResolve
 @router.get("/profiles/{profile_id}/expansion")
 async def get_expansion_signals(profile_id: str, request: Request):
     """Check live telemetry for expansion trigger signals (new agents, sinks, stress points)."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "view expansion signals")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
-
-    tenant_id = tenant_id or profile.tenant_id
     signals = check_expansion_signals(tenant_id, profile)
     high = [s for s in signals if s.severity == "high"]
 
@@ -344,7 +372,7 @@ async def get_expansion_signals(profile_id: str, request: Request):
 @router.get("/profiles/{profile_id}/status")
 async def get_onboarding_status(profile_id: str, request: Request):
     """Full pipeline status — where this client is in the 10-step onboarding flow."""
-    tenant_id = get_request_tenant_id(request)
+    tenant_id = _require_request_tenant(request, "view onboarding status")
     store = get_onboarding_store()
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
