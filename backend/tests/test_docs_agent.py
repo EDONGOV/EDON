@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-import anthropic
+from types import SimpleNamespace
 
 from backend.agents import docs_agent
 
@@ -22,6 +22,9 @@ def test_docs_agent_skips_cleanly_on_auth_failure(monkeypatch, capsys):
     monkeypatch.setattr(docs_agent, "_get_diff", lambda: "@router.get('/v1/test')\n")
     monkeypatch.setattr(docs_agent, "_read", lambda path: "# docs\n")
 
+    class _FakeAuthError(Exception):
+        pass
+
     class _FakeMessages:
         def create(self, **kwargs):
             request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -30,16 +33,18 @@ def test_docs_agent_skips_cleanly_on_auth_failure(monkeypatch, capsys):
                 request=request,
                 json={"error": {"type": "authentication_error", "message": "invalid x-api-key"}},
             )
-            raise anthropic.AuthenticationError(
+            raise _FakeAuthError(
                 "invalid x-api-key",
-                response=response,
-                body={"error": {"type": "authentication_error", "message": "invalid x-api-key"}},
             )
 
     class _FakeClient:
         messages = _FakeMessages()
 
-    monkeypatch.setattr(docs_agent.anthropic, "Anthropic", lambda **kwargs: _FakeClient())
+    monkeypatch.setattr(
+        docs_agent,
+        "anthropic",
+        SimpleNamespace(Anthropic=lambda **kwargs: _FakeClient(), AuthenticationError=_FakeAuthError),
+    )
 
     assert docs_agent.run() == 0
 

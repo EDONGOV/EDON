@@ -24,7 +24,10 @@ import os
 import sys
 from pathlib import Path
 
-import anthropic
+try:
+    import anthropic
+except ModuleNotFoundError:  # optional in unit tests / minimal CI
+    anthropic = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_REF_PATH = REPO_ROOT / "docs" / "api-reference.md"
@@ -89,6 +92,10 @@ def run(dry_run: bool = False) -> int:
     api_key = _anthropic_api_key()
     if not api_key:
         print("[docs] ANTHROPIC_API_KEY is not set — skipping Claude doc sync.")
+        return 0
+
+    if anthropic is None:
+        print("[docs] anthropic package is not installed — skipping Claude doc sync.")
         return 0
 
     client = anthropic.Anthropic(api_key=api_key)
