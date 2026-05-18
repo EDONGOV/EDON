@@ -10,6 +10,13 @@ backend/**/__pycache__/
 backend/*.pyc
 backend/.env
 backend/edon_gateway/.env
+**/.env
+backend/.pytest_cache/
+backend/**/.pytest_cache/
+backend/*.tsbuildinfo
+backend/*.log
+backend/*.sqlite
+backend/*.sqlite3
 
 # Runtime artifacts — never commit these
 backend/*.db
@@ -21,9 +28,36 @@ backend/*.jsonl
 backend/regression_out.txt
 backend/backups/
 backend/data/
+backend/fern_openapi*.json
+backend/fern/
+backend/edon_gateway/.env.local
+backend/edon_gateway/.env.production
+.claude/worktrees/
+.claude/settings.local.json
+backend/.claude/settings.local.json
+*.tsbuildinfo
+*.env.local
+*.env.production
+audit.log.jsonl
+*.jsonl
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # Demos
 demos/**/node_modules/
+demos/**/.env
+demos/**/dist/
+
+# Admin / console / SDK build artifacts
+admin/node_modules/
+admin/dist/
+console/node_modules/
+console/dist/
+sdk/javascript/node_modules/
+sdk/javascript/dist/
 
 # OS
 .DS_Store
@@ -33,3 +67,4 @@ Thumbs.db
 
 # Private strategy — never commit
 EDONroadto100m.md
+INFRA_PRIVATE.md
