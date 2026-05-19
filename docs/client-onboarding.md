@@ -140,7 +140,7 @@ Walk them through this in order — do not skip steps:
 Minimal. Add two calls around each action their agent takes — `client.evaluate()` before it acts, `client.scan_output()` after it gets a result. That's it. EDON never touches their agent or their data directly.
 
 **"What happens if EDON goes down?"**
-Fail-open or fail-closed — configurable. Default is fail-open (agent proceeds) with an audit entry flagged for review. Enterprise plans get fail-closed with automatic fallback.
+Pilot and enterprise deployments default to fail-closed for governed execution. Advisory channels may degrade, but actions that require EDON authorization must not execute without a valid decision record and execution token.
 
 **"Can we see exactly why an action was blocked?"**
 Yes — every block has a reason code, plain-English explanation, and the full context in the audit log. The copilot can explain any decision on demand.

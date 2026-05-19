@@ -27,11 +27,11 @@ python edon_gateway/test_clawdbot_integration.py
 
 ### Option B: Authentication Enabled (Production)
 
-If you're using `start_production_gateway.ps1`, it sets `EDON_API_TOKEN=your-secret-token` by default.
+For production-style testing, set a unique gateway token or use a tenant-scoped API key. Do not rely on sample/default token values.
 
-**Quick Fix - Use the default token:**
+**Quick Fix - Use your configured token:**
 ```powershell
-# The test defaults to "your-secret-token" which matches the production script
+$env:EDON_GATEWAY_TOKEN = $env:EDON_API_TOKEN
 python edon_gateway/test_clawdbot_integration.py
 ```
 
@@ -46,9 +46,8 @@ python edon_gateway/test_clawdbot_integration.py
 ```
 
 **How to find your token:**
-- Check the output when you start EDON Gateway - it shows `EDON_API_TOKEN=...`
-- If using `start_production_gateway.ps1`, it defaults to `your-secret-token` unless you set `EDON_API_TOKEN` before running it
-- Or check your gateway startup script/configuration
+- Use the tenant-scoped API key issued for this test tenant, or the unique development token you set before startup.
+- Production/enterprise mode rejects default token values.
 
 ---
 
@@ -60,7 +59,7 @@ If your EDON Gateway is running with `EDON_CREDENTIALS_STRICT=true` (production 
 
 ```powershell
 # Set your tokens
-$env:EDON_GATEWAY_TOKEN = "your-secret-token"
+$env:EDON_GATEWAY_TOKEN = "<tenant-scoped-api-key-or-dev-token>"
 $env:CLAWDBOT_GATEWAY_TOKEN = "your-clawdbot-token"  # Optional
 
 # Run setup script
@@ -71,7 +70,7 @@ $env:CLAWDBOT_GATEWAY_TOKEN = "your-clawdbot-token"  # Optional
 
 ```powershell
 $headers = @{
-    "X-EDON-TOKEN" = "your-secret-token"
+    "X-EDON-TOKEN" = "<tenant-scoped-api-key-or-dev-token>"
     "Content-Type" = "application/json"
 }
 

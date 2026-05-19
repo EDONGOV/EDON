@@ -5,6 +5,7 @@ from backend.edon_gateway.governance_records import (
     build_decision_record,
     build_execution_token,
     build_policy_replay_bundle,
+    verify_execution_token,
 )
 from backend.edon_gateway.schemas import Action, Decision, ReasonCode, RiskLevel, Tool, Verdict
 
@@ -51,6 +52,12 @@ def test_decision_record_and_execution_token_are_signed():
     token = build_execution_token(record)
     assert token["token"].startswith("ey")
     assert token["payload"]["decision_id"] == "dec-1"
+    verified = verify_execution_token(
+        token,
+        tenant_id="tenant-a",
+        action_type="epic.record.writeback",
+    )
+    assert verified["decision_id"] == "dec-1"
 
     replay = build_policy_replay_bundle(
         record=record,

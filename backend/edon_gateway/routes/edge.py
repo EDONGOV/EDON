@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from ..logging_config import get_logger
 from ..config import config
+from ..governance_records import verify_execution_token
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 
@@ -457,6 +458,19 @@ async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest
             action_type = str(action.get("action_type", action.get("tool", "unknown")))
             verdict = str(action.get("verdict", "ALLOW")).upper()
             timestamp = str(action.get("timestamp", now))
+            if config.ENTERPRISE_MODE:
+                token = action.get("execution_token")
+                if not token:
+                    raise ValueError("enterprise edge sync requires execution_token on every action")
+                verified = verify_execution_token(
+                    token,
+                    tenant_id=tenant_id,
+                    action_type=action_type,
+                    require_allow=False,
+                )
+                if verified.get("agent_id") not in {agent_id, node_id}:
+                    raise ValueError("edge sync execution token agent mismatch")
+                verdict = str(verified.get("verdict") or verdict).upper()
 
             # Write to edge_sync_queue for traceability
             with db._get_connection() as conn:

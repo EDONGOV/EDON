@@ -157,7 +157,7 @@ python edon_gateway/test_regression.py
 export EDON_CREDENTIALS_STRICT=true      # Fail closed on missing credentials
 export EDON_VALIDATE_STRICT=true         # Reject invalid input
 export EDON_AUTH_ENABLED=true            # Require authentication
-export EDON_API_TOKEN=your-secret-token  # Set auth token
+export EDON_API_TOKEN=<unique-production-token>  # Set a non-default auth token
 export EDON_TOKEN_BINDING_ENABLED=true   # Enable token → agent_id binding
 ```
 

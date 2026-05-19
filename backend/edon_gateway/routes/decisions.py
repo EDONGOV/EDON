@@ -15,6 +15,7 @@ from ..governance_records import (
     build_execution_token,
     build_policy_replay_bundle,
 )
+from ..tenancy import get_request_tenant_id
 
 router = APIRouter(tags=["decisions"])
 
@@ -26,6 +27,9 @@ class DecisionQueryResponse(BaseModel):
 
 
 def _get_enriched_decision_row(request: Request, decision_id: str) -> tuple[dict, dict]:
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
     db = request.app.state.db
     decision = db.get_decision(decision_id)
     if not decision:
@@ -34,11 +38,13 @@ def _get_enriched_decision_row(request: Request, decision_id: str) -> tuple[dict
     action_id = decision.get("action_id")
     if action_id:
         try:
-            enriched = db.query_decisions(action_id=action_id, limit=1)
+            enriched = db.query_decisions(action_id=action_id, customer_id=tenant_id, limit=1)
             if enriched:
                 decision_row = enriched[0]
+            else:
+                raise HTTPException(status_code=404, detail="Decision not found")
         except Exception:
-            pass
+            raise
     return decision, decision_row
 
 
@@ -123,6 +129,9 @@ async def query_decisions(
     agent_id: Optional[str] = None,
     limit: int = 100,
 ):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
     db = request.app.state.db
@@ -131,6 +140,7 @@ async def query_decisions(
         verdict=verdict,
         intent_id=intent_id,
         agent_id=agent_id,
+        customer_id=tenant_id,
         limit=limit,
     )
     return DecisionQueryResponse(decisions=decisions, total=len(decisions), limit=limit)
@@ -138,10 +148,7 @@ async def query_decisions(
 
 @router.get("/decisions/{decision_id}")
 async def get_decision(decision_id: str, request: Request):
-    db = request.app.state.db
-    decision = db.get_decision(decision_id)
-    if not decision:
-        raise HTTPException(status_code=404, detail="Decision not found")
+    decision, _decision_row = _get_enriched_decision_row(request, decision_id)
     return decision
 
 

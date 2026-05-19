@@ -29,6 +29,7 @@ from ..logging_config import get_logger
 from ..security.output_filter import filter_output
 from ..state.sequence_scorer import get_scorer
 from ..tenancy import get_request_tenant_id
+from ..governance_records import build_decision_record, build_execution_token, verify_execution_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["v1-llm"])
@@ -72,6 +73,8 @@ class V1LLMResponse(BaseModel):
     sequence_score: Optional[float] = None
     governance_latency_ms: int = 0
     provider_latency_ms: int = 0
+    decision_record: Optional[Dict[str, Any]] = None
+    execution_token: Optional[Dict[str, Any]] = None
 
 
 @router.post("/llm", response_model=V1LLMResponse)
@@ -83,6 +86,8 @@ async def llm_proxy(
     """Govern an LLM request and proxy it to the provider."""
     start = time.time()
     tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
 
     if body.provider not in _SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unsupported provider '{body.provider}'. Use: {sorted(_SUPPORTED_PROVIDERS)}")
@@ -135,7 +140,7 @@ async def llm_proxy(
         logger.debug("[v1/llm] sequence scoring failed (non-blocking): %s", _seq_err)
 
     # ── 3. Governance ──────────────────────────────────────────────────────────
-    gov_verdict, gov_explanation, gov_question, gov_decision_id = await _govern_input(
+    gov_verdict, gov_explanation, gov_question, gov_decision_id, gov_record, gov_token = await _govern_input(
         tenant_id=tenant_id,
         agent_id=body.agent_id,
         intent_id=body.intent_id,
@@ -146,6 +151,7 @@ async def llm_proxy(
         seq_score=seq_score,
     )
     governance_latency_ms = int((time.time() - start) * 1000)
+    provider_latency_ms = 0
 
     oob_dict = prediction.to_dict() if prediction else None
 
@@ -165,7 +171,15 @@ async def llm_proxy(
             sequence_score=round(seq_score, 4),
             governance_latency_ms=governance_latency_ms,
             provider_response={"escalation_question": gov_question or gov_explanation},
+            decision_record=gov_record,
+            execution_token=gov_token,
         )
+
+    try:
+        verify_execution_token(gov_token or {}, tenant_id=tenant_id, action_type="llm.generate")
+    except Exception as exc:
+        logger.error("[v1/llm] execution token verification failed: %s", exc)
+        raise HTTPException(status_code=403, detail="Valid EDON execution token required before provider forwarding")
 
     # ── 4. Forward to provider ─────────────────────────────────────────────────
     provider_key = (
@@ -211,6 +225,8 @@ async def llm_proxy(
             sequence_score=round(seq_score, 4),
             governance_latency_ms=governance_latency_ms,
             provider_latency_ms=provider_latency_ms,
+            decision_record=gov_record,
+            execution_token=gov_token,
         )
 
     # ── 6. Record outcome into fleet learning ──────────────────────────────────
@@ -227,6 +243,8 @@ async def llm_proxy(
         sequence_score=round(seq_score, 4),
         governance_latency_ms=governance_latency_ms,
         provider_latency_ms=provider_latency_ms,
+        decision_record=gov_record,
+        execution_token=gov_token,
     )
 
 
@@ -275,7 +293,7 @@ async def _govern_input(
     conversation_context: str,
     oob_score: float,
     seq_score: float,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Run the full conversation context through the governor."""
     try:
         from ..governor import EDONGovernor
@@ -325,13 +343,36 @@ async def _govern_input(
             _json_stdlib.dumps(action.params, sort_keys=True).encode()
         ).hexdigest()
         context["request_hash"] = request_hash
+        record = build_decision_record(
+            decision_id=decision_id,
+            tenant_id=tenant_id or "",
+            actor_id=agent_id,
+            agent_id=agent_id,
+            action_type="llm.generate",
+            risk_tier=estimated_risk.value.lower() if hasattr(estimated_risk, "value") else str(estimated_risk).lower(),
+            verdict=verdict,
+            context={
+                **context,
+                "data_class": "confidential",
+                "connector_scope": ["llm.prompt.route", "llm.output.audit", "llm.action.authorize"],
+            },
+            policy_version=decision.policy_version,
+            reason_code=decision.reason_code.value if decision.reason_code else None,
+            issued_at=created_at,
+            request_hash=request_hash,
+        )
+        execution_token = build_execution_token(record)
         try:
             db.save_audit_event(
                 action=action.to_dict(),
                 decision=decision.to_dict(),
                 intent_id=intent_id,
                 agent_id=agent_id,
-                context=context,
+                context={
+                    **context,
+                    "decision_record": record.to_dict(),
+                    "execution_token_key_id": execution_token["key_id"],
+                },
                 customer_id=tenant_id,
                 action_summary=f"{action.tool.value}.{action.op}",
                 request_hash=request_hash,
@@ -340,11 +381,12 @@ async def _govern_input(
             )
         except Exception as audit_err:
             logger.warning("[v1/llm] audit write failed: %s", audit_err)
-        return verdict, decision.explanation or "", decision.escalation_question or "", decision_id
+            raise RuntimeError("Unable to persist governed LLM decision to audit trail") from audit_err
+        return verdict, decision.explanation or "", decision.escalation_question or "", decision_id, record.to_dict(), execution_token
     except Exception as exc:
         # Fail-closed: governance errors must never grant access in a clinical/control-plane context.
         logger.error("[v1/llm] governance failed (fail-closed — blocking): %s", exc)
-        return "BLOCK", "Governance error - request blocked for safety", "", ""
+        return "BLOCK", "Governance error - request blocked for safety", "", "", None, None
 
 
 def _record_llm_execution_result(

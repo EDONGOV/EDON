@@ -139,10 +139,10 @@ If authentication fails or token is missing:
 
 Set in `.env`:
 ```bash
-EDON_API_TOKEN=your-secret-token-change-me
+EDON_API_TOKEN=<generate-a-unique-development-token>
 ```
 
-**Use case:** Single-tenant deployments, development/testing
+**Use case:** Local development and legacy single-tenant testing only. Enterprise and production deployments should use tenant-scoped API keys or SSO-backed identity, with environment-token auth disabled.
 
 ### 2. Database API Keys (Production)
 
@@ -195,7 +195,7 @@ Set in `.env`:
 EDON_AUTH_ENABLED=true
 
 # API token (for single-tenant/legacy)
-EDON_API_TOKEN=your-secret-token-change-me
+EDON_API_TOKEN=<generate-a-unique-development-token>
 ```
 
 ### Token Binding (Optional)

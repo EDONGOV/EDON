@@ -17,7 +17,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
-from .security.signing import get_key_id, sign_canonical_payload
+from .security.signing import get_key_id, get_public_key_hex, sign_canonical_payload, verify_canonical_payload
 
 
 def _iso(dt: Optional[datetime]) -> str:
@@ -246,6 +246,62 @@ def build_execution_token(record: DecisionRecord) -> Dict[str, Any]:
         "key_id": payload["key_id"],
         "payload": payload,
     }
+
+
+def verify_execution_token(
+    token: str | Dict[str, Any],
+    *,
+    tenant_id: Optional[str] = None,
+    action_type: Optional[str] = None,
+    require_allow: bool = True,
+) -> Dict[str, Any]:
+    """Verify a signed EDON execution token and return its payload.
+
+    Connectors and legacy execution paths use this as the commit barrier:
+    no valid token, no downstream execution.
+    """
+    if isinstance(token, dict):
+        token_text = str(token.get("token") or "")
+        signature = str(token.get("signature") or "")
+        payload = token.get("payload")
+    else:
+        token_text = str(token or "")
+        signature = ""
+        payload = None
+
+    if not payload:
+        try:
+            encoded_payload, signature = token_text.rsplit(".", 1)
+            padding = "=" * (-len(encoded_payload) % 4)
+            payload = json.loads(base64.urlsafe_b64decode((encoded_payload + padding).encode("ascii")))
+        except Exception as exc:
+            raise ValueError(f"Invalid execution token format: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid execution token payload")
+
+    if payload.get("token_type") != "edon.execution":
+        raise ValueError("Invalid execution token type")
+    if tenant_id and payload.get("tenant_id") != tenant_id:
+        raise ValueError("Execution token tenant mismatch")
+    if action_type and payload.get("action_type") != action_type:
+        raise ValueError("Execution token action mismatch")
+    if require_allow and payload.get("verdict") != "ALLOW":
+        raise ValueError("Execution token does not authorize execution")
+
+    expires_at = payload.get("expires_at")
+    if expires_at:
+        try:
+            expires_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        except Exception as exc:
+            raise ValueError(f"Invalid execution token expiry: {exc}") from exc
+        if expires_dt < datetime.now(UTC):
+            raise ValueError("Execution token has expired")
+
+    if not verify_canonical_payload(payload, signature, get_public_key_hex()):
+        raise ValueError("Execution token signature is invalid")
+
+    return payload
 
 
 def build_policy_replay_bundle(

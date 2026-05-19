@@ -22,6 +22,7 @@ from ..fleet_learning import get_fleet_learning_engine
 from ..services.governance import load_intent
 from ..schemas.v1_action import V1ActionRequest
 from ..preflight import PreflightContext, run_preflight
+from ..governance_records import build_decision_record, build_execution_token, verify_execution_token
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,8 @@ class ExecuteResponse(BaseModel):
     execution_error: Optional[str] = None
     processing_latency_ms: int
     reason_code: Optional[str] = None
+    decision_record: Optional[dict] = None
+    execution_token: Optional[dict] = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -153,6 +156,8 @@ async def execute_action(request: Request, req: ExecuteRequest):
         raise HTTPException(status_code=400, detail=f"Invalid timestamp: {exc}")
 
     tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
     db = get_db()
 
     # ── Load intent ─────────────────────────────────────────────────────────
@@ -253,6 +258,26 @@ async def execute_action(request: Request, req: ExecuteRequest):
     _request_hash = hashlib.sha256(
         _json_stdlib.dumps(action_params, sort_keys=True).encode()
     ).hexdigest()
+    _canonical_record = build_decision_record(
+        decision_id=decision_id,
+        tenant_id=tenant_id,
+        actor_id=str(req_context.get("actor_id") or req_context.get("user_id") or req.agent_id),
+        agent_id=req.agent_id,
+        action_type=req.action_type,
+        risk_tier=str(getattr(action, "computed_risk", None) or getattr(action, "estimated_risk", "medium")).lower(),
+        verdict=verdict_str,
+        context={
+            **req_context,
+            "data_class": req_context.get("data_class") or action_params.get("data_class") or "internal",
+            "connector_scope": req_context.get("connector_scope") or action_params.get("connector_scope") or [],
+            "request_hash": _request_hash,
+        },
+        policy_version=decision.policy_version,
+        reason_code=decision.reason_code.value if decision.reason_code else None,
+        issued_at=_created_at,
+        request_hash=_request_hash,
+    )
+    _execution_token = build_execution_token(_canonical_record)
 
     # ── Audit ───────────────────────────────────────────────────────────────
     try:
@@ -261,7 +286,14 @@ async def execute_action(request: Request, req: ExecuteRequest):
             decision=decision.to_dict(),
             intent_id=intent_id,
             agent_id=req.agent_id,
-            context={"agent_id": req.agent_id, "tenant_id": tenant_id, "request_hash": _request_hash, **req_context},
+            context={
+                "agent_id": req.agent_id,
+                "tenant_id": tenant_id,
+                "request_hash": _request_hash,
+                "decision_record": _canonical_record.to_dict(),
+                "execution_token_key_id": _execution_token["key_id"],
+                **req_context,
+            },
             customer_id=tenant_id,
             processing_latency_ms=latency_ms,
             action_summary=f"{action.tool.value}.{action.op}",
@@ -271,7 +303,7 @@ async def execute_action(request: Request, req: ExecuteRequest):
         )
     except Exception as exc:
         logger.exception("Audit write failed in /execute: %s", exc)
-        decision_id = f"exec-{action.id}"
+        raise HTTPException(status_code=503, detail="Unable to persist governed execution decision to audit trail")
 
     # ── Auto-label for fleet learning ───────────────────────────────────────
     try:
@@ -295,6 +327,7 @@ async def execute_action(request: Request, req: ExecuteRequest):
 
     if verdict_str == "ALLOW":
         try:
+            verify_execution_token(_execution_token, tenant_id=tenant_id, action_type=req.action_type)
             execution_result = _run_connector(tool_str, operation, action_params)
             executed = True
             try:
@@ -357,4 +390,6 @@ async def execute_action(request: Request, req: ExecuteRequest):
         execution_error=execution_error,
         processing_latency_ms=latency_ms,
         reason_code=decision.reason_code.value if decision.reason_code else None,
+        decision_record=_canonical_record.to_dict(),
+        execution_token=_execution_token,
     )

@@ -855,6 +855,7 @@ class PostgreSQLDatabase:
         verdict: Optional[str] = None,
         intent_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        customer_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         conditions = []
@@ -867,6 +868,11 @@ class PostgreSQLDatabase:
             conditions.append("intent_id = %s"); params.append(intent_id)
         if agent_id:
             conditions.append("agent_id = %s"); params.append(agent_id)
+        if customer_id:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM audit_events ae WHERE ae.action_id = decisions.action_id AND ae.customer_id = %s)"
+            )
+            params.append(customer_id)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)

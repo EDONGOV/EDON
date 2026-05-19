@@ -133,7 +133,7 @@ python scripts/load_test_v1_action.py --requests 2000 --concurrent 50
 $env:EDON_CREDENTIALS_STRICT = "true"
 $env:EDON_VALIDATE_STRICT = "true"
 $env:EDON_AUTH_ENABLED = "true"
-$env:EDON_API_TOKEN = "your-secret-token"
+$env:EDON_API_TOKEN = "<unique-test-token>"
 $env:EDON_GATEWAY_URL = "http://localhost:8000"
 python edon_gateway/test_production_mode.py
 ```

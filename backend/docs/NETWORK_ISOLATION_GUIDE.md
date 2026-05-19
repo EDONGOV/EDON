@@ -337,7 +337,7 @@ server {
 # Use HTTP Basic Auth or custom header
 location / {
     # Check for EDON Gateway secret header
-    if ($http_x_edon_secret != "your-secret-token") {
+    if ($http_x_edon_secret != "<unique-shared-proxy-secret>") {
         return 403;
     }
     
@@ -363,7 +363,7 @@ CLAWDBOT_BIND=127.0.0.1:18789
 CLAWDBOT_BASE_URL=http://10.0.0.5:18789
 # Or if using custom header auth
 CLAWDBOT_BASE_URL=http://10.0.0.5:18789
-X-EDON-SECRET=your-secret-token
+X-EDON-SECRET=<unique-shared-proxy-secret>
 ```
 
 #### Step 4: Alternative Reverse Proxy Options

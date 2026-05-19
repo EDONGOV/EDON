@@ -137,9 +137,9 @@ curl http://localhost:8000/metrics | grep edon_
 | `EDON_DATABASE_PATH` | `edon_gateway.db` | SQLite DB path (development only; legacy) |
 | `EDON_DB_ENCRYPTION_KEY` | — | Fernet key for audit payload encryption |
 | `EDON_AUDIT_ASYNC` | `true` | When `true`, audit writes run in a background thread (p99 latency); response returns immediately with a precomputed `decision_id`. Set `false` for synchronous audit. |
-| `EDON_ENCRYPT_AUDIT_PAYLOAD` | `false` | Set `true` to encrypt audit payloads at rest |
+| `EDON_ENCRYPT_AUDIT_PAYLOAD` | `false` in local dev; required `true` in production | Encrypt audit payloads at rest |
 | `EDON_POLICY_TIMEOUT_MS` | `50` | Policy evaluation timeout in milliseconds |
-| `EDON_POLICY_FAIL_SAFE` | `allow_with_log` | `block` or `allow_with_log` on timeout |
+| `EDON_POLICY_FAIL_SAFE` | `block` for production | `block` or `allow_with_log` on timeout; `allow_with_log` requires explicit exception signoff |
 | `EDON_SLO_P99_MS` | `100` | p99 latency SLO threshold in milliseconds |
 | `EDON_RATE_LIMIT_ENABLED` | `true` (prod) | Enable/disable rate limiting |
 | `EDON_CORS_ORIGINS` | (internal list) | Comma-separated allowed CORS origins |
