@@ -2,6 +2,7 @@
 frontend/node_modules/
 EdonLP/node_modules/
 frontend/dist/
+EdonLP/dist/
 frontend/.env.local
 
 # Backend
