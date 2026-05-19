@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 def test_procurement_dashboard_reports_core_controls(monkeypatch):
     import backend.edon_gateway.routes.ops as ops
+    import backend.edon_gateway.onboarding.profile as onboarding_profile
 
     monkeypatch.setattr(ops, "_get_database_dependency_status", lambda _app: {"scheme": "postgresql"})
     monkeypatch.setattr(ops.config, "is_production", lambda: True)
@@ -20,16 +21,35 @@ def test_procurement_dashboard_reports_core_controls(monkeypatch):
     monkeypatch.setattr(ops.config, "_EDGE_REQUIRE_NODE_CERTIFICATE", True)
     monkeypatch.setattr(ops.config, "_EDGE_REQUIRE_ATTESTATION", True)
     monkeypatch.setattr(ops.config, "_EDGE_BUNDLE_SIGNING_KEY", "edge-signing-key")
+    monkeypatch.setattr(
+        onboarding_profile,
+        "get_onboarding_store",
+        lambda: type(
+            "Store",
+            (),
+            {
+                "list_for_tenant": lambda self, _tenant: [
+                    {
+                        "profile_id": "gdp-test",
+                        "tenant_id": "tenant-1",
+                        "org_name": "Acme",
+                        "deployment_mode": "production",
+                    }
+                ]
+            },
+        )(),
+    )
 
     app = FastAPI()
     app.state.db = object()
     app.include_router(ops.router)
 
     client = TestClient(app)
-    resp = client.get("/governance/procurement-dashboard")
+    resp = client.get("/governance/procurement-dashboard?tenant_id=tenant-1")
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
+    assert payload["deployment_mode"] == "production"
     assert payload["controls"]["sso_only"] is True
     assert payload["controls"]["mfa"]["admin"] is True
     assert payload["controls"]["postgres"] is True

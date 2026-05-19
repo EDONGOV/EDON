@@ -50,6 +50,18 @@ _COMPLIANCE_RISK: dict[str, int] = {
     "HIPAA": 3, "PCI_DSS": 3, "GDPR": 2, "SOC2": 2, "ISO27001": 1,
 }
 
+_DEPLOYMENT_MODES = {"pilot", "production", "experimental"}
+
+
+def normalize_deployment_mode(mode: str | None) -> str:
+    mode = (mode or "pilot").strip().lower()
+    if mode not in _DEPLOYMENT_MODES:
+        raise ValueError(
+            f"Unsupported deployment mode '{mode}'. Expected one of: "
+            f"{', '.join(sorted(_DEPLOYMENT_MODES))}."
+        )
+    return mode
+
 
 @dataclass
 class AgentSystemSpec:
@@ -88,6 +100,7 @@ class GovernanceDeploymentProfile:
     signed_off: bool = False
     signed_off_at: Optional[str] = None
     signed_off_by: Optional[str] = None
+    deployment_mode: str = "pilot"
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -167,8 +180,10 @@ class OnboardingStore:
         identity_provider: str,
         environments: list[str],
         compliance_requirements: list[str],
+        deployment_mode: str = "pilot",
     ) -> GovernanceDeploymentProfile:
         tenant_id = _require_tenant_id(tenant_id, context="create an onboarding profile")
+        deployment_mode = normalize_deployment_mode(deployment_mode)
         profile_id = f"gdp-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC).isoformat()
 
@@ -194,6 +209,7 @@ class OnboardingStore:
             org_name=org_name,
             created_at=now,
             updated_at=now,
+            deployment_mode=deployment_mode,
             agent_systems=specs,
             identity_provider=identity_provider,
             environments=environments,
@@ -285,6 +301,7 @@ class OnboardingStore:
 def _from_dict(d: dict) -> GovernanceDeploymentProfile:
     specs = [AgentSystemSpec(**a) for a in d.get("agent_systems", [])]
     d = dict(d)
+    d["deployment_mode"] = normalize_deployment_mode(d.get("deployment_mode"))
     d["agent_systems"] = specs
     return GovernanceDeploymentProfile(**d)
 

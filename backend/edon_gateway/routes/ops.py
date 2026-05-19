@@ -260,6 +260,7 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
     approved_catalog = get_enterprise_integration_catalog(approved_only=True)
     approved_targets = approved_catalog.get("targets", [])
     latest_signoff = None
+    deployment_mode = None
     resolved_tenant = tenant_id
     if resolved_tenant is None:
         try:
@@ -273,6 +274,14 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
             latest_signoff = get_signoff_store().latest_approved(resolved_tenant)
         except Exception:
             latest_signoff = None
+        try:
+            from ..onboarding.profile import get_onboarding_store
+            profile_store = get_onboarding_store()
+            profiles = profile_store.list_for_tenant(resolved_tenant)
+            if profiles:
+                deployment_mode = (profiles[0].get("deployment_mode") or "pilot").strip().lower()
+        except Exception:
+            deployment_mode = None
 
     controls = {
         "sso_only": config.ENTERPRISE_SSO_ONLY or (config.is_production() and config.AUTH_ENABLED),
@@ -301,6 +310,7 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
     }
     return {
         "tenant_id": resolved_tenant,
+        "deployment_mode": deployment_mode,
         "controls": controls,
         "catalog": {
             "version": catalog.get("version"),

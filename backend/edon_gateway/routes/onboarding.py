@@ -24,7 +24,7 @@ from typing import Optional
 
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
-from ..onboarding.profile import get_onboarding_store
+from ..onboarding.profile import get_onboarding_store, normalize_deployment_mode
 from ..onboarding.topology import generate_topology
 from ..onboarding.policy_bootstrap import bootstrap_policies
 from ..onboarding.deployment_package import generate_deployment_package
@@ -94,6 +94,10 @@ def _build_governed_action_matrix(profile, bundle) -> list[dict]:
     return matrix
 
 
+def _deployment_mode_label(profile) -> str:
+    return normalize_deployment_mode(getattr(profile, "deployment_mode", "pilot"))
+
+
 class AgentSystemInput(BaseModel):
     name: str
     agent_type: str = "llm_agent"
@@ -109,6 +113,7 @@ class IntakeRequest(BaseModel):
     identity_provider: str = "none"
     environments: list[str] = ["saas"]
     compliance_requirements: list[str] = []
+    deployment_mode: str = "pilot"
 
 
 class ShadowModeRequest(BaseModel):
@@ -141,6 +146,7 @@ async def submit_intake(request: Request, body: IntakeRequest):
     """Submit the onboarding intake questionnaire. Returns GovernanceDeploymentProfile v1."""
     tenant_id = _require_request_tenant(request, "submit onboarding intake")
     store = get_onboarding_store()
+    deployment_mode = normalize_deployment_mode(body.deployment_mode)
 
     profile = store.create(
         tenant_id=tenant_id,
@@ -149,10 +155,12 @@ async def submit_intake(request: Request, body: IntakeRequest):
         identity_provider=body.identity_provider,
         environments=body.environments,
         compliance_requirements=body.compliance_requirements,
+        deployment_mode=deployment_mode,
     )
     logger.info(f"[onboarding/intake] profile={profile.profile_id} tenant={tenant_id}")
     return {
         "profile": profile.as_dict(),
+        "deployment_mode": deployment_mode,
         "next_step": {
             "action": f"POST /v1/onboarding/profiles/{profile.profile_id}/topology",
             "description": "Generate EDON Enforcement Topology",
@@ -400,6 +408,7 @@ async def approve_signoff(signoff_id: str, request: Request, body: SignoffResolv
     return {
         "signoff": sr.as_dict(),
         "profile": profile.as_dict() if profile else None,
+        "deployment_mode": _deployment_mode_label(profile) if profile else None,
         "message": (
             "EDON is now LIVE. Active enforcement is enabled. "
             "Shadow mode has been disabled. All agent actions are now governed."
@@ -486,6 +495,7 @@ async def get_onboarding_status(profile_id: str, request: Request):
         "profile_id": profile_id,
         "stage": profile.stage,
         "stage_label": stage_labels.get(profile.stage, profile.stage),
+        "deployment_mode": _deployment_mode_label(profile),
         "risk_tier": profile.risk_tier,
         "shadow_mode": profile.shadow_mode_enabled,
         "signed_off": profile.signed_off,
