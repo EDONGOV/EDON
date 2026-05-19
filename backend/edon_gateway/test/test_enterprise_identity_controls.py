@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -12,6 +14,9 @@ import backend.edon_gateway.routes.edge as edge_routes
 
 @pytest.fixture(autouse=True)
 def _enterprise_env(monkeypatch):
+    enterprise_clerk_secret_key = os.environ.get("EDON_TEST_CLERK_SECRET_KEY", "enterprise-clerk-key")
+    enterprise_stripe_secret_key = os.environ.get("EDON_TEST_STRIPE_SECRET_KEY", "enterprise-stripe-key")
+
     monkeypatch.setenv("EDON_ENV", "development")
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("EDON_AUTH_ENABLED", "false")
@@ -22,9 +27,9 @@ def _enterprise_env(monkeypatch):
     monkeypatch.setenv("EDON_CORS_ORIGINS", "https://console.example.com")
     monkeypatch.setenv("EDON_DB_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("DATABASE_URL", "")
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_enterprise")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", enterprise_stripe_secret_key)
     monkeypatch.setenv("EDON_AUDIT_CHAIN_SIGNING_KEY", "enterprise-audit-key")
-    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_enterprise")
+    monkeypatch.setenv("CLERK_SECRET_KEY", enterprise_clerk_secret_key)
     monkeypatch.setenv("CLERK_ISSUER", "https://clerk.example")
     monkeypatch.setenv("CLERK_AUDIENCE", "edon-enterprise")
     monkeypatch.setenv("EDON_ENTERPRISE_MODE", "true")
@@ -41,8 +46,8 @@ def _enterprise_env(monkeypatch):
     monkeypatch.setattr(cfg.config, "_ALLOW_ENV_TOKEN_IN_PROD", False)
     monkeypatch.setattr(cfg.config, "_RATE_LIMIT_ENABLED", True)
     monkeypatch.setattr(cfg.config, "_CORS_ORIGINS", ["https://console.example.com"])
-    monkeypatch.setattr(cfg.config, "_CLERK_SECRET_KEY", "sk_test_enterprise")
-    monkeypatch.setattr(cfg.config, "_STRIPE_SECRET_KEY", "sk_test_enterprise")
+    monkeypatch.setattr(cfg.config, "_CLERK_SECRET_KEY", enterprise_clerk_secret_key)
+    monkeypatch.setattr(cfg.config, "_STRIPE_SECRET_KEY", enterprise_stripe_secret_key)
     monkeypatch.setattr(cfg.config, "_ENTERPRISE_MODE", True)
     monkeypatch.setattr(cfg.config, "_ENTERPRISE_SSO_ONLY", True)
     monkeypatch.setattr(cfg.config, "_REQUIRE_ADMIN_MFA", True)
