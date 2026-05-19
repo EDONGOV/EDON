@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -1091,7 +1092,7 @@ def record_policy_change(
     """
     try:
         db = get_db()
-        db.log_policy_change(
+        change_id = db.log_policy_change(
             tenant_id=tenant_id,
             change_type=change_type,
             entity_type=entity_type,
@@ -1100,5 +1101,46 @@ def record_policy_change(
             diff_json=diff_json,
             changed_by=changed_by,
         )
+        audit_action = {
+            "id": f"policy-change-{change_id}",
+            "tool": "policy",
+            "op": change_type,
+            "params": {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "entity_name": entity_name,
+                "diff": diff_json or {},
+            },
+            "source": "policy_admin",
+            "estimated_risk": "medium",
+            "requested_at": datetime.now(UTC).isoformat(),
+        }
+        audit_decision = {
+            "verdict": "ALLOW",
+            "reason_code": "POLICY_CHANGE_RECORDED",
+            "explanation": f"Policy {change_type} recorded for {entity_type}",
+            "policy_version": "policy-change-log",
+            "policy_rule_id": None,
+        }
+        db.save_audit_event(
+            action=audit_action,
+            decision=audit_decision,
+            intent_id=None,
+            agent_id=changed_by,
+            context={
+                "policy_change_id": change_id,
+                "tenant_id": tenant_id,
+                "change_type": change_type,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "entity_name": entity_name,
+            },
+            customer_id=tenant_id,
+            action_summary=f"policy {change_type} for {entity_type}",
+            stated_intent="Policy mutation audit",
+            user_message=(json.dumps(diff_json) if diff_json else None),
+        )
     except Exception as exc:
+        if config.is_production():
+            raise
         logger.warning("Failed to log policy change: %s", exc)

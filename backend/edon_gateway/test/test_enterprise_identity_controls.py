@@ -9,6 +9,8 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 import backend.edon_gateway.config as cfg
+import backend.edon_gateway.middleware.auth as auth_module
+import backend.edon_gateway.routes.auth as auth_routes
 import backend.edon_gateway.routes.edge as edge_routes
 
 
@@ -54,6 +56,10 @@ def _enterprise_env(monkeypatch):
     monkeypatch.setattr(cfg.config, "_REQUIRE_PHISHING_RESISTANT_MFA", True)
     monkeypatch.setattr(cfg.config, "_EDGE_REQUIRE_NODE_CERTIFICATE", True)
     monkeypatch.setattr(cfg.config, "_EDGE_REQUIRE_ATTESTATION", True)
+    monkeypatch.setattr(auth_module, "_is_brute_force_locked", lambda _ip: False)
+    monkeypatch.setattr(auth_module, "_record_failed_auth", lambda _ip: None)
+    monkeypatch.setattr(auth_routes, "check_rate_limit", lambda *args, **kwargs: (True, ""))
+    monkeypatch.setattr(auth_routes, "increment_rate_limit", lambda *args, **kwargs: None)
 
 
 @pytest.fixture
@@ -69,11 +75,15 @@ def test_enterprise_config_requires_identity_controls(monkeypatch):
     monkeypatch.setenv("EDON_ENV", "production")
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql://edon:edon@db/edon")
+    monkeypatch.setenv("EDON_ENCRYPT_AUDIT_PAYLOAD", "false")
+    monkeypatch.setenv("EDON_TOKEN_BINDING_ENABLED", "false")
     monkeypatch.setattr(cfg.config, "_ENTERPRISE_SSO_ONLY", False)
     monkeypatch.setattr(cfg.config, "_REQUIRE_ADMIN_MFA", False)
     monkeypatch.setattr(cfg.config, "_REQUIRE_PHISHING_RESISTANT_MFA", False)
     monkeypatch.setattr(cfg.config, "_EDGE_REQUIRE_NODE_CERTIFICATE", False)
     monkeypatch.setattr(cfg.config, "_EDGE_REQUIRE_ATTESTATION", False)
+    monkeypatch.setattr(cfg.config, "_ENCRYPT_AUDIT_PAYLOAD", False)
+    monkeypatch.setattr(cfg.config, "_TOKEN_BINDING_ENABLED", False)
 
     violations = cfg.config.enterprise_violations()
 
@@ -82,6 +92,8 @@ def test_enterprise_config_requires_identity_controls(monkeypatch):
     assert "EDON_REQUIRE_PHISHING_RESISTANT_MFA must be true in enterprise mode" in violations
     assert "EDON_EDGE_REQUIRE_NODE_CERTIFICATE must be true in enterprise mode" in violations
     assert "EDON_EDGE_REQUIRE_ATTESTATION must be true in enterprise mode" in violations
+    assert "EDON_TOKEN_BINDING_ENABLED must be true in production" in violations
+    assert "EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production" in violations
 
 
 def test_password_registration_blocked_in_enterprise_mode(client):

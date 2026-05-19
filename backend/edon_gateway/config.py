@@ -108,6 +108,7 @@ class Config:
         self._TOKEN_HARDENING = os.getenv("EDON_TOKEN_HARDENING", "true").lower() == "true"
         self._NETWORK_GATING = os.getenv("EDON_NETWORK_GATING", "false").lower() == "true"
         self._VALIDATE_STRICT = os.getenv("EDON_VALIDATE_STRICT", "true").lower() == "true"
+        self._ENCRYPT_AUDIT_PAYLOAD = os.getenv("EDON_ENCRYPT_AUDIT_PAYLOAD", "false").lower() == "true"
 
         # =========================
         # Database
@@ -291,6 +292,10 @@ class Config:
     @property
     def VALIDATE_STRICT(self) -> bool:
         return self._VALIDATE_STRICT
+
+    @property
+    def ENCRYPT_AUDIT_PAYLOAD(self) -> bool:
+        return self._ENCRYPT_AUDIT_PAYLOAD
 
     @property
     def DATABASE_PATH(self) -> Path:
@@ -487,6 +492,9 @@ class Config:
                 "Set EDON_CREDENTIALS_STRICT=true for full protection"
             )
 
+        if instance.is_production() and not instance.ENCRYPT_AUDIT_PAYLOAD:
+            warnings.append("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
+
         if "*" in instance.CORS_ORIGINS:
             warnings.append(
                 "CORS allows all origins (*). Set EDON_CORS_ORIGINS to specific origins "
@@ -527,6 +535,9 @@ class Config:
         if self.ALLOW_ENV_TOKEN_IN_PROD:
             violations.append("EDON_ALLOW_ENV_TOKEN_IN_PROD must be false in production")
 
+        if not self.TOKEN_BINDING_ENABLED:
+            violations.append("EDON_TOKEN_BINDING_ENABLED must be true in production")
+
         if not self.RATE_LIMIT_ENABLED:
             violations.append("EDON_RATE_LIMIT_ENABLED must be true in production")
 
@@ -540,6 +551,9 @@ class Config:
         encryption_key = (os.getenv("EDON_DB_ENCRYPTION_KEY") or "").strip()
         if not encryption_key:
             violations.append("EDON_DB_ENCRYPTION_KEY must be set in production")
+
+        if not self.ENCRYPT_AUDIT_PAYLOAD:
+            violations.append("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
 
         clerk_configured = any(
             (os.getenv(name) or "").strip()

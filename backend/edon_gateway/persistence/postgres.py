@@ -638,14 +638,18 @@ class PostgreSQLDatabase:
         request_hash = request_hash or context.get("request_hash")
         context_json = json.dumps(context)
 
+        from ..config import config as _config
+        if _config.is_production() and not _config.ENCRYPT_AUDIT_PAYLOAD:
+            raise RuntimeError("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
+
         is_payload_encrypted = False
-        if os.getenv("EDON_ENCRYPT_AUDIT_PAYLOAD", "false").lower() == "true":
+        if _config.ENCRYPT_AUDIT_PAYLOAD:
             try:
                 from ..security.encryption import encrypt_field
                 params_json = encrypt_field(params_json)
                 is_payload_encrypted = True
             except Exception as _enc_err:
-                logger.warning("Audit payload encryption failed: %s", _enc_err)
+                raise RuntimeError(f"Audit payload encryption failed: {_enc_err}") from _enc_err
 
         entry_payload = "|".join([
             ts, action_id, tool, op, params_json, source, str(est_risk), str(comp_risk),

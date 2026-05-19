@@ -1298,18 +1298,19 @@ class Database:
         request_hash = request_hash or context.get("request_hash")
         context_json = json.dumps(context)
 
+        from ..config import config as _config
+        if _config.is_production() and not _config.ENCRYPT_AUDIT_PAYLOAD:
+            raise RuntimeError("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
+
         # Optional field-level encryption of action params (Tier 1 security)
         is_payload_encrypted = 0
-        if os.getenv("EDON_ENCRYPT_AUDIT_PAYLOAD", "false").lower() == "true":
+        if _config.ENCRYPT_AUDIT_PAYLOAD:
             try:
                 from ..security.encryption import encrypt_field
                 params_json = encrypt_field(params_json)
                 is_payload_encrypted = 1
             except Exception as _enc_err:
-                import logging as _log
-                _log.getLogger(__name__).warning(
-                    "Audit payload encryption failed, storing plaintext: %s", _enc_err
-                )
+                raise RuntimeError(f"Audit payload encryption failed: {_enc_err}") from _enc_err
 
         # Build canonical payload for chain hash (deterministic order)
         entry_payload = "|".join([

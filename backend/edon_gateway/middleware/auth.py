@@ -608,15 +608,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             db = get_db()
             agent_id = request.query_params.get("agent_id") or request.headers.get("X-Agent-ID") or None
+            bound_agent_id = db.get_agent_id_for_token(token)
 
-            if agent_id:
-                db.bind_token_to_agent(token, agent_id)
-                db.update_token_last_used(token)
-            else:
-                bound_agent_id = db.get_agent_id_for_token(token)
+            if not agent_id:
                 if bound_agent_id:
-                    request.state.bound_agent_id = bound_agent_id
-                    db.update_token_last_used(token)
+                    logger.warning("auth_fail: token_binding_missing_agent token already bound to %s", bound_agent_id)
+                    return JSONResponse(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        content={"detail": "Agent identity required for bound token"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                logger.warning("auth_fail: token_binding_missing_agent")
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Agent identity required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            if bound_agent_id and bound_agent_id != agent_id:
+                logger.warning("auth_fail: token_binding_mismatch bound=%s presented=%s", bound_agent_id, agent_id)
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Token bound to different agent"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            if not bound_agent_id:
+                db.bind_token_to_agent(token, agent_id)
+            db.update_token_last_used(token)
+            request.state.bound_agent_id = agent_id
 
         request.state.auth_token = token
         request.state.tenant_info = tenant_info  # used by RBACMiddleware
