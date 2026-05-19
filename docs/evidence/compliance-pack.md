@@ -13,6 +13,8 @@ This document is the index for the evidence pack used in enterprise diligence.
 - [backend/docs/BACKUP_PROCEDURES.md](../../backend/docs/BACKUP_PROCEDURES.md)
 - [backend/edon_gateway/routes/audit.py](../../backend/edon_gateway/routes/audit.py)
 - [backend/edon_gateway/test/test_multitenant_isolation.py](../../backend/edon_gateway/test/test_multitenant_isolation.py)
+- [docs/evidence/verification-ledger.md](./verification-ledger.md)
+- [docs/evidence/production-advisory-review.md](./production-advisory-review.md)
 
 ## Pack contents
 
@@ -31,3 +33,5 @@ This document is the index for the evidence pack used in enterprise diligence.
 - Audit-chain validation not yet signed and attached
 - Execution-binding validation not yet signed and attached
 - Exception register not yet reviewed and signed
+- Verification ledger now records the current signed CI-backed evidence set
+- Production advisory review documents all remaining non-blocking paths

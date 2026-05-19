@@ -12,6 +12,8 @@ and audit teams usually ask for.
 - [exception-register.md](./exception-register.md) - intentional fail-open exception register
 - [pentest-register.md](./pentest-register.md) - external pentest and retest register
 - [compliance-pack.md](./compliance-pack.md) - compliance evidence index
+- [verification-ledger.md](./verification-ledger.md) - signed verification record ledger
+- [production-advisory-review.md](./production-advisory-review.md) - advisory-only path classification
 
 ## Source evidence already in the repo
 
@@ -33,5 +35,7 @@ and audit teams usually ask for.
 - Audit-chain evidence: template ready for a signed validation record
 - Execution-binding evidence: template ready for a signed validation record
 - Exception register: template ready for review and signoff
+- Verification ledger: signed CI-backed records attached
+- Advisory review: completed for remaining non-blocking production paths
 - Pentest evidence: pending external assessment and retest
 - Compliance pack: in progress
