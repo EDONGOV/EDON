@@ -184,6 +184,7 @@ def get_market_pack_defaults(slug: str | None) -> dict[str, Any]:
     return {
         "market_pack": pack["slug"],
         "market_pack_version": pack["version"],
+        "policy_pack": pack["policy_pack"],
         "compliance_requirements": list(pack["default_compliance_requirements"]),
         "data_classes": list(pack["default_data_classes"]),
         "connector_categories": list(pack["connector_categories"]),
@@ -192,4 +193,3 @@ def get_market_pack_defaults(slug: str | None) -> dict[str, Any]:
         "upgrade_policy": dict(pack["upgrade_policy"]),
         "evidence_refs": list(pack["evidence_refs"]),
     }
-

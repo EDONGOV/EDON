@@ -1070,6 +1070,42 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
                 ON webhook_deliveries(webhook_id, delivered_at)
             """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS support_cases (
+                    case_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    support_code TEXT,
+                    severity TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    assigned_owner TEXT,
+                    summary TEXT NOT NULL,
+                    issue_type TEXT NOT NULL DEFAULT 'incident',
+                    affected_system TEXT,
+                    workflow_id TEXT,
+                    connector TEXT,
+                    decision_id TEXT,
+                    action_id TEXT,
+                    trace_id TEXT,
+                    conversation_id TEXT,
+                    request_id TEXT,
+                    created_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    timeline_json TEXT NOT NULL,
+                    evidence_bundle_json TEXT NOT NULL,
+                    issue_payload_json TEXT NOT NULL,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_support_cases_tenant
+                ON support_cases(tenant_id, created_at)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_support_cases_status
+                ON support_cases(tenant_id, status)
+            """)
             conn.commit()
 
             # Check and set schema version
@@ -4389,6 +4425,11 @@ class Database:
                 created_at              TEXT NOT NULL,
                 updated_at              TEXT NOT NULL,
                 superseded              INTEGER NOT NULL DEFAULT 0,
+                pinned                  INTEGER NOT NULL DEFAULT 0,
+                expires_at              TEXT,
+                review_status           TEXT NOT NULL DEFAULT 'active',
+                reviewed_at             TEXT,
+                reviewed_by             TEXT,
                 FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
             )
         """)
@@ -4396,7 +4437,27 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_asst_mem_tenant
             ON assistant_memories(tenant_id, superseded, updated_at DESC)
         """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_asst_mem_tenant_active
+            ON assistant_memories(tenant_id, pinned DESC, review_status, updated_at DESC)
+        """)
+        self._migrate_assistant_memory_columns(conn)
         conn.commit()
+
+    def _migrate_assistant_memory_columns(self, conn) -> None:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(assistant_memories)")
+        existing = {row["name"] for row in cursor.fetchall()}
+        migrations = [
+            ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+            ("expires_at", "TEXT"),
+            ("review_status", "TEXT NOT NULL DEFAULT 'active'"),
+            ("reviewed_at", "TEXT"),
+            ("reviewed_by", "TEXT"),
+        ]
+        for column, ddl in migrations:
+            if column not in existing:
+                cursor.execute(f"ALTER TABLE assistant_memories ADD COLUMN {column} {ddl}")
 
     def save_conversation(
         self,
@@ -4471,16 +4532,19 @@ class Database:
             """, (memory_id, tenant_id, category, fact, confidence, source_conversation_id, now, now))
             conn.commit()
 
-    def get_memories(self, tenant_id: str, limit: int = 60) -> List[Dict[str, Any]]:
+    def get_memories(self, tenant_id: str, limit: int = 60, include_expired: bool = False) -> List[Dict[str, Any]]:
+        now = datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
             self._ensure_assistant_tables(conn)
             rows = conn.execute("""
-                SELECT id, category, fact, confidence, source_conversation_id, updated_at
+                SELECT id, category, fact, confidence, source_conversation_id, updated_at,
+                       pinned, expires_at, review_status, reviewed_at, reviewed_by
                 FROM assistant_memories
                 WHERE tenant_id = ? AND superseded = 0
-                ORDER BY confidence DESC, updated_at DESC
+                  AND (? = 1 OR expires_at IS NULL OR expires_at > ?)
+                ORDER BY pinned DESC, confidence DESC, updated_at DESC
                 LIMIT ?
-            """, (tenant_id, limit)).fetchall()
+            """, (tenant_id, 1 if include_expired else 0, now, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def supersede_memory(self, memory_id: str, tenant_id: str) -> None:
@@ -4491,6 +4555,84 @@ class Database:
                 (memory_id, tenant_id),
             )
             conn.commit()
+
+    def pin_memory(self, memory_id: str, tenant_id: str, pinned: bool = True) -> bool:
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE assistant_memories
+                SET pinned = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (1 if pinned else 0, now, memory_id, tenant_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def review_memory(self, memory_id: str, tenant_id: str, review_status: str, reviewed_by: str) -> bool:
+        now = datetime.now(UTC).isoformat()
+        normalized = (review_status or "").strip().lower()
+        if normalized not in {"active", "needs_review", "approved", "rejected"}:
+            raise ValueError("review_status must be one of: active, needs_review, approved, rejected")
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE assistant_memories
+                SET review_status = ?, reviewed_at = ?, reviewed_by = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (normalized, now, reviewed_by, now, memory_id, tenant_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def expire_memory(self, memory_id: str, tenant_id: str, expires_at: Optional[str] = None) -> bool:
+        now = datetime.now(UTC).isoformat()
+        expires_at = (expires_at or now).strip()
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE assistant_memories
+                SET expires_at = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (expires_at, now, memory_id, tenant_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def forget_memory(self, memory_id: str, tenant_id: str) -> bool:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM assistant_memories WHERE id = ? AND tenant_id = ?",
+                (memory_id, tenant_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_memory(self, memory_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            self._ensure_assistant_tables(conn)
+            row = conn.execute(
+                """
+                SELECT id, tenant_id, category, fact, confidence, source_conversation_id,
+                       created_at, updated_at, superseded, pinned, expires_at,
+                       review_status, reviewed_at, reviewed_by
+                FROM assistant_memories
+                WHERE id = ? AND tenant_id = ?
+                """,
+                (memory_id, tenant_id),
+            ).fetchone()
+        return dict(row) if row else None
 
     # ── Tenant listing ─────────────────────────────────────────────────────────
 
@@ -5458,6 +5600,88 @@ class Database:
                     pass
                 result.append(d)
             return result
+
+    def save_support_case(self, case: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a tenant-scoped support case."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO support_cases (
+                    case_id, tenant_id, support_code, severity, status, assigned_owner,
+                    summary, issue_type, affected_system, workflow_id, connector,
+                    decision_id, action_id, trace_id, conversation_id, request_id,
+                    created_by, created_at, updated_at, timeline_json,
+                    evidence_bundle_json, issue_payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case["case_id"],
+                    case["tenant_id"],
+                    case.get("support_code"),
+                    case["severity"],
+                    case.get("status", "open"),
+                    case.get("assigned_owner"),
+                    case["summary"],
+                    case.get("issue_type", "incident"),
+                    case.get("affected_system"),
+                    case.get("workflow_id"),
+                    case.get("connector"),
+                    case.get("decision_id"),
+                    case.get("action_id"),
+                    case.get("trace_id"),
+                    case.get("conversation_id"),
+                    case.get("request_id"),
+                    case.get("created_by"),
+                    case["created_at"],
+                    case["updated_at"],
+                    json.dumps(case.get("timeline", [])),
+                    json.dumps(case.get("evidence_bundle", {})),
+                    json.dumps(case.get("issue_payload", {})),
+                ),
+            )
+            conn.commit()
+        return case
+
+    def list_support_cases(self, tenant_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent support cases for a tenant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM support_cases WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_id, limit),
+            )
+            rows = cursor.fetchall()
+        return [self._decode_support_case(row) for row in rows]
+
+    def get_support_case(self, case_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return a single support case."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if tenant_id is None:
+                cursor.execute("SELECT * FROM support_cases WHERE case_id = ?", (case_id,))
+            else:
+                cursor.execute(
+                    "SELECT * FROM support_cases WHERE case_id = ? AND tenant_id = ?",
+                    (case_id, tenant_id),
+                )
+            row = cursor.fetchone()
+        return self._decode_support_case(row) if row else None
+
+    def _decode_support_case(self, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        result = dict(row)
+        for key, default in (
+            ("timeline_json", []),
+            ("evidence_bundle_json", {}),
+            ("issue_payload_json", {}),
+        ):
+            raw = result.pop(key, None)
+            try:
+                result[key.replace("_json", "")] = json.loads(raw) if raw else default
+            except Exception:
+                result[key.replace("_json", "")] = default
+        return result
 
 
 # Global database instance

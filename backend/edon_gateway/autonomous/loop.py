@@ -385,7 +385,7 @@ async def _phase_adapt(governor, tenant_id: Optional[str], verify_result: dict) 
                 from ..policy.proposals import get_proposal_store as _gps2
                 _proposal_store2 = _gps2()
 
-                cached = get_cached_suggestions()
+                cached = get_cached_suggestions(tenant_id)
                 pending = [
                     s for s in (cached.get("suggestions") or [])
                     if s.get("auto_escalate") and not s.get("applied")

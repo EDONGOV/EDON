@@ -120,6 +120,26 @@ class IntakeRequest(BaseModel):
     compliance_requirements: list[str] = []
     deployment_mode: str = "pilot"
     market_pack: str = "healthcare"
+    policy_pack: str = "hospital"
+
+
+class OnboardingManifest(BaseModel):
+    tenant_id: str
+    org_name: str
+    deployment_mode: str = "pilot"
+    market_pack: str = "healthcare"
+    policy_pack: str = "hospital"
+    identity_provider: str = "none"
+    environments: list[str] = ["saas"]
+    compliance_requirements: list[str] = []
+    agent_systems: list[AgentSystemInput] = []
+    support_contact: str = ""
+    support_webhook_url: str = ""
+    support_diagnostics_enabled: bool = True
+    production_promotion_requires_approval: bool = True
+    connector_writeback_requires_approval: bool = True
+    agent_inventory: list[dict] = []
+    notes: str = ""
 
 
 class ShadowModeRequest(BaseModel):
@@ -164,6 +184,7 @@ async def submit_intake(request: Request, body: IntakeRequest):
         compliance_requirements=body.compliance_requirements,
         deployment_mode=deployment_mode,
         market_pack=market_pack,
+        policy_pack=body.policy_pack,
     )
     logger.info(f"[onboarding/intake] profile={profile.profile_id} tenant={tenant_id}")
     return {
@@ -173,6 +194,51 @@ async def submit_intake(request: Request, body: IntakeRequest):
         "next_step": {
             "action": f"POST /v1/onboarding/profiles/{profile.profile_id}/topology",
             "description": "Generate EDON Enforcement Topology",
+        },
+    }
+
+
+@router.post("/manifest")
+async def apply_onboarding_manifest(request: Request, body: OnboardingManifest):
+    """Apply a tenant onboarding manifest and create the initial profile."""
+    tenant_id = _require_request_tenant(request, "apply an onboarding manifest")
+    if tenant_id != body.tenant_id:
+        raise HTTPException(400, "Manifest tenant_id must match request tenant context.")
+
+    store = get_onboarding_store()
+    profile = store.create(
+        tenant_id=body.tenant_id,
+        org_name=body.org_name,
+        agent_systems=[a.model_dump() for a in body.agent_systems],
+        identity_provider=body.identity_provider,
+        environments=body.environments,
+        compliance_requirements=body.compliance_requirements,
+        deployment_mode=body.deployment_mode,
+        market_pack=body.market_pack,
+        policy_pack=body.policy_pack,
+    )
+    store.update_stage(profile.profile_id, "intake")
+    manifest = {
+        "tenant_id": body.tenant_id,
+        "org_name": body.org_name,
+        "deployment_mode": profile.deployment_mode,
+        "market_pack": profile.market_pack,
+        "market_pack_version": profile.market_pack_version,
+        "policy_pack": profile.policy_pack,
+        "support_contact": body.support_contact,
+        "support_webhook_url_set": bool(body.support_webhook_url.strip()),
+        "support_diagnostics_enabled": body.support_diagnostics_enabled,
+        "production_promotion_requires_approval": body.production_promotion_requires_approval,
+        "connector_writeback_requires_approval": body.connector_writeback_requires_approval,
+        "agent_inventory": body.agent_inventory,
+        "notes": body.notes,
+    }
+    return {
+        "manifest": manifest,
+        "profile": profile.as_dict(),
+        "next_step": {
+            "action": f"POST /v1/onboarding/profiles/{profile.profile_id}/topology",
+            "description": "Generate enforcement topology from the manifest-driven profile",
         },
     }
 

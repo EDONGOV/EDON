@@ -224,6 +224,7 @@ class Config:
         # =========================
         self._CAV_URL = os.getenv("CAV_URL", "http://localhost:8001").rstrip("/")
         self._CAV_ENABLED = os.getenv("CAV_ENABLED", "false").lower() == "true"
+        self._SUPPORT_WEBHOOK_URL = (os.getenv("EDON_SUPPORT_WEBHOOK_URL") or "").strip().rstrip("/")
         self._ENABLE_OPTIONAL_SURFACES = os.getenv(
             "EDON_ENABLE_OPTIONAL_SURFACES",
             "false" if self._ENTERPRISE_MODE else "true",
@@ -445,6 +446,10 @@ class Config:
     @property
     def CAV_ENABLED(self) -> bool:
         return self._CAV_ENABLED
+
+    @property
+    def SUPPORT_WEBHOOK_URL(self) -> str:
+        return self._SUPPORT_WEBHOOK_URL
 
     @property
     def ENABLE_OPTIONAL_SURFACES(self) -> bool:

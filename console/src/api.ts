@@ -5,10 +5,16 @@ export interface AuthConfig {
   token: string
 }
 
+let lastRequestId: string | null = null
+
 function getAuth(): AuthConfig | null {
   const raw = sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth')
   if (!raw) return null
   try { return JSON.parse(raw) } catch { return null }
+}
+
+export function getLastRequestId(): string | null {
+  return lastRequestId
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -22,6 +28,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       ...(options.headers || {}),
     },
   })
+  lastRequestId = res.headers.get('X-Request-ID') || res.headers.get('x-request-id') || lastRequestId
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || `${res.status}`)
@@ -408,12 +415,15 @@ export const api = {
   // ── Support tickets ───────────────────────────────────────────────────────
   submitSupportTicket: (payload: {
     summary: string
+    severity: 'sev1' | 'sev2' | 'sev3' | 'sev4'
     tab: string
     reviewer_name?: string
     department?: string
+    issue_type?: string
     chat_history: { role: string; content: string }[]
-    urgency: string
-  }) => request<{ ticket_id: string; status: string; message: string }>('/support/ticket', {
+    notes?: string
+    diagnostics: Record<string, unknown>
+  }) => request<{ case_id: string; support_code?: string; status: string; severity: string; tenant_id: string; support_url: string; message: string }>('/support/ticket', {
     method: 'POST',
     body: JSON.stringify(payload),
   }),

@@ -67,8 +67,9 @@ async def get_policy_suggestions(request: Request):
     Requires human review before any suggestion is applied.
     """
     try:
+        tenant_id = get_request_tenant_id(request)
         from ..ai.policy_suggester import get_cached_suggestions
-        return get_cached_suggestions()
+        return get_cached_suggestions(tenant_id)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Policy suggester unavailable: {exc}")
 

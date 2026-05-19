@@ -12,7 +12,7 @@ import {
   BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link, Package, FlaskConical,
   Stethoscope, Microscope, Building2, GitCompare, Network, ServerCog, Radio,
 } from 'lucide-react'
-import { api, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal, type Citation } from './api'
+import { api, getLastRequestId, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal, type Citation } from './api'
 import { ROLE_DEFAULT_TAB, ROLE_LABELS, type ConsoleRole } from './uiModel'
 import { GovernanceStrip } from './shared/enterprise'
 
@@ -2006,7 +2006,14 @@ function WebhookAlertsCard() {
 
 function SettingsQuickReferenceCard() {
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number; components: Record<string, { status: string }> } | null>(null)
-  const [me, setMe] = useState<{ tenant_id: string; role: string; plan: string } | null>(null)
+  const [me, setMe] = useState<{ tenant_id: string; role: string; plan: string; vertical?: 'healthcare' | 'banking' | 'general' | null } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [supportSummary, setSupportSummary] = useState('')
+  const [supportSeverity, setSupportSeverity] = useState<'sev1' | 'sev2' | 'sev3' | 'sev4'>('sev3')
+  const [supportSubmitting, setSupportSubmitting] = useState(false)
+  const [supportCase, setSupportCase] = useState<{ case_id: string; support_code?: string; support_url: string; message: string } | null>(null)
+  const [supportError, setSupportError] = useState('')
+  const [supportCode] = useState(() => `SUP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`)
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => {})
@@ -2022,6 +2029,59 @@ function SettingsQuickReferenceCard() {
 
   const components = health ? Object.entries(health.components) : []
   const allHealthy = components.every(([, v]) => v.status === 'ok' || v.status === 'healthy')
+  const buildDiagnosticsBundle = (problemDescription = '') => ({
+    support_code: supportCode,
+    generated_at: new Date().toISOString(),
+    tenant_id: me?.tenant_id || 'unknown',
+    role: me?.role || 'unknown',
+    plan: me?.plan || 'unknown',
+    vertical: me?.vertical || 'unknown',
+    gateway_version: health?.version || 'unknown',
+    gateway_status: health ? (health.ok ? 'ok' : 'degraded') : 'unknown',
+    gateway_uptime_seconds: health?.uptime_seconds ?? 'unknown',
+    gateway_url: sessionStorage.getItem('edon_auth') ? (() => { try { return JSON.parse(sessionStorage.getItem('edon_auth') || '{}').gatewayUrl || 'unknown' } catch { return 'unknown' } })() : 'unknown',
+    request_id: getLastRequestId() || 'unknown',
+    decision_id: '',
+    action_id: '',
+    trace_id: '',
+    conversation_id: '',
+    problem_description: problemDescription,
+  })
+
+  const copyDiagnostics = () => {
+    const bundle = buildDiagnosticsBundle()
+    const lines = Object.entries(bundle).map(([key, value]) => `${key}: ${value}`)
+    navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const submitSupportCase = async () => {
+    if (!supportSummary.trim()) {
+      setSupportError('Add a short issue summary first.')
+      return
+    }
+    setSupportError('')
+    setSupportSubmitting(true)
+    try {
+      const result = await api.submitSupportTicket({
+        summary: supportSummary.trim(),
+        severity: supportSeverity,
+        tab: 'settings',
+        reviewer_name: getReviewerName() || undefined,
+        department: getReviewerDept() || undefined,
+        issue_type: 'incident',
+        chat_history: [],
+        notes: supportSummary.trim(),
+        diagnostics: buildDiagnosticsBundle(supportSummary.trim()),
+      })
+      setSupportCase(result)
+    } catch (e) {
+      setSupportError(e instanceof Error ? e.message : 'Failed to create support case')
+    } finally {
+      setSupportSubmitting(false)
+    }
+  }
 
   return (
     <>
@@ -2079,8 +2139,8 @@ function SettingsQuickReferenceCard() {
       )}
 
       {/* Security checklist */}
-      <div className="glass-card p-5 space-y-3">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><ShieldAlert size={13} className="text-primary" /> Security Checklist</h3>
+        <div className="glass-card p-5 space-y-3">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><ShieldAlert size={13} className="text-primary" /> Security Checklist</h3>
         <div className="space-y-2">
           {[
             { label: 'PIN set for reviews', ok: hasPinSet() },
@@ -2094,6 +2154,71 @@ function SettingsQuickReferenceCard() {
               <span className={ok ? 'text-foreground' : 'text-amber-400'}>{label}</span>
             </div>
           ))}
+        </div>
+
+        <div className="glass-card p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2"><Copy size={13} className="text-primary" /> Support Diagnostics</h3>
+            <button onClick={copyDiagnostics} className="shrink-0 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors">
+              {copied ? 'Copied' : 'Copy bundle'}
+            </button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Copy this when something is broken. Fill in the exact `decision_id`, `action_id`, `trace_id`, or `conversation_id` if you have them.
+          </p>
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-all">
+            support_code: {supportCode}{'\n'}
+            tenant_id: {me?.tenant_id || 'unknown'}{'\n'}
+            role: {me?.role || 'unknown'}{'\n'}
+            plan: {me?.plan || 'unknown'}{'\n'}
+            vertical: {me?.vertical || 'unknown'}{'\n'}
+            gateway_version: {health?.version || 'unknown'}{'\n'}
+            request_id: {getLastRequestId() || 'unknown'}{'\n'}
+            decision_id:{'\n'}
+            action_id:{'\n'}
+            trace_id:{'\n'}
+            conversation_id:{'\n'}
+          </div>
+          <div className="space-y-2 pt-1">
+            <label className="text-[11px] font-medium text-muted-foreground">Issue summary</label>
+            <textarea
+              value={supportSummary}
+              onChange={e => setSupportSummary(e.target.value)}
+              rows={3}
+              placeholder="Describe the exact issue you want fixed"
+              className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-end">
+              <label className="space-y-1">
+                <span className="block text-[11px] font-medium text-muted-foreground">Severity</span>
+                <select
+                  value={supportSeverity}
+                  onChange={e => setSupportSeverity(e.target.value as 'sev1' | 'sev2' | 'sev3' | 'sev4')}
+                  className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="sev1">Sev 1</option>
+                  <option value="sev2">Sev 2</option>
+                  <option value="sev3">Sev 3</option>
+                  <option value="sev4">Sev 4</option>
+                </select>
+              </label>
+              <button
+                onClick={submitSupportCase}
+                disabled={supportSubmitting}
+                className="shrink-0 px-3 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-50"
+              >
+                {supportSubmitting ? 'Creating...' : 'Create case'}
+              </button>
+            </div>
+            {supportError && <p className="text-[11px] text-red-400">{supportError}</p>}
+            {supportCase && (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-[11px] text-emerald-200 space-y-1">
+                <p className="font-medium">Case {supportCase.case_id} created</p>
+                <p className="text-emerald-200/80">{supportCase.message}</p>
+                <p className="text-emerald-200/80">Share {supportCase.support_code || supportCode} with support if needed.</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </>

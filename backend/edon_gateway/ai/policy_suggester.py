@@ -116,7 +116,7 @@ def _build_stats_payload(events: list, shadow_findings: list | None = None) -> d
     }
 
 
-def generate_policy_suggestions(events: list, shadow_findings: list | None = None) -> list:
+def generate_policy_suggestions(events: list, shadow_findings: list | None = None, tenant_id: str | None = None) -> list:
     """Analyze audit events and return a list of policy suggestions.
 
     Args:
@@ -161,6 +161,7 @@ def generate_policy_suggestions(events: list, shadow_findings: list | None = Non
                 "rationale": str(s.get("rationale", ""))[:200],
                 "confidence": confidence,
                 "source": "ai_policy_suggester",
+                "tenant_id": tenant_id,
                 "generated_at": datetime.now(UTC).isoformat(),
                 "status": "pending_review",
                 # auto_escalate=True means this suggestion is shown in the one-click
@@ -176,8 +177,8 @@ def generate_policy_suggestions(events: list, shadow_findings: list | None = Non
 
 # ── Background Task ───────────────────────────────────────────────────────────
 
-_suggestion_cache: list = []
-_suggestion_cache_ts: Optional[datetime] = None
+_suggestion_cache: dict[str, list] = {}
+_suggestion_cache_ts: dict[str, datetime] = {}
 _SUGGESTION_INTERVAL_SEC = int(__import__("os").getenv("EDON_AI_SUGGEST_INTERVAL", "3600"))
 
 
@@ -193,8 +194,6 @@ async def run_policy_suggestion_loop(db_getter) -> None:
         await asyncio.sleep(_SUGGESTION_INTERVAL_SEC)
         try:
             db = db_getter()
-            # Analyze last 500 audit events + shadow findings
-            events = db.query_audit_events(limit=500)
             shadow_findings: list = []
             try:
                 from ..shadow.trace_capture import TraceStore
@@ -202,24 +201,55 @@ async def run_policy_suggestion_loop(db_getter) -> None:
                 shadow_findings = _build_shadow_findings_payload(ts)
             except Exception as _sf_err:
                 logger.debug("[policy_suggester] Shadow findings unavailable: %s", _sf_err)
-            suggestions = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: generate_policy_suggestions(events, shadow_findings=shadow_findings)
-            )
-            if suggestions:
-                _suggestion_cache = suggestions
-                _suggestion_cache_ts = datetime.now(UTC)
-                logger.info(
-                    "[policy_suggester] Generated %d suggestions from %d events",
-                    len(suggestions), len(events)
+            tenants = []
+            try:
+                tenants = db.list_tenants()
+            except Exception:
+                tenants = []
+            for tenant in tenants:
+                tenant_id = tenant.get("id")
+                if not tenant_id:
+                    continue
+                events = db.query_audit_events(customer_id=tenant_id, limit=500)
+                suggestions = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda tenant_events=events, tid=tenant_id: generate_policy_suggestions(
+                        tenant_events,
+                        shadow_findings=shadow_findings,
+                        tenant_id=tid,
+                    ),
                 )
+                _suggestion_cache[tenant_id] = suggestions
+                _suggestion_cache_ts[tenant_id] = datetime.now(UTC)
+                if suggestions:
+                    logger.info(
+                        "[policy_suggester] Generated %d suggestions from %d events for tenant %s",
+                        len(suggestions), len(events), tenant_id
+                    )
         except Exception as exc:
             logger.debug("[policy_suggester] Background task error (fail-open): %s", exc)
 
 
-def get_cached_suggestions() -> dict:
+def get_cached_suggestions(tenant_id: str | None = None) -> dict:
     """Return the latest cached policy suggestions."""
+    if tenant_id:
+        suggestions = _suggestion_cache.get(tenant_id, [])
+        ts = _suggestion_cache_ts.get(tenant_id)
+        return {
+            "tenant_id": tenant_id,
+            "suggestions": suggestions,
+            "generated_at": ts.isoformat() if ts else None,
+            "count": len(suggestions),
+        }
+    latest_tenant = None
+    latest_ts = None
+    for key, ts in _suggestion_cache_ts.items():
+        if latest_ts is None or ts > latest_ts:
+            latest_tenant = key
+            latest_ts = ts
     return {
-        "suggestions": _suggestion_cache,
-        "generated_at": _suggestion_cache_ts.isoformat() if _suggestion_cache_ts else None,
-        "count": len(_suggestion_cache),
+        "tenant_id": latest_tenant,
+        "suggestions": _suggestion_cache.get(latest_tenant, []) if latest_tenant else [],
+        "generated_at": latest_ts.isoformat() if latest_ts else None,
+        "count": len(_suggestion_cache.get(latest_tenant, [])) if latest_tenant else 0,
     }

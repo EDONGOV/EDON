@@ -104,6 +104,7 @@ class GovernanceDeploymentProfile:
     deployment_mode: str = "pilot"
     market_pack: str = "healthcare"
     market_pack_version: str = "2026.05"
+    policy_pack: str = "hospital"
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -185,6 +186,7 @@ class OnboardingStore:
         compliance_requirements: list[str],
         deployment_mode: str = "pilot",
         market_pack: str = "healthcare",
+        policy_pack: str | None = None,
         market_pack_version: str | None = None,
     ) -> GovernanceDeploymentProfile:
         tenant_id = _require_tenant_id(tenant_id, context="create an onboarding profile")
@@ -192,6 +194,7 @@ class OnboardingStore:
         market_pack = normalize_market_pack_slug(market_pack)
         pack_defaults = get_market_pack_defaults(market_pack)
         market_pack_version = (market_pack_version or pack_defaults["market_pack_version"]).strip()
+        policy_pack = (policy_pack or pack_defaults.get("policy_pack") or "hospital").strip().lower()
         profile_id = f"gdp-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC).isoformat()
 
@@ -236,6 +239,7 @@ class OnboardingStore:
             risk_score=0,
             market_pack=market_pack,
             market_pack_version=market_pack_version,
+            policy_pack=policy_pack,
         )
         profile.risk_score, profile.risk_tier = _derive_risk(profile)
 
@@ -321,6 +325,7 @@ def _from_dict(d: dict) -> GovernanceDeploymentProfile:
     d["deployment_mode"] = normalize_deployment_mode(d.get("deployment_mode"))
     d["market_pack"] = normalize_market_pack_slug(d.get("market_pack"))
     d["market_pack_version"] = (d.get("market_pack_version") or get_market_pack(d["market_pack"])["version"]).strip()
+    d["policy_pack"] = (d.get("policy_pack") or get_market_pack(d["market_pack"])["policy_pack"]).strip().lower()
     d["agent_systems"] = specs
     return GovernanceDeploymentProfile(**d)
 

@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from ..logging_config import get_logger
 from ..persistence import get_db
+from ..tenant_knowledge import build_tenant_knowledge_snapshot, render_tenant_knowledge_snapshot
 from ..tenancy import get_request_tenant_id
 
 logger = get_logger(__name__)
@@ -622,46 +623,14 @@ RESPONSE STYLE — follow exactly:
 def _build_system(tenant_id: str) -> str:
     """Build a personalised system prompt from live tenant data + long-term memories."""
     try:
-        db = get_db()
-        agents = db.list_agents(tenant_id) or []
-        agent_names = [a.get("name") or a.get("agent_id") for a in agents[:12]]
-        departments = sorted({a.get("department") for a in agents if a.get("department")})
-        rules = db.get_policy_rules(tenant_id, enabled_only=True) or []
-        rule_count = len(rules)
-        memories = db.get_memories(tenant_id, limit=40)
+        snapshot = build_tenant_knowledge_snapshot(tenant_id)
     except Exception:
-        agent_names, departments, rule_count, memories = [], [], 0, []
+        snapshot = None
 
-    lines = [f"TENANT CONTEXT (tenant_id={tenant_id}):"]
-    if agent_names:
-        lines.append(f"  Registered agents ({len(agent_names)}): {', '.join(agent_names)}")
-    else:
-        lines.append("  No agents registered yet.")
-    if departments:
-        lines.append(f"  Departments: {', '.join(departments)}")
-    lines.append(f"  Active policy rules: {rule_count}")
+    if not snapshot:
+        return _SYSTEM_BASE + "\n\n" + f"TENANT CONTEXT (tenant_id={tenant_id}):\n  No tenant snapshot available."
 
-    if memories:
-        lines.append("")
-        lines.append("WHAT I REMEMBER ABOUT THIS TENANT (from past conversations):")
-        # Group by category for readability
-        by_cat: dict[str, list[str]] = {}
-        for m in memories:
-            by_cat.setdefault(m["category"], []).append(m["fact"])
-        cat_labels = {
-            "agent_behavior":   "Agent behaviour",
-            "preference":       "Their preferences",
-            "compliance_focus": "Compliance focus",
-            "recurring_issue":  "Recurring issues",
-            "applied_change":   "Changes applied",
-            "open_question":    "Open questions",
-        }
-        for cat, facts in by_cat.items():
-            lines.append(f"  {cat_labels.get(cat, cat)}:")
-            for f in facts[:6]:
-                lines.append(f"    - {f}")
-
-    return _SYSTEM_BASE + "\n\n" + "\n".join(lines)
+    return _SYSTEM_BASE + "\n\n" + render_tenant_knowledge_snapshot(snapshot)
 
 _CITE_RE = re.compile(r'\[ref:(DECISION|AGENT|RULE):([^\]]+)\]')
 
@@ -826,6 +795,26 @@ class ApplyRequest(BaseModel):
 class ExplainRequest(BaseModel):
     type: str  # "decision" | "agent" | "rule"
     id: str
+
+
+class MemoryReviewRequest(BaseModel):
+    reviewed_by: str
+    review_status: str = "approved"
+
+
+class MemoryExpiryRequest(BaseModel):
+    updated_by: str
+    expires_at: Optional[str] = None
+
+
+class MemoryPinRequest(BaseModel):
+    updated_by: str
+    pinned: bool = True
+
+
+class MemoryForgetRequest(BaseModel):
+    requested_by: str
+    reason: Optional[str] = None
 
 
 async def _run_assistant_stream(
@@ -1115,6 +1104,87 @@ async def list_memories(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"memories": memories, "count": len(memories)}
+
+
+@router.get("/tenant-context")
+async def get_tenant_context(request: Request):
+    """Return the canonical tenant knowledge snapshot used by the assistant."""
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    try:
+        snapshot = build_tenant_knowledge_snapshot(tenant_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return snapshot.as_dict()
+
+
+@router.get("/memories/{memory_id}")
+async def get_memory(memory_id: str, request: Request):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    memory = get_db().get_memory(memory_id, tenant_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return memory
+
+
+@router.post("/memories/{memory_id}/pin")
+async def pin_memory(memory_id: str, request: Request, body: MemoryPinRequest):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    updated = get_db().pin_memory(memory_id, tenant_id, pinned=body.pinned)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"ok": True, "memory_id": memory_id, "pinned": body.pinned, "updated_by": body.updated_by}
+
+
+@router.post("/memories/{memory_id}/review")
+async def review_memory(memory_id: str, request: Request, body: MemoryReviewRequest):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    try:
+        updated = get_db().review_memory(memory_id, tenant_id, body.review_status, body.reviewed_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {
+        "ok": True,
+        "memory_id": memory_id,
+        "review_status": body.review_status,
+        "reviewed_by": body.reviewed_by,
+    }
+
+
+@router.post("/memories/{memory_id}/expire")
+async def expire_memory(memory_id: str, request: Request, body: MemoryExpiryRequest):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    updated = get_db().expire_memory(memory_id, tenant_id, expires_at=body.expires_at)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"ok": True, "memory_id": memory_id, "expires_at": body.expires_at, "updated_by": body.updated_by}
+
+
+@router.post("/memories/{memory_id}/forget")
+async def forget_memory(memory_id: str, request: Request, body: MemoryForgetRequest):
+    tenant_id = get_request_tenant_id(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    removed = get_db().forget_memory(memory_id, tenant_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {
+        "ok": True,
+        "memory_id": memory_id,
+        "requested_by": body.requested_by,
+        "reason": body.reason,
+    }
 
 
 @router.post("/apply")

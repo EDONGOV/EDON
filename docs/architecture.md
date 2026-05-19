@@ -51,6 +51,27 @@ immutable `DecisionRecord`, and downstream execution must bind to that record.
 See [repeatable-architecture-standard.md](./repeatable-architecture-standard.md)
 for the contract and proof requirements.
 
+## Tenant knowledge plane
+
+The Governance Assistant uses a canonical tenant knowledge plane instead of
+stitching together ad hoc chat memory. The snapshot combines:
+
+- onboarding profile and deployment mode
+- market pack and policy pack
+- approved signoff scope
+- registered agents and policy rules
+- connected services and enterprise connector targets
+- durable tenant memories
+- conversation history
+- pending reviews, compliance health, and drift
+
+Tenant memories are tenant-scoped and administratively mutable. Operators can
+pin, review, expire, or forget specific memories, and the assistant prompt is
+built from the canonical tenant snapshot on every request.
+
+See [tenant-knowledge-plane.md](./tenant-knowledge-plane.md) for the control
+surface and memory-governance contract.
+
 ## Enterprise integration catalog
 
 The gateway now exposes a canonical integration catalog at

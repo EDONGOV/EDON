@@ -163,7 +163,7 @@ async def get_policy_suggestions(request: Request) -> Dict[str, Any]:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Authentication required")
     from ..ai.policy_suggester import get_cached_suggestions
-    return get_cached_suggestions()
+    return get_cached_suggestions(tenant_id)
 
 
 @router.get("/suggestions/pending")
@@ -177,7 +177,7 @@ async def get_pending_suggestions(request: Request) -> Dict[str, Any]:
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Authentication required")
     from ..ai.policy_suggester import get_cached_suggestions
-    all_s = get_cached_suggestions()
+    all_s = get_cached_suggestions(tenant_id)
     pending = [s for s in (all_s.get("suggestions") or []) if s.get("auto_escalate")]
     return {
         "pending": pending,
@@ -207,7 +207,7 @@ async def approve_suggestion(
     from ..ai.policy_suggester import get_cached_suggestions
     from ..persistence import get_db
 
-    all_s = get_cached_suggestions()
+    all_s = get_cached_suggestions(tenant_id)
     match = next(
         (s for s in (all_s.get("suggestions") or [])
          if s.get("name") == body.name and s.get("auto_escalate")),

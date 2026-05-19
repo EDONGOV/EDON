@@ -2838,3 +2838,157 @@ class PostgreSQLDatabase:
                         SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
                 """, (tenant_id, _json.dumps(state), now))
                 conn.commit()
+
+    def save_support_case(self, case: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a tenant-scoped support case."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                self._ensure_support_case_schema(cur)
+                cur.execute(
+                    """
+                    INSERT INTO support_cases (
+                        case_id, tenant_id, support_code, severity, status, assigned_owner,
+                        summary, issue_type, affected_system, workflow_id, connector,
+                        decision_id, action_id, trace_id, conversation_id, request_id,
+                        created_by, created_at, updated_at, timeline_json,
+                        evidence_bundle_json, issue_payload_json
+                    ) VALUES (
+                        %(case_id)s, %(tenant_id)s, %(support_code)s, %(severity)s, %(status)s, %(assigned_owner)s,
+                        %(summary)s, %(issue_type)s, %(affected_system)s, %(workflow_id)s, %(connector)s,
+                        %(decision_id)s, %(action_id)s, %(trace_id)s, %(conversation_id)s, %(request_id)s,
+                        %(created_by)s, %(created_at)s, %(updated_at)s, %(timeline_json)s,
+                        %(evidence_bundle_json)s, %(issue_payload_json)s
+                    )
+                    ON CONFLICT (case_id) DO UPDATE SET
+                        tenant_id = EXCLUDED.tenant_id,
+                        support_code = EXCLUDED.support_code,
+                        severity = EXCLUDED.severity,
+                        status = EXCLUDED.status,
+                        assigned_owner = EXCLUDED.assigned_owner,
+                        summary = EXCLUDED.summary,
+                        issue_type = EXCLUDED.issue_type,
+                        affected_system = EXCLUDED.affected_system,
+                        workflow_id = EXCLUDED.workflow_id,
+                        connector = EXCLUDED.connector,
+                        decision_id = EXCLUDED.decision_id,
+                        action_id = EXCLUDED.action_id,
+                        trace_id = EXCLUDED.trace_id,
+                        conversation_id = EXCLUDED.conversation_id,
+                        request_id = EXCLUDED.request_id,
+                        created_by = EXCLUDED.created_by,
+                        updated_at = EXCLUDED.updated_at,
+                        timeline_json = EXCLUDED.timeline_json,
+                        evidence_bundle_json = EXCLUDED.evidence_bundle_json,
+                        issue_payload_json = EXCLUDED.issue_payload_json
+                    """,
+                    {
+                        "case_id": case["case_id"],
+                        "tenant_id": case["tenant_id"],
+                        "support_code": case.get("support_code"),
+                        "severity": case["severity"],
+                        "status": case.get("status", "open"),
+                        "assigned_owner": case.get("assigned_owner"),
+                        "summary": case["summary"],
+                        "issue_type": case.get("issue_type", "incident"),
+                        "affected_system": case.get("affected_system"),
+                        "workflow_id": case.get("workflow_id"),
+                        "connector": case.get("connector"),
+                        "decision_id": case.get("decision_id"),
+                        "action_id": case.get("action_id"),
+                        "trace_id": case.get("trace_id"),
+                        "conversation_id": case.get("conversation_id"),
+                        "request_id": case.get("request_id"),
+                        "created_by": case.get("created_by"),
+                        "created_at": case["created_at"],
+                        "updated_at": case["updated_at"],
+                        "timeline_json": json.dumps(case.get("timeline", [])),
+                        "evidence_bundle_json": json.dumps(case.get("evidence_bundle", {})),
+                        "issue_payload_json": json.dumps(case.get("issue_payload", {})),
+                    },
+                )
+                conn.commit()
+        return case
+
+    def list_support_cases(self, tenant_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent support cases for a tenant."""
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                self._ensure_support_case_schema(cur)
+                cur.execute(
+                    """
+                    SELECT * FROM support_cases
+                    WHERE tenant_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                rows = cur.fetchall()
+        return [self._decode_support_case(dict(row)) for row in rows]
+
+    def get_support_case(self, case_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return a single support case."""
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                self._ensure_support_case_schema(cur)
+                if tenant_id is None:
+                    cur.execute("SELECT * FROM support_cases WHERE case_id = %s", (case_id,))
+                else:
+                    cur.execute(
+                        "SELECT * FROM support_cases WHERE case_id = %s AND tenant_id = %s",
+                        (case_id, tenant_id),
+                    )
+                row = cur.fetchone()
+        return self._decode_support_case(dict(row)) if row else None
+
+    def _decode_support_case(self, row: Dict[str, Any] | None) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        result = dict(row)
+        for key, default in (
+            ("timeline_json", []),
+            ("evidence_bundle_json", {}),
+            ("issue_payload_json", {}),
+        ):
+            raw = result.pop(key, None)
+            try:
+                result[key.replace("_json", "")] = json.loads(raw) if raw else default
+            except Exception:
+                result[key.replace("_json", "")] = default
+        return result
+
+    def _ensure_support_case_schema(self, cur) -> None:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS support_cases (
+                case_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                support_code TEXT,
+                severity TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                assigned_owner TEXT,
+                summary TEXT NOT NULL,
+                issue_type TEXT NOT NULL DEFAULT 'incident',
+                affected_system TEXT,
+                workflow_id TEXT,
+                connector TEXT,
+                decision_id TEXT,
+                action_id TEXT,
+                trace_id TEXT,
+                conversation_id TEXT,
+                request_id TEXT,
+                created_by TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                timeline_json TEXT NOT NULL,
+                evidence_bundle_json TEXT NOT NULL,
+                issue_payload_json TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_support_cases_tenant
+            ON support_cases(tenant_id, created_at)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_support_cases_status
+            ON support_cases(tenant_id, status)
+        """)

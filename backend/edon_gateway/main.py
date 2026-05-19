@@ -79,6 +79,7 @@ def _register_routes(app: FastAPI) -> None:
     from .routes.privacy import router as privacy_router
     from .routes.devices import router as devices_router
     from .routes.settings import router as settings_router
+    from .routes.support import router as support_router
     from .routes.live_key import router as live_key_router
     from .routes.webhooks import router as webhooks_router
     from .routes.swarm import router as swarm_router
@@ -171,6 +172,7 @@ def _register_routes(app: FastAPI) -> None:
     _include_optional(sandbox_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="sandbox")
     app.include_router(alerts_router)
     app.include_router(settings_router)
+    app.include_router(support_router)
     app.include_router(webhooks_router)
     app.include_router(action_result_router)
     app.include_router(training_router)

@@ -17,6 +17,7 @@ from ..integration_catalog import get_enterprise_integration_catalog
 from ..market_packs import get_market_pack
 from ..logging_config import get_logger
 from ..middleware.latency_slo import get_slo_stats
+from ..tenant_knowledge import build_tenant_knowledge_snapshot
 
 logger = get_logger(__name__)
 
@@ -286,6 +287,12 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
         except Exception:
             deployment_mode = None
             market_pack = None
+        try:
+            tenant_snapshot = build_tenant_knowledge_snapshot(resolved_tenant).as_dict()
+        except Exception:
+            tenant_snapshot = None
+    else:
+        tenant_snapshot = None
 
     controls = {
         "sso_only": config.ENTERPRISE_SSO_ONLY or (config.is_production() and config.AUTH_ENABLED),
@@ -323,6 +330,7 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
             "total_count": len(catalog.get("targets", [])),
             "approved_categories": approved_catalog.get("approved_categories", []),
         },
+        "tenant_knowledge": tenant_snapshot,
         "drift": _get_governance_drift_status(),
     }
 

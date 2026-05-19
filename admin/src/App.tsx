@@ -16,9 +16,9 @@ import {
 const GATEWAY     = import.meta.env.VITE_GATEWAY ?? 'http://localhost:8001'
 const SECRET_KEY  = 'edon_admin_secret'
 
-const getSavedSecret  = () => localStorage.getItem(SECRET_KEY) || ''
-const saveSecret      = (s: string) => localStorage.setItem(SECRET_KEY, s)
-const clearSecret     = () => localStorage.removeItem(SECRET_KEY)
+const getSavedSecret  = () => sessionStorage.getItem(SECRET_KEY) || ''
+const saveSecret      = (s: string) => sessionStorage.setItem(SECRET_KEY, s)
+const clearSecret     = () => sessionStorage.removeItem(SECRET_KEY)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -171,7 +171,6 @@ const ALL_FEATURES = [
 function AccessGate({ onUnlock }: { onUnlock: (secret: string) => void }) {
   const [secret, setSecret]   = useState(getSavedSecret)
   const [visible, setVisible] = useState(false)
-  const [remember, setRemember] = useState(!!getSavedSecret())
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
 
@@ -179,7 +178,7 @@ function AccessGate({ onUnlock }: { onUnlock: (secret: string) => void }) {
     e.preventDefault(); setError(''); setLoading(true)
     try {
       await adminRequest('/admin/tenants', secret.trim())
-      if (remember) saveSecret(secret.trim()); else clearSecret()
+      saveSecret(secret.trim())
       onUnlock(secret.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid bootstrap secret')
@@ -211,10 +210,6 @@ function AccessGate({ onUnlock }: { onUnlock: (secret: string) => void }) {
               </button>
             </div>
           </div>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} className="rounded border-border" />
-            Remember on this device
-          </label>
           {error && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle size={12} />{error}</p>}
           <button type="submit" disabled={loading}
             className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
@@ -1622,7 +1617,7 @@ async function speakText(text: string, openaiKey: string) {
 function CommandTab({ secret }: { secret: string }) {
   const [openaiKey, setOpenaiKey]       = useState(() => localStorage.getItem(OPENAI_KEY_STORAGE) || '')
   const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem(ANTHROPIC_KEY_STORAGE) || '')
-  const savedSecret                     = secret || localStorage.getItem(SECRET_KEY) || ''
+  const savedSecret                     = secret || sessionStorage.getItem(SECRET_KEY) || ''
   const [messages, setMessages]         = useState<Message[]>([
     { id: 'welcome', role: 'assistant', text: "Jarvis online. Ask me anything about EDON — client health, governance stats, open findings, healing status.", ts: new Date() }
   ])
