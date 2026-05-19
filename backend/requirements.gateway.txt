@@ -37,7 +37,7 @@ psycopg2-binary>=2.9.0
 PyJWT>=2.8.0
 
 # .env file loading (used in config.py)
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 
 # Redis (optional - used for rate limiting when REDIS_URL is set; falls back to SQLite/PostgreSQL)
 redis>=5.0.0
