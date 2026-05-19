@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..config import config
 from ..integration_catalog import get_enterprise_integration_catalog
+from ..market_packs import get_market_pack
 from ..logging_config import get_logger
 from ..middleware.latency_slo import get_slo_stats
 
@@ -261,6 +262,7 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
     approved_targets = approved_catalog.get("targets", [])
     latest_signoff = None
     deployment_mode = None
+    market_pack = None
     resolved_tenant = tenant_id
     if resolved_tenant is None:
         try:
@@ -280,8 +282,10 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
             profiles = profile_store.list_for_tenant(resolved_tenant)
             if profiles:
                 deployment_mode = (profiles[0].get("deployment_mode") or "pilot").strip().lower()
+                market_pack = get_market_pack(profiles[0].get("market_pack"))
         except Exception:
             deployment_mode = None
+            market_pack = None
 
     controls = {
         "sso_only": config.ENTERPRISE_SSO_ONLY or (config.is_production() and config.AUTH_ENABLED),
@@ -311,6 +315,7 @@ async def procurement_dashboard(request: Request, tenant_id: str | None = None):
     return {
         "tenant_id": resolved_tenant,
         "deployment_mode": deployment_mode,
+        "market_pack": market_pack,
         "controls": controls,
         "catalog": {
             "version": catalog.get("version"),

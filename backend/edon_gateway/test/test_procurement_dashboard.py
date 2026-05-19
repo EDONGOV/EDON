@@ -34,6 +34,7 @@ def test_procurement_dashboard_reports_core_controls(monkeypatch):
                         "tenant_id": "tenant-1",
                         "org_name": "Acme",
                         "deployment_mode": "production",
+                        "market_pack": "healthcare",
                     }
                 ]
             },
@@ -50,6 +51,8 @@ def test_procurement_dashboard_reports_core_controls(monkeypatch):
     assert resp.status_code == 200, resp.text
     payload = resp.json()
     assert payload["deployment_mode"] == "production"
+    assert payload["market_pack"]["slug"] == "healthcare"
+    assert payload["market_pack"]["version"] == "2026.05"
     assert payload["controls"]["sso_only"] is True
     assert payload["controls"]["mfa"]["admin"] is True
     assert payload["controls"]["postgres"] is True

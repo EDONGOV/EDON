@@ -24,6 +24,7 @@ from typing import Optional
 
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
+from ..market_packs import get_market_pack, normalize_market_pack_slug
 from ..onboarding.profile import get_onboarding_store, normalize_deployment_mode
 from ..onboarding.topology import generate_topology
 from ..onboarding.policy_bootstrap import bootstrap_policies
@@ -98,6 +99,10 @@ def _deployment_mode_label(profile) -> str:
     return normalize_deployment_mode(getattr(profile, "deployment_mode", "pilot"))
 
 
+def _market_pack_label(profile) -> str:
+    return normalize_market_pack_slug(getattr(profile, "market_pack", "healthcare"))
+
+
 class AgentSystemInput(BaseModel):
     name: str
     agent_type: str = "llm_agent"
@@ -114,6 +119,7 @@ class IntakeRequest(BaseModel):
     environments: list[str] = ["saas"]
     compliance_requirements: list[str] = []
     deployment_mode: str = "pilot"
+    market_pack: str = "healthcare"
 
 
 class ShadowModeRequest(BaseModel):
@@ -147,6 +153,7 @@ async def submit_intake(request: Request, body: IntakeRequest):
     tenant_id = _require_request_tenant(request, "submit onboarding intake")
     store = get_onboarding_store()
     deployment_mode = normalize_deployment_mode(body.deployment_mode)
+    market_pack = normalize_market_pack_slug(body.market_pack)
 
     profile = store.create(
         tenant_id=tenant_id,
@@ -156,11 +163,13 @@ async def submit_intake(request: Request, body: IntakeRequest):
         environments=body.environments,
         compliance_requirements=body.compliance_requirements,
         deployment_mode=deployment_mode,
+        market_pack=market_pack,
     )
     logger.info(f"[onboarding/intake] profile={profile.profile_id} tenant={tenant_id}")
     return {
         "profile": profile.as_dict(),
         "deployment_mode": deployment_mode,
+        "market_pack": get_market_pack(market_pack),
         "next_step": {
             "action": f"POST /v1/onboarding/profiles/{profile.profile_id}/topology",
             "description": "Generate EDON Enforcement Topology",
@@ -496,6 +505,7 @@ async def get_onboarding_status(profile_id: str, request: Request):
         "stage": profile.stage,
         "stage_label": stage_labels.get(profile.stage, profile.stage),
         "deployment_mode": _deployment_mode_label(profile),
+        "market_pack": _market_pack_label(profile),
         "risk_tier": profile.risk_tier,
         "shadow_mode": profile.shadow_mode_enabled,
         "signed_off": profile.signed_off,

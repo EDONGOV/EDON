@@ -31,11 +31,16 @@ committed record.
 These packs are allowed to vary by tenant:
 
 - Policy pack
+- Market pack
 - Integration pack
 - Workflow pack
 - Permission pack
 - Scale pack
 - Environment pack
+
+Market packs are versioned and tenant-pinned. A live tenant stays on one
+market-pack version until a new version has been shadow-tested and signed off.
+Do not mutate a live tenant pack in place.
 
 The contract is that these packs change the deployment, not the platform.
 

@@ -41,11 +41,13 @@ def generate_deployment_package(profile, topology) -> DeploymentPackage:
     """Build the deployment package from profile + topology."""
     from .profile import GovernanceDeploymentProfile
     from .topology import EnforcementTopology
+    from ..market_packs import get_market_pack
     assert isinstance(profile, GovernanceDeploymentProfile)
     assert isinstance(topology, EnforcementTopology)
 
     now = datetime.now(UTC).isoformat()
     mode = topology.deployment_modes[0] if topology.deployment_modes else "http_proxy"
+    market_pack = get_market_pack(getattr(profile, "market_pack", "healthcare"))
 
     # ── Helm values ───────────────────────────────────────────────────────────
     helm_values = {
@@ -70,6 +72,9 @@ def generate_deployment_package(profile, topology) -> DeploymentPackage:
                 "enabled": True,
                 "logAllDecisions": True,
             },
+            "marketPack": market_pack["slug"],
+            "marketPackVersion": market_pack["version"],
+            "marketPackPolicyPack": market_pack["policy_pack"],
             "identityProvider": profile.identity_provider,
             "compliance": profile.compliance_requirements,
         }
@@ -84,6 +89,8 @@ def generate_deployment_package(profile, topology) -> DeploymentPackage:
         "EDON_AUDIT_RETENTION_DAYS": "90" if "HIPAA" in profile.compliance_requirements else "30",
         "EDON_LOG_LEVEL": "INFO",
         "EDON_IDENTITY_PROVIDER": profile.identity_provider,
+        "EDON_MARKET_PACK": market_pack["slug"],
+        "EDON_MARKET_PACK_VERSION": market_pack["version"],
     }
     if profile.compliance_requirements:
         env_vars["EDON_COMPLIANCE_REQUIREMENTS"] = ",".join(profile.compliance_requirements)

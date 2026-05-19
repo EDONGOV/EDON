@@ -65,6 +65,7 @@ def _register_routes(app: FastAPI) -> None:
     from .routes.audit import router as audit_router, router_review as review_router, router_auditors as auditors_router
     from .routes.compliance import router as compliance_router
     from .routes.policy import router as policy_router, router_packs as policy_packs_router, router_signing as signing_router
+    from .routes.market_packs import router as market_packs_router
     from .routes.api_keys import router as api_keys_router
     from .routes.admin import router as admin_router
     from .routes.agents import router as agents_router
@@ -132,6 +133,7 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(policy_router)
     app.include_router(policy_packs_router)
     app.include_router(signing_router)
+    app.include_router(market_packs_router)
     app.include_router(proposals_router)
     # Auth & tenancy
     app.include_router(auth_router)

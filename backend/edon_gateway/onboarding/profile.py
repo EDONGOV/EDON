@@ -20,6 +20,7 @@ from datetime import datetime, UTC
 from typing import Optional
 
 from ..logging_config import get_logger
+from ..market_packs import get_market_pack, get_market_pack_defaults, normalize_market_pack_slug
 
 logger = get_logger(__name__)
 
@@ -101,6 +102,8 @@ class GovernanceDeploymentProfile:
     signed_off_at: Optional[str] = None
     signed_off_by: Optional[str] = None
     deployment_mode: str = "pilot"
+    market_pack: str = "healthcare"
+    market_pack_version: str = "2026.05"
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -181,9 +184,14 @@ class OnboardingStore:
         environments: list[str],
         compliance_requirements: list[str],
         deployment_mode: str = "pilot",
+        market_pack: str = "healthcare",
+        market_pack_version: str | None = None,
     ) -> GovernanceDeploymentProfile:
         tenant_id = _require_tenant_id(tenant_id, context="create an onboarding profile")
         deployment_mode = normalize_deployment_mode(deployment_mode)
+        market_pack = normalize_market_pack_slug(market_pack)
+        pack_defaults = get_market_pack_defaults(market_pack)
+        market_pack_version = (market_pack_version or pack_defaults["market_pack_version"]).strip()
         profile_id = f"gdp-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC).isoformat()
 
@@ -199,9 +207,16 @@ class OnboardingStore:
             for a in agent_systems
         ]
 
-        all_data_classes = sorted({dc for s in specs for dc in s.data_classes})
+        all_data_classes = sorted({
+            *{dc for s in specs for dc in s.data_classes},
+            *pack_defaults["data_classes"],
+        })
         all_actions      = sorted({ac for s in specs for ac in s.actions})
         all_sinks        = sorted({sk for s in specs for sk in s.external_sinks})
+        compliance_requirements = sorted({
+            *compliance_requirements,
+            *pack_defaults["compliance_requirements"],
+        })
 
         profile = GovernanceDeploymentProfile(
             profile_id=profile_id,
@@ -219,6 +234,8 @@ class OnboardingStore:
             all_actions=all_actions,
             risk_tier="low",
             risk_score=0,
+            market_pack=market_pack,
+            market_pack_version=market_pack_version,
         )
         profile.risk_score, profile.risk_tier = _derive_risk(profile)
 
@@ -302,6 +319,8 @@ def _from_dict(d: dict) -> GovernanceDeploymentProfile:
     specs = [AgentSystemSpec(**a) for a in d.get("agent_systems", [])]
     d = dict(d)
     d["deployment_mode"] = normalize_deployment_mode(d.get("deployment_mode"))
+    d["market_pack"] = normalize_market_pack_slug(d.get("market_pack"))
+    d["market_pack_version"] = (d.get("market_pack_version") or get_market_pack(d["market_pack"])["version"]).strip()
     d["agent_systems"] = specs
     return GovernanceDeploymentProfile(**d)
 

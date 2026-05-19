@@ -37,7 +37,12 @@ AI Agent -> EDON Gateway (/v1/action) -> Verdict (ALLOW / BLOCK / ESCALATE / DEG
 
 ## Repeatable architecture standard
 
-EDON deployments should repeat the same invariant runtime across tenants while allowing customer-specific policy, integration, workflow, permission, and scale packs to vary. This is the platform contract: same kernel, same decision record, same audit proof, same enforcement semantics.
+EDON deployments should repeat the same invariant runtime across tenants while allowing customer-specific policy, market, integration, workflow, permission, and scale packs to vary. This is the platform contract: same kernel, same decision record, same audit proof, same enforcement semantics.
+
+Market packs are tenant-pinned and versioned. For example, the healthcare pack
+keeps hospital defaults, connector scope, and governance evidence together so
+an existing client can stay on a known version while newer versions are tested
+in shadow mode.
 
 The invariant runtime includes the Decision Kernel as the causal core. Every
 governed action becomes one typed `DecisionCandidate`, is committed once as one
