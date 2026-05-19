@@ -50,7 +50,15 @@ for the contract and proof requirements.
 
 The gateway now exposes a canonical integration catalog at
 `GET /integrations/enterprise/catalog`. It makes the supported enterprise and
-hospital integration surfaces explicit:
+hospital integration surfaces explicit and classifies each target by
+deployment tier:
+
+| Tier | Meaning |
+|------|---------|
+| supported | Approved for enterprise use in the current runtime contract |
+| pilot | Allowed only in controlled pilot deployments |
+| experimental | Not approved for production use |
+| blocked | Explicitly disallowed |
 
 | Category | Example systems |
 |----------|-----------------|
@@ -67,9 +75,12 @@ hospital integration surfaces explicit:
 | Robotics / physical AI | Logistics robots, humanoids, autonomous carts, pharmacy robotics |
 | Messaging / workflow | Teams, Slack, ServiceNow, ticketing systems |
 
-Each category carries the auth, transport, and governance patterns EDON expects
-to enforce. The catalog is a contract for integration readiness, not a claim
-that every vendor connector is already custom-built.
+Each category carries a connector contract with auth modes, tenant scoping,
+allowed actions, audit requirements, rollback behavior, tested versions, and
+execution-binding requirements. In enterprise mode, the catalog defaults to the
+`supported` tier only unless a deployment explicitly opts into pilot targets.
+The catalog is a contract for integration readiness, not a claim that every
+vendor connector is already custom-built.
 
 ## Governance Domains
 

@@ -136,20 +136,22 @@ async def get_connect_buttons() -> Dict[str, Any]:
 
 
 @router.get("/enterprise/catalog")
-async def get_enterprise_catalog() -> Dict[str, Any]:
+async def get_enterprise_catalog(approved_only: Optional[bool] = None) -> Dict[str, Any]:
     """Return the enterprise integration catalog.
 
     This is the canonical list of the hospital, enterprise, and physical-AI
     systems EDON is expected to integrate with. It records the auth and
     transport patterns the gateway is designed to govern.
     """
-    return get_enterprise_integration_catalog()
+    enterprise_only = config.ENTERPRISE_MODE if approved_only is None else approved_only
+    return get_enterprise_integration_catalog(approved_only=enterprise_only)
 
 
 @router.get("/enterprise/catalog/{identifier}")
-async def get_enterprise_catalog_target(identifier: str) -> Dict[str, Any]:
+async def get_enterprise_catalog_target(identifier: str, approved_only: Optional[bool] = None) -> Dict[str, Any]:
     """Return one integration target by slug or category."""
-    target = get_enterprise_integration_target(identifier)
+    enterprise_only = config.ENTERPRISE_MODE if approved_only is None else approved_only
+    target = get_enterprise_integration_target(identifier, approved_only=enterprise_only)
     if not target:
         raise HTTPException(status_code=404, detail="Enterprise integration target not found")
     return target

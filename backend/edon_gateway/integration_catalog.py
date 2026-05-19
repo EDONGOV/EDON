@@ -10,6 +10,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
+ENTERPRISE_STATUS_TIERS = {"supported", "pilot", "experimental", "blocked"}
+ENTERPRISE_APPROVED_STATUS = "supported"
+
 
 ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
     {
@@ -17,6 +20,7 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "category": "ehr_emr",
         "title": "EHR / EMR Systems",
         "priority": "highest",
+        "status_tier": "supported",
         "examples": ["Epic Systems", "Oracle Health (Cerner)", "MEDITECH"],
         "integration_patterns": [
             "SMART on FHIR / OAuth 2.0",
@@ -299,20 +303,128 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
 _TARGET_BY_SLUG = {target["slug"]: target for target in ENTERPRISE_INTEGRATION_TARGETS}
 _TARGET_BY_CATEGORY = {target["category"]: target for target in ENTERPRISE_INTEGRATION_TARGETS}
 
+_STATUS_TIER_BY_STATUS = {
+    "native_and_required": "supported",
+    "governed_proxy_ready": "pilot",
+    "experimental": "experimental",
+    "blocked": "blocked",
+}
 
-def get_enterprise_integration_catalog() -> Dict[str, Any]:
-    """Return the full enterprise integration catalog."""
+
+def _infer_auth_modes(patterns: List[str]) -> List[str]:
+    text = " ".join(patterns).lower()
+    modes: List[str] = []
+    if "saml" in text and "SAML 2.0" not in modes:
+        modes.append("SAML 2.0")
+    if ("oidc" in text or "oauth" in text) and "OIDC / OAuth 2.0" not in modes:
+        modes.append("OIDC / OAuth 2.0")
+    if "scim" in text and "SCIM provisioning" not in modes:
+        modes.append("SCIM provisioning")
+    if "mtls" in text and "mTLS / device certificate" not in modes:
+        modes.append("mTLS / device certificate")
+    if "api key" in text and "API key" not in modes:
+        modes.append("API key")
+    if "webhook" in text and "Webhook" not in modes:
+        modes.append("Webhook")
+    if "hl7" in text and "HL7" not in modes:
+        modes.append("HL7")
+    if "fhir" in text and "FHIR" not in modes:
+        modes.append("FHIR")
+    if "dicom" in text and "DICOM" not in modes:
+        modes.append("DICOM")
+    if "soap" in text and "SOAP" not in modes:
+        modes.append("SOAP")
+    if "syslog" in text and "Syslog" not in modes:
+        modes.append("Syslog")
+    return modes or ["Vendor API"]
+
+
+def _infer_tested_versions(patterns: List[str]) -> List[str]:
+    versions: List[str] = []
+    text = " ".join(patterns)
+    for marker in ("SAML 2.0", "OIDC / OAuth 2.0", "FHIR R4", "HL7", "DICOM", "SCIM 2.0"):
+        if marker in text and marker not in versions:
+            versions.append(marker)
+    return versions or ["vendor-approved version"]
+
+
+def _build_connector_contract(target: Dict[str, Any]) -> Dict[str, Any]:
+    patterns = list(target.get("integration_patterns", []))
+    controls = list(target.get("required_controls", []))
+    edon_role = list(target.get("edon_role", []))
+    tier = target.get("status_tier") or _STATUS_TIER_BY_STATUS.get(target.get("status"), "pilot")
+    fail_mode = "fail-closed" if tier in {"supported", "pilot"} else "advisory"
     return {
-        "version": "1.0",
-        "targets": deepcopy(ENTERPRISE_INTEGRATION_TARGETS),
-        "supported_categories": sorted(_TARGET_BY_CATEGORY.keys()),
+        "status_tier": tier,
+        "auth_modes": _infer_auth_modes(patterns),
+        "tenant_scope": "tenant-bound",
+        "allowed_actions": edon_role,
+        "audit_requirements": controls + ["Decision record binding", "Tenant-scoped audit trail"],
+        "rollback_behavior": "Disable connector, revoke tokens, and quarantine queued work",
+        "failure_mode": fail_mode,
+        "tested_versions": _infer_tested_versions(patterns),
+        "requires_execution_binding": True,
+        "approval_requirement": "step-up for writes; dual approval for high-risk writeback",
     }
 
 
-def get_enterprise_integration_target(identifier: str) -> Optional[Dict[str, Any]]:
+def _decorate_target(target: Dict[str, Any]) -> Dict[str, Any]:
+    decorated = deepcopy(target)
+    status_tier = decorated.get("status_tier") or _STATUS_TIER_BY_STATUS.get(decorated.get("status"), "pilot")
+    if status_tier not in ENTERPRISE_STATUS_TIERS:
+        status_tier = "pilot"
+    decorated["status_tier"] = status_tier
+    decorated["enterprise_supported"] = status_tier == ENTERPRISE_APPROVED_STATUS
+    decorated["connector_contract"] = _build_connector_contract(decorated)
+    return decorated
+
+
+def _filter_targets(approved_only: bool) -> List[Dict[str, Any]]:
+    targets = [_decorate_target(target) for target in ENTERPRISE_INTEGRATION_TARGETS]
+    if approved_only:
+        targets = [target for target in targets if target.get("enterprise_supported")]
+    return targets
+
+
+def _is_target_allowed(target: Dict[str, Any], approved_only: bool) -> bool:
+    if not approved_only:
+        return True
+    return bool(target.get("enterprise_supported"))
+
+
+def get_enterprise_integration_catalog(approved_only: bool = False) -> Dict[str, Any]:
+    """Return the full enterprise integration catalog."""
+    targets = _filter_targets(approved_only=approved_only)
+    return {
+        "version": "1.0",
+        "approved_only": approved_only,
+        "targets": targets,
+        "supported_categories": sorted(
+            target["category"] for target in targets if target.get("enterprise_supported") or not approved_only
+        ),
+        "approved_categories": sorted(
+            target["category"] for target in targets if target.get("enterprise_supported")
+        ),
+    }
+
+
+def get_enterprise_integration_target(identifier: str, approved_only: bool = False) -> Optional[Dict[str, Any]]:
     """Return one integration target by slug or category."""
     key = (identifier or "").strip().lower()
     if not key:
         return None
     target = _TARGET_BY_SLUG.get(key) or _TARGET_BY_CATEGORY.get(key)
-    return deepcopy(target) if target else None
+    if not target:
+        return None
+    decorated = _decorate_target(target)
+    if not _is_target_allowed(decorated, approved_only=approved_only):
+        return None
+    return decorated
+
+
+def assert_enterprise_integration_allowed(identifier: str, approved_only: bool = False) -> Dict[str, Any]:
+    """Return the target or raise when it is not allowed for the requested mode."""
+    target = get_enterprise_integration_target(identifier, approved_only=approved_only)
+    if not target:
+        raise ValueError(f"Integration target '{identifier}' is not allowed in this mode")
+    return target
