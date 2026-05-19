@@ -15,7 +15,6 @@ Everything else lives in a dedicated module.
 
 import os
 import time
-from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -212,7 +211,8 @@ mount_static_ui(app)     # React console UI + voice interface
 
 db = get_db()
 governor = EDONGovernor(db=db)
-audit_logger = AuditLogger(Path("audit.log.jsonl"))  # kept for backward compat
+# Backward-compat placeholder; keep the symbol without opening a process-global file handle.
+audit_logger = AuditLogger()
 
 app.state.governor = governor           # type: ignore[attr-defined]
 app.state.db = db                       # type: ignore[attr-defined]

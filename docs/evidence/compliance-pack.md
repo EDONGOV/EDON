@@ -18,11 +18,16 @@ This document is the index for the evidence pack used in enterprise diligence.
 
 - Restore drill record: [restore-drill.md](./restore-drill.md)
 - Tenant isolation record: [tenant-isolation.md](./tenant-isolation.md)
+- Audit chain record: [audit-chain.md](./audit-chain.md)
+- Execution binding record: [execution-binding.md](./execution-binding.md)
+- Exception register: [exception-register.md](./exception-register.md)
 - Pentest register: [pentest-register.md](./pentest-register.md)
 
 ## Open gaps
 
 - External pentest report not yet attached
-- Recorded restore drill not yet attached
-- Recorded tenant-isolation run not yet attached
-
+- Recorded restore drill not yet signed and attached
+- Recorded tenant-isolation run not yet signed and attached
+- Audit-chain validation not yet signed and attached
+- Execution-binding validation not yet signed and attached
+- Exception register not yet reviewed and signed

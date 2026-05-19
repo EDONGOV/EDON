@@ -26,7 +26,7 @@ import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Query, BackgroundTasks
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..tenancy import get_request_tenant_id
 from ..logging_config import get_logger
@@ -43,10 +43,7 @@ class BootstrapRequest(BaseModel):
     agent_config:  Optional[dict | list]     = Field(None, description="Agent config")
     log_lines:     Optional[list[str]]       = Field(None, description="JSONL log lines (max 10k)")
     tenant_id:     Optional[str]             = Field(None, description="Tenant override")
-
-    class Config:
-        # Allow both dict and list for agent_config
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 # ── Background runner ──────────────────────────────────────────────────────────

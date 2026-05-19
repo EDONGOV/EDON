@@ -64,13 +64,13 @@ curl http://localhost:8000/version
 
 | Method | Path | Purpose | Required Role |
 |--------|------|---------|--------------|
-| `GET` | `/policy/rules` | List policy rules | `read_only`+ |
-| `POST` | `/policy/rules` | Create rule | `admin` |
-| `PUT` | `/policy/rules/{id}` | Update rule | `admin` |
-| `DELETE` | `/policy/rules/{id}` | Delete rule | `admin` |
+| `GET` | `/policy/rules` | List policy rules | `viewer`+ |
+| `POST` | `/policy/rules` | Create rule | `governance_admin` |
+| `PUT` | `/policy/rules/{id}` | Update rule | `governance_admin` |
+| `DELETE` | `/policy/rules/{id}` | Delete rule | `governance_admin` |
 | `POST` | `/policy/evaluate` | Test rule evaluation | `operator`+ |
-| `GET` | `/policy/packs` | List available policy packs | `read_only`+ |
-| `POST` | `/policy/packs/{name}/apply` | Apply policy pack | `admin` |
+| `GET` | `/policy/packs` | List available policy packs | `viewer`+ |
+| `POST` | `/policy/packs/{name}/apply` | Apply policy pack | `governance_admin` |
 
 ### Auth Endpoints
 
@@ -79,6 +79,11 @@ curl http://localhost:8000/version
 | `POST` | `/auth/keys` | Create API key |
 | `GET` | `/auth/keys` | List API keys |
 | `DELETE` | `/auth/keys/{id}` | Revoke API key |
+
+Enterprise deployments should use SSO-only identity flows and create
+`super_admin`, `governance_admin`, `security_admin`, `operator`, `auditor`,
+`developer`, or `viewer` keys by default. Legacy roles exist only for
+compatibility with older tenants.
 
 ---
 
@@ -231,7 +236,7 @@ for attempt in range(MAX_RETRIES):
 
 ### v1.0.1 (2026-02-24)
 - Added `POST /v1/action` endpoint (primary governance API)
-- Added RBAC middleware (admin/operator/agent/read_only roles)
+- Added RBAC middleware (enterprise roles with narrow legacy compatibility aliases)
 - Added field-level Fernet encryption for audit payloads
 - Added PostgreSQL backend support via `DATABASE_URL`
 - Added latency SLO tracking (`X-Response-Time-Ms` header)

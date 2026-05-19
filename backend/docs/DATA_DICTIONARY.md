@@ -53,7 +53,7 @@ Hashed API credentials for tenant authentication.
 | `customer_id` | TEXT (FK→customers) | No | Owning tenant |
 | `key_hash` | TEXT (UNIQUE) | No | bcrypt hash of the raw API key |
 | `name` | TEXT | Yes | Human-readable label (e.g., "robot-fleet-prod") |
-| `role` | TEXT | No | RBAC role: `admin`, `operator`, `agent`, `read_only`. Default: `agent` |
+| `role` | TEXT | No | RBAC role: `super_admin`, `governance_admin`, `security_admin`, `operator`, `auditor`, `developer`, `viewer`. Legacy aliases may map to narrower compatibility roles. Default: `viewer` for new enterprise keys |
 | `created_at` | TEXT (ISO-8601) | No | Creation timestamp |
 | `revoked_at` | TEXT (ISO-8601) | Yes | Revocation timestamp; NULL means active |
 

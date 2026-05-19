@@ -169,6 +169,11 @@ def _require_edge_identity(request: Request, req: Optional[EdgeNodeRegisterReque
     if config.ENTERPRISE_MODE or config.EDGE_REQUIRE_ATTESTATION:
         if not attestation:
             raise HTTPException(status_code=403, detail="Edge node attestation is required")
+    if config.ENTERPRISE_MODE:
+        if not signed_config_bundle:
+            raise HTTPException(status_code=403, detail="Edge node signed config bundle is required")
+        if not (req and req.identity_provider):
+            raise HTTPException(status_code=403, detail="Edge node identity provider is required")
     return cert_fingerprint, signed_config_bundle, attestation
 
 

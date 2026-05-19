@@ -7,6 +7,9 @@ and audit teams usually ask for.
 
 - [restore-drill.md](./restore-drill.md) - restore drill record template and checklist
 - [tenant-isolation.md](./tenant-isolation.md) - tenant isolation verification record
+- [audit-chain.md](./audit-chain.md) - audit chain validation record
+- [execution-binding.md](./execution-binding.md) - decision binding and execution-token record
+- [exception-register.md](./exception-register.md) - intentional fail-open exception register
 - [pentest-register.md](./pentest-register.md) - external pentest and retest register
 - [compliance-pack.md](./compliance-pack.md) - compliance evidence index
 
@@ -20,12 +23,15 @@ and audit teams usually ask for.
 - [docs/safety/severity-tiers.md](../safety/severity-tiers.md)
 - [backend/edon_gateway/test/test_multitenant_isolation.py](../../backend/edon_gateway/test/test_multitenant_isolation.py)
 - [backend/edon_gateway/test/test_compliance_exports.py](../../backend/edon_gateway/test/test_compliance_exports.py)
+- [backend/edon_gateway/test/test_repeatable_architecture.py](../../backend/tests/test_repeatable_architecture.py)
 - [backend/edon_gateway/routes/audit.py](../../backend/edon_gateway/routes/audit.py)
 
 ## Status
 
-- Restore drill evidence: pending a live drill run
-- Tenant isolation evidence: pending a recorded run against staging
+- Restore drill evidence: template ready for a signed live drill record
+- Tenant isolation evidence: template ready for a signed staging record
+- Audit-chain evidence: template ready for a signed validation record
+- Execution-binding evidence: template ready for a signed validation record
+- Exception register: template ready for review and signoff
 - Pentest evidence: pending external assessment and retest
 - Compliance pack: in progress
-

@@ -1,11 +1,11 @@
 """API key management routes — create, list, revoke, rotate."""
 
-import os
 import secrets
 from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional
 
+from ..config import config
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 from ..security.hashing import hash_api_key_fast
@@ -18,7 +18,10 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 class CreateKeyRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100, description="Optional name for the key")
-    role: str = Field("user", description="RBAC role: admin, operator, user, read_only")
+    role: str = Field(
+        "viewer",
+        description="RBAC role: super_admin, governance_admin, security_admin, operator, auditor, developer, viewer",
+    )
 
 
 class RotateKeyRequest(BaseModel):
@@ -40,9 +43,9 @@ async def get_me(request: Request):
         "tenant_id": tenant_id,
         "key_id": tenant_info.get("api_key_id", None),
         "key_name": tenant_info.get("key_name", None),
-        "role": tenant_info.get("role", "user"),
+        "role": tenant_info.get("role", "viewer"),
         "plan": tenant_info.get("plan", ""),
-        "is_admin": tenant_info.get("role") == "admin",
+        "is_admin": tenant_info.get("role") in {"admin", "super_admin", "governance_admin", "security_admin"},
         "is_sandbox": tenant_info.get("is_sandbox", False),
         "vertical": vertical,
     }
@@ -52,7 +55,7 @@ async def get_me(request: Request):
 async def set_vertical(request: Request):
     """Set the industry vertical for this tenant (admin only)."""
     tenant_info = getattr(request.state, 'tenant_info', None) or {}
-    if tenant_info.get("role") != "admin":
+    if tenant_info.get("role") not in {"admin", "super_admin", "governance_admin"}:
         raise HTTPException(status_code=403, detail="Admin role required to set vertical")
     tenant_id = tenant_info.get("tenant_id", "")
     if not tenant_id:
@@ -139,6 +142,20 @@ async def create_api_key(request: Request, body: CreateKeyRequest):
         raise HTTPException(status_code=401, detail="Tenant context required")
 
     db = get_db()
+
+    enterprise_roles = {
+        "super_admin",
+        "governance_admin",
+        "security_admin",
+        "operator",
+        "auditor",
+        "developer",
+        "viewer",
+    }
+    legacy_roles = {"admin", "user", "agent", "read_only"}
+    allowed_roles = enterprise_roles if config.ENTERPRISE_MODE else enterprise_roles | legacy_roles
+    if body.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role '{body.role}'. Valid: {sorted(allowed_roles)}")
 
     plaintext = f"edon-{secrets.token_urlsafe(32)}"
     key_hash = hash_api_key_fast(plaintext)

@@ -38,7 +38,7 @@ EDON Gateway is an AI governance layer that sits between physical autonomous rob
 | S-01 | Robot impersonates another robot | Stolen `agent_id` in request | API key auth scoped to tenant; rate limiting per `agent_id` |
 | S-02 | Attacker impersonates legitimate API key | Brute force or key theft | bcrypt hashing (cost factor ≥ 12); rate limiting on auth failures |
 | S-03 | JWT / Bearer token replay | Token theft via MitM | TLS required in production; `X-EDON-TOKEN` single-use not enforced (limitation — see mitigations) |
-| S-04 | Admin role escalation | Low-privilege key claims admin role | Role stored in DB, not in token; RBAC checks server-side only |
+| S-04 | Privileged role escalation | Low-privilege key claims governance or admin role | Role stored in DB, not in token; RBAC checks server-side only; enterprise roles default narrow |
 
 **Mitigations in place:** bcrypt API key hashing (`security/hashing.py`), `AuthMiddleware`, `RBACMiddleware`
 
@@ -52,7 +52,7 @@ EDON Gateway is an AI governance layer that sits between physical autonomous rob
 | ID | Threat | Attack Vector | Controls |
 |----|--------|--------------|----------|
 | T-01 | Audit record modification | Direct DB access | Append-only triggers (no UPDATE/DELETE on `audit_events`); SHA-256 chain_hash |
-| T-02 | Policy rule manipulation | API endpoint abuse | RBAC: only `admin` role can modify policy rules |
+| T-02 | Policy rule manipulation | API endpoint abuse | RBAC: only `governance_admin` / `super_admin` can modify policy rules |
 | T-03 | Encrypted payload swap | DB access + known plaintext | Fernet HMAC-SHA256 covers authenticity — tampered ciphertext decrypts to error |
 | T-04 | Race condition in chain hash | Concurrent inserts | SQLite serialized writes (WAL mode); PostgreSQL `SERIALIZABLE` recommended |
 | T-05 | Config injection via env var | Server config access | Env vars controlled by deployment pipeline; secrets manager recommended |
@@ -110,7 +110,7 @@ EDON Gateway is an AI governance layer that sits between physical autonomous rob
 
 | ID | Threat | Attack Vector | Controls |
 |----|--------|--------------|----------|
-| E-01 | Agent role accesses admin endpoints | Crafted HTTP request | `RBACMiddleware` checks role on every request |
+| E-01 | Agent role accesses admin endpoints | Crafted HTTP request | `RBACMiddleware` checks role on every request; legacy agent alias is read/action only |
 | E-02 | SQL injection → DB admin | Malicious input in query params | Parameterized queries throughout (no string interpolation in SQL) |
 | E-03 | Path traversal → config files | URL manipulation | No file serving from user-controlled paths |
 | E-04 | Command injection via subprocess | No subprocess usage | No shell execution in gateway code |
@@ -142,7 +142,7 @@ EDON Gateway is an AI governance layer that sits between physical autonomous rob
 | Layer | Control |
 |-------|---------|
 | Authentication | bcrypt-hashed API keys; `AuthMiddleware` |
-| Authorization | `RBACMiddleware` (admin/operator/agent/read_only) |
+| Authorization | `RBACMiddleware` (super_admin/governance_admin/security_admin/operator/auditor/developer/viewer; legacy aliases narrow) |
 | Rate limiting | 10K req/min per agent via `RateLimitMiddleware` |
 | Input validation | `ValidationMiddleware`; Pydantic strict schema |
 | Audit integrity | Append-only triggers; SHA-256 chain hash |

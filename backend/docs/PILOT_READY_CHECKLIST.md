@@ -4,6 +4,17 @@
 
 ---
 
+## 0: Pilot wedge
+
+Pick one workflow and freeze scope:
+
+- **Wedge:** hospital AI governance for record writeback and escalations
+- **Buyer:** clinical ops, IT security, informatics
+- **Systems:** SSO IdP, EHR/EMR, SIEM, Teams/Slack
+- **Pilot mode:** advisory first, governed for high-risk writebacks, no autonomous clinical authority
+
+---
+
 ## Step 1: Set DATABASE_URL + add Postgres driver (~5 min)
 
 **1.1** Add Postgres URL to Fly secrets (use your real RDS URL and password):
@@ -82,6 +93,69 @@ Send the pilot:
    - **POST /v1/action** – Submit an action for governance; body must include `agent_id`, `action_type`, `action_payload` (see API spec). Response: allow / block / degrade + `decision_id`.
 
 They should call **POST /v1/action** before executing each governed action; use the response to allow, block, or degrade.
+
+---
+
+## 5.1 One deployment path
+
+Use one path for the pilot and nothing else:
+
+1. Enable the dependency graph, Dependabot alerts, and automatic dependency submission in GitHub.
+2. Deploy the gateway with Postgres and the enterprise identity settings enabled.
+3. Create one tenant and one pilot API key.
+4. Configure one IdP and one RBAC map.
+5. Validate one governed action loop end to end.
+
+---
+
+## 5.2 SSO setup
+
+Use one identity provider for the pilot:
+
+- **Preferred:** Microsoft Entra ID, Okta, or Ping Identity
+- **Fallback for smaller orgs:** Google Workspace
+- **Required controls:** SAML or OIDC, admin MFA, phishing-resistant MFA for privileged roles
+
+---
+
+## 5.3 RBAC map
+
+Use the enterprise role split:
+
+| Role | Access |
+|------|--------|
+| super_admin | tenant setup, identity, billing, emergency controls |
+| governance_admin | policies, approvals, risk settings |
+| security_admin | logs, incidents, keys, integrations |
+| operator | live decisions, escalations |
+| auditor | read-only audit/replay |
+| developer | SDK/API sandbox access |
+| viewer | dashboard only |
+
+---
+
+## 5.4 Rollback path
+
+Keep the rollback path simple:
+
+- disable the tenant or kill switch
+- revert the connector registration
+- restore the last known-good policy pack
+- verify audit continuity after rollback
+- record the rollback in the restore-drill evidence file
+
+---
+
+## 5.5 Buyer-facing runbook
+
+Give the buyer a short operational runbook:
+
+1. Sign in through SSO.
+2. Open the tenant-scoped console.
+3. Submit one governed action.
+4. Review the decision record and audit trail.
+5. Export the evidence pack.
+6. Use the rollback path if the pilot exceeds scope.
 
 ---
 

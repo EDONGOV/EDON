@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
+from ..config import config
 from ..persistence import get_db
 from ..security.hashing import hash_api_key_fast
 from ..logging_config import get_logger
@@ -65,7 +66,10 @@ class BootstrapKeyRequest(BaseModel):
     token: str = Field(..., min_length=8, description="Plaintext API token to provision")
     tenant_id: str = Field(..., min_length=1, max_length=100, description="Tenant ID to create or use")
     name: Optional[str] = Field(None, max_length=100, description="Human-readable key name")
-    role: str = Field("admin", description="RBAC role for this key (admin/operator/user/read_only)")
+    role: str = Field(
+        "super_admin",
+        description="RBAC role for this key (super_admin/governance_admin/security_admin/operator/auditor/developer/viewer)",
+    )
     plan: str = Field("enterprise", description="Billing plan to set on the tenant (free/starter/pro/enterprise)")
     email: Optional[str] = Field(None, description="Email address for the provisioned user/tenant")
 
@@ -81,7 +85,17 @@ async def bootstrap_api_key(request: Request, body: BootstrapKeyRequest):
     """
     _check_bootstrap_secret(request)
 
-    valid_roles = {"admin", "operator", "user", "agent", "read_only"}
+    enterprise_roles = {
+        "super_admin",
+        "governance_admin",
+        "security_admin",
+        "operator",
+        "auditor",
+        "developer",
+        "viewer",
+    }
+    legacy_roles = {"admin", "user", "agent", "read_only"}
+    valid_roles = enterprise_roles if config.ENTERPRISE_MODE else enterprise_roles | legacy_roles
     if body.role not in valid_roles:
         raise HTTPException(status_code=400, detail=f"Invalid role '{body.role}'. Valid: {sorted(valid_roles)}")
 

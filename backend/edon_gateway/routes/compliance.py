@@ -212,7 +212,7 @@ async def generate_compliance_report(
                 },
                 "access_management": {
                     "status": "implemented",
-                    "evidence": "Multi-tenant RBAC: admin/operator/agent/read_only enforced per-request",
+                    "evidence": "Multi-tenant RBAC: super_admin/governance_admin/security_admin/operator/auditor/developer/viewer enforced per-request",
                 },
             },
             "164_310_physical_safeguards": {

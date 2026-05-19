@@ -19,9 +19,9 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
     'developer':        ['read', 'action', 'sandbox'],
     'auditor':          ['read', 'audit', 'export'],
     'viewer':           ['read'],
-    'read_only':        ['read'],
-    'user':             ['action', 'read', 'audit', 'write'],  # Legacy alias
-    'agent':            ['action', 'read', 'audit', 'write'],  # Legacy alias
+    'read_only':        ['read', 'audit'],
+    'user':             ['read'],  # Legacy alias kept narrow for compatibility
+    'agent':            ['read', 'action'],  # Legacy alias kept narrow for compatibility
 }
 
 # Permission required per endpoint (None = public)

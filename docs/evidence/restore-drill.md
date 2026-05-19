@@ -11,6 +11,9 @@ Use this file to record a real restore drill after completing the workflow in
 | Date | |
 | Environment | |
 | Operator | |
+| Reviewer | |
+| Signed by | |
+| Signature reference | |
 | Backup source | |
 | Database type | |
 | Recovery target | |
@@ -22,6 +25,7 @@ Use this file to record a real restore drill after completing the workflow in
 | Backup integrity verified | |
 | Restore completed within RTO | |
 | Audit chain verified after restore | |
+| Execution binding verified after restore | |
 | Smoke test passed | |
 | Tenant-scoped query verified | |
 
@@ -31,7 +35,13 @@ Use this file to record a real restore drill after completing the workflow in
 # Record the actual commands run during the drill here.
 ```
 
+## Evidence links
+
+- Backup manifest:
+- Restore log:
+- Post-restore smoke test:
+- Audit validation output:
+
 ## Findings
 
 - None recorded yet.
-

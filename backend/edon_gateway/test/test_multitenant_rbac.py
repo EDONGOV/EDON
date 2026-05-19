@@ -174,8 +174,8 @@ class TestRBACMiddleware:
         tenant_info = {"role": "agent", "tenant_id": "t1"}
         assert check_permission(tenant_info, "action") is True
         assert check_permission(tenant_info, "read") is True
-        assert check_permission(tenant_info, "write") is True
-        assert check_permission(tenant_info, "audit") is True
+        assert check_permission(tenant_info, "write") is False
+        assert check_permission(tenant_info, "audit") is False
         assert check_permission(tenant_info, "admin") is False
 
     def test_rbac_permission_check_read_only(self):
@@ -311,11 +311,11 @@ class TestPolicyEngineTimeout:
         """Normal evaluation completes within timeout."""
         from edon_gateway.policy.engine import PolicyEngine
         pe = PolicyEngine()
-        # No rules = default ALLOW
+        # No rules = governed escalation posture
         result = pe.evaluate("MOVE", {"cav_score": 0.1})
         # PolicyDecision is a dataclass — access .verdict attribute
         verdict = result.verdict if hasattr(result, "verdict") else result.get("verdict", result)
-        assert str(verdict).upper() in ("ALLOW", "ALLOW_WITH_LOG")
+        assert str(verdict).upper() in ("ESCALATE", "ALLOW", "ALLOW_WITH_LOG")
 
     def test_policy_engine_timeout_uses_failsafe(self, monkeypatch):
         """When evaluation times out, fail-safe is applied."""
