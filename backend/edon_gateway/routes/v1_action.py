@@ -30,6 +30,7 @@ from ..tenancy import get_request_tenant_id
 from ..monitoring.metrics import metrics as metrics_collector
 from ..fleet_learning import get_fleet_learning_engine
 from ..security.audit_reason_formatter import format_reason as fmt_audit_reason
+from ..governance_records import build_decision_record, build_execution_token
 from ..preflight import PreflightContext, run_preflight
 from ..services.governance import load_intent
 
@@ -251,6 +252,23 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     intent_id = req.context.get("intent_id") if req.context else None
     intent_contract, intent_id = load_intent(db, intent_id, tenant_id)
 
+    req_context: dict = dict(req.context or {})
+    actor_id = str(
+        req_context.get("actor_id")
+        or req_context.get("user_id")
+        or req.agent_id
+    )
+    action_data_class = str(
+        req_context.get("data_class")
+        or req_context.get("data_classification")
+        or req.action_payload.get("data_class")
+        or req.action_payload.get("data_classification")
+        or "internal"
+    )
+    action_connector_scope = req_context.get("connector_scope") or req.action_payload.get("connector_scope") or req.action_payload.get("connector_scopes") or []
+    action_approval_state = str(req_context.get("approval_state") or "")
+    action_rollback_mode = str(req_context.get("rollback_mode") or "standard")
+
     # Create Action object
     # For custom tools, inject the original tool name into params so policy
     # rules and audit logs can match/filter on it.
@@ -265,9 +283,12 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         requested_at=requested_at,
         source=ActionSource.AGENT,
         tags=[],
+        data_class=action_data_class,
+        connector_scope=list(action_connector_scope) if isinstance(action_connector_scope, (list, tuple, set)) else ([action_connector_scope] if action_connector_scope else []),
+        approval_state=action_approval_state,
+        rollback_mode=action_rollback_mode,
+        actor_id=actor_id,
     )
-
-    req_context: dict = dict(req.context or {})
 
     # Auto session_id Ã¢â‚¬â€ group by agent + hour so session risk accumulates
     # even when callers don't supply one.
@@ -436,9 +457,38 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
     latency_ms = int((time.time() - start_time) * 1000)
     _decision_created_at = datetime.now(UTC).isoformat()
     _canonical_decision_id = f"dec-{action.id}-{_decision_created_at}"
+    verdict_str = decision.verdict.value
+    _record_risk = (
+        (action.computed_risk.value if action.computed_risk else None)
+        or (action.estimated_risk.value if action.estimated_risk else "low")
+    )
+    _canonical_record_context = {
+        **req_context,
+        "actor_id": actor_id,
+        "actor_role": req_context.get("actor_role"),
+        "data_class": action.data_class,
+        "connector_scope": list(action.connector_scope),
+        "approval_state": action.approval_state,
+        "rollback_mode": action.rollback_mode,
+        "request_hash": _request_hash,
+    }
+    _canonical_record = build_decision_record(
+        decision_id=_canonical_decision_id,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        agent_id=req.agent_id,
+        action_type=req.action_type,
+        risk_tier=_record_risk,
+        verdict=verdict_str,
+        context=_canonical_record_context,
+        policy_version=decision.policy_version,
+        reason_code=decision.reason_code.value if decision.reason_code else None,
+        issued_at=_decision_created_at,
+        request_hash=_request_hash,
+    )
+    _execution_token = build_execution_token(_canonical_record)
 
     # Record metrics
-    verdict_str = decision.verdict.value
     metrics_collector.increment_counter(
         "edon_decisions_total",
         {"verdict": verdict_str, "endpoint": "/v1/action"}
@@ -473,6 +523,8 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
         if decision.invariant_results:
             audit_context["invariant_results"] = decision.invariant_results
         audit_context["request_hash"] = _request_hash
+        audit_context["decision_record"] = _canonical_record.to_dict()
+        audit_context["execution_token_key_id"] = _execution_token["key_id"]
         # Include device_id and vendor_id in audit context when present
         if _device_id:
             audit_context["device_id"] = _device_id
@@ -832,6 +884,9 @@ async def evaluate_action(request: Request, req: V1ActionRequest):
 
     if decision.escalation_options:
         response.escalation_options = decision.escalation_options
+
+    response.decision_record = _canonical_record.to_dict()
+    response.execution_token = _execution_token
 
     # Intervention strategy Ã¢â‚¬â€ when blocked/degraded, generate a co-pilot strategy.
     # Returned as advisory: the agent/orchestrator decides whether to act on it.

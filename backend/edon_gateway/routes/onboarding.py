@@ -51,6 +51,49 @@ def _assert_owns_profile(profile, tenant_id: str) -> None:
 
 # ── Request models ─────────────────────────────────────────────────────────────
 
+def _classify_action_risk(action_name: str, data_classes: list[str]) -> str:
+    text = action_name.lower()
+    if any(keyword in text for keyword in ("writeback", "medication", "admin", "delete", "destroy")):
+        return "critical"
+    if any(keyword in text for keyword in ("write", "update", "submit", "approve", "execute")):
+        return "high"
+    if any(keyword in text for keyword in ("notify", "message", "ticket", "draft")):
+        return "medium"
+    if data_classes and any(
+        label.upper() in {"PHI", "FINANCIAL", "CREDENTIAL", "SAFETY-CRITICAL"}
+        for label in data_classes
+    ):
+        return "high"
+    return "low"
+
+
+def _build_governed_action_matrix(profile, bundle) -> list[dict]:
+    matrix: list[dict] = []
+    for agent in profile.agent_systems:
+        for action in agent.actions or []:
+            risk = _classify_action_risk(action, agent.data_classes or [])
+            matrix.append({
+                "system": agent.name,
+                "action": action,
+                "risk": risk,
+                "approval": "required" if risk in ("high", "critical") else "optional",
+                "rollback": "partial" if risk in ("high", "critical") else "full",
+                "logged": True,
+                "data_classes": agent.data_classes or [],
+            })
+    if not matrix:
+        matrix.append({
+            "system": profile.org_name,
+            "action": "governed.action",
+            "risk": "medium",
+            "approval": "optional",
+            "rollback": "full",
+            "logged": True,
+            "data_classes": profile.all_data_classes,
+        })
+    return matrix
+
+
 class AgentSystemInput(BaseModel):
     name: str
     agent_type: str = "llm_agent"
@@ -78,6 +121,12 @@ class SignoffCreateRequest(BaseModel):
     escalation_rules_accepted: bool = True
     kill_switch_authority: str = "admin"
     data_classes_governed: list[str] = []
+    governed_action_matrix: list[dict] = []
+    risk_tier_definitions: list[dict] = []
+    fail_open_exceptions: list[dict] = []
+    rollback_limits: list[str] = []
+    escalation_paths: list[str] = []
+    customer_signoff_artifacts: list[str] = []
 
 
 class SignoffResolveRequest(BaseModel):
@@ -268,6 +317,32 @@ async def request_signoff(profile_id: str, request: Request, body: SignoffCreate
 
     bundle = bootstrap_policies(profile)
     signoff_store = get_signoff_store()
+    governed_action_matrix = body.governed_action_matrix or _build_governed_action_matrix(profile, bundle)
+    risk_tier_definitions = body.risk_tier_definitions or [
+        {"tier": "low", "approval": "optional", "rollback": "full"},
+        {"tier": "medium", "approval": "optional", "rollback": "full"},
+        {"tier": "high", "approval": "required", "rollback": "partial"},
+        {"tier": "critical", "approval": "required", "rollback": "limited"},
+    ]
+    fail_open_exceptions = body.fail_open_exceptions or [
+        {
+            "scope": "break_glass",
+            "requirement": "explicit reason, time-boxed approval, post-event review",
+        }
+    ]
+    rollback_limits = body.rollback_limits or [
+        "High-risk writebacks may only partially rollback if the downstream system is non-transactional.",
+    ]
+    escalation_paths = body.escalation_paths or [
+        "agent -> governance admin -> security admin -> tenant super admin",
+    ]
+    customer_signoff_artifacts = body.customer_signoff_artifacts or [
+        "governed_action_matrix",
+        "risk_tier_definitions",
+        "fail_open_exceptions",
+        "rollback_limits",
+        "escalation_paths",
+    ]
     sr = signoff_store.create(
         profile_id=profile_id,
         tenant_id=profile.tenant_id,
@@ -279,6 +354,12 @@ async def request_signoff(profile_id: str, request: Request, body: SignoffCreate
         policy_count_hard_safety=len(bundle.hard_safety),
         policy_count_operational=len(bundle.operational),
         policy_count_intent_contracts=len(bundle.intent_contracts),
+        governed_action_matrix=governed_action_matrix,
+        risk_tier_definitions=risk_tier_definitions,
+        fail_open_exceptions=fail_open_exceptions,
+        rollback_limits=rollback_limits,
+        escalation_paths=escalation_paths,
+        customer_signoff_artifacts=customer_signoff_artifacts,
     )
     profile_store.update_stage(profile_id, "signoff_pending")
 

@@ -74,6 +74,13 @@ def sign_decision(decision_dict: dict) -> str:
     return base64.urlsafe_b64encode(sig_bytes).decode()
 
 
+def sign_canonical_payload(payload_dict: dict) -> str:
+    """Sign the full canonical payload without excluding any fields."""
+    key = _get_signing_key()
+    sig_bytes = key.sign(json.dumps(payload_dict, sort_keys=True, separators=(",", ":")).encode())
+    return base64.urlsafe_b64encode(sig_bytes).decode()
+
+
 def verify_decision(decision_dict: dict, signature_b64url: str, pubkey_hex: str) -> bool:
     """Verify a decision signature against the given public key. Returns True if valid."""
     try:
@@ -81,6 +88,18 @@ def verify_decision(decision_dict: dict, signature_b64url: str, pubkey_hex: str)
         pub = Ed25519PublicKey.from_public_bytes(raw_pub)
         sig_bytes = base64.urlsafe_b64decode(signature_b64url + "==")
         pub.verify(sig_bytes, _canonical_payload(decision_dict))
+        return True
+    except Exception:
+        return False
+
+
+def verify_canonical_payload(payload_dict: dict, signature_b64url: str, pubkey_hex: str) -> bool:
+    """Verify a full canonical payload signature against the given public key."""
+    try:
+        raw_pub = bytes.fromhex(pubkey_hex)
+        pub = Ed25519PublicKey.from_public_bytes(raw_pub)
+        sig_bytes = base64.urlsafe_b64decode(signature_b64url + "==")
+        pub.verify(sig_bytes, json.dumps(payload_dict, sort_keys=True, separators=(",", ":")).encode())
         return True
     except Exception:
         return False

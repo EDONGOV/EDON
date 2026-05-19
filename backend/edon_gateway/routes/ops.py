@@ -6,12 +6,14 @@ They live here so main.py contains only composition and lifecycle wiring.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from ..config import config
+from ..integration_catalog import get_enterprise_integration_catalog
 from ..logging_config import get_logger
 from ..middleware.latency_slo import get_slo_stats
 
@@ -82,6 +84,53 @@ def _get_database_dependency_status(app) -> Dict[str, Any]:
         "schema_version": schema_version,
         "expected_schema_version": SCHEMA_VERSION,
         "schema_error": schema_error,
+    }
+
+
+def _get_procurement_evidence_status() -> Dict[str, Any]:
+    evidence_dir = Path("docs/evidence")
+    backend_docs = Path("backend/docs")
+    verification_ledger = evidence_dir / "verification-ledger.md"
+    advisory_review = evidence_dir / "production-advisory-review.md"
+    compliance_pack = evidence_dir / "compliance-pack.md"
+    restore_drill = backend_docs / "ROLLBACK_DRILL.md"
+    backup_procedures = backend_docs / "BACKUP_PROCEDURES.md"
+    audit_chain = evidence_dir / "audit-chain.md"
+    return {
+        "verification_ledger": verification_ledger.exists(),
+        "advisory_review": advisory_review.exists(),
+        "compliance_pack": compliance_pack.exists(),
+        "restore_drill": restore_drill.exists(),
+        "backup_procedures": backup_procedures.exists(),
+        "audit_chain": audit_chain.exists(),
+        "dependency_graph_submission": Path(".github/workflows/dependency_graph_submission.yml").exists(),
+    }
+
+
+def _get_governance_drift_status() -> Dict[str, Any]:
+    catalog = get_enterprise_integration_catalog(approved_only=False)
+    approved_targets = [t for t in catalog.get("targets", []) if t.get("enterprise_supported")]
+    connector_version_drift = any(
+        not t.get("last_verified") or t.get("certification_status") != "certified"
+        for t in approved_targets
+    )
+    idp_claim_drift = not (config.ENTERPRISE_SSO_ONLY and bool(config.ENTERPRISE_IDENTITY_PROVIDERS))
+    policy_pack_drift = not config.AUTH_ENABLED or not config.ENCRYPT_AUDIT_PAYLOAD
+    permissions_drift = not (config.is_production() and config.ENTERPRISE_DEFAULT_USER_ROLE == "viewer")
+    edge_config_drift = not (
+        config.EDGE_REQUIRE_NODE_CERTIFICATE
+        and config.EDGE_REQUIRE_ATTESTATION
+        and bool(config.EDGE_BUNDLE_SIGNING_KEY)
+    )
+    return {
+        "connector_version_drift": connector_version_drift,
+        "idp_claim_drift": idp_claim_drift,
+        "policy_pack_drift": policy_pack_drift,
+        "permissions_drift": permissions_drift,
+        "edge_config_drift": edge_config_drift,
+        "status": "healthy"
+        if not any([connector_version_drift, idp_claim_drift, policy_pack_drift, permissions_drift, edge_config_drift])
+        else "degraded",
     }
 
 
@@ -201,6 +250,65 @@ async def health_dependencies(request: Request):
             "cors_strict": "*" not in config.CORS_ORIGINS,
             "postgres_required": config.is_production(),
         },
+    }
+
+
+@router.get("/governance/procurement-dashboard")
+async def procurement_dashboard(request: Request, tenant_id: str | None = None):
+    db_status = _get_database_dependency_status(request.app)
+    catalog = get_enterprise_integration_catalog(approved_only=False)
+    approved_catalog = get_enterprise_integration_catalog(approved_only=True)
+    approved_targets = approved_catalog.get("targets", [])
+    latest_signoff = None
+    resolved_tenant = tenant_id
+    if resolved_tenant is None:
+        try:
+            from ..tenancy import get_request_tenant_id
+            resolved_tenant = get_request_tenant_id(request)
+        except Exception:
+            resolved_tenant = None
+    if resolved_tenant:
+        try:
+            from ..onboarding.signoff import get_signoff_store
+            latest_signoff = get_signoff_store().latest_approved(resolved_tenant)
+        except Exception:
+            latest_signoff = None
+
+    controls = {
+        "sso_only": config.ENTERPRISE_SSO_ONLY or (config.is_production() and config.AUTH_ENABLED),
+        "mfa": {
+            "admin": config.REQUIRE_ADMIN_MFA,
+            "phishing_resistant": config.REQUIRE_PHISHING_RESISTANT_MFA,
+        },
+        "postgres": db_status.get("scheme") == "postgresql" or config.is_production(),
+        "audit_encryption": config.ENCRYPT_AUDIT_PAYLOAD,
+        "token_binding": config.TOKEN_BINDING_ENABLED,
+        "edge_identity": {
+            "node_certificate": config.EDGE_REQUIRE_NODE_CERTIFICATE,
+            "attestation": config.EDGE_REQUIRE_ATTESTATION,
+            "bundle_signing_key": bool(config.EDGE_BUNDLE_SIGNING_KEY),
+        },
+        "backup_restore": _get_procurement_evidence_status(),
+        "dependency_audit": {
+            "graph_submission": Path(".github/workflows/dependency_graph_submission.yml").exists(),
+            "active_catalog_targets": len(approved_targets),
+        },
+        "connector_certification": {
+            "approved_only_targets": len(approved_targets),
+            "supported_targets": len(catalog.get("targets", [])),
+        },
+        "latest_signoff": latest_signoff,
+    }
+    return {
+        "tenant_id": resolved_tenant,
+        "controls": controls,
+        "catalog": {
+            "version": catalog.get("version"),
+            "approved_only_count": len(approved_targets),
+            "total_count": len(catalog.get("targets", [])),
+            "approved_categories": approved_catalog.get("approved_categories", []),
+        },
+        "drift": _get_governance_drift_status(),
     }
 
 

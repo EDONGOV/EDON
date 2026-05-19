@@ -424,6 +424,36 @@ def _infer_tested_versions(patterns: List[str]) -> List[str]:
     return versions or ["vendor-approved version"]
 
 
+def _infer_capability_scopes(target: Dict[str, Any]) -> List[str]:
+    slug = (target.get("slug") or "").lower()
+    category = (target.get("category") or "").lower()
+    if category == "ehr_emr" or slug == "ehr-emr":
+        return ["epic.note.draft", "epic.record.writeback", "ehr.audit.read"]
+    if category == "identity_access_management" or slug == "iam":
+        return ["identity.sso", "identity.mfa", "identity.provision.user"]
+    if category == "clinical_communications":
+        return ["communications.escalation.notify", "communications.audit.read"]
+    if category == "scheduling_staffing":
+        return ["scheduling.read", "scheduling.write", "staffing.approval.submit"]
+    if category == "revenue_cycle_billing":
+        return ["billing.coding.suggest", "billing.claim.submit", "billing.audit.read"]
+    if category == "pacs_imaging":
+        return ["imaging.analysis.review", "imaging.escalation.route"]
+    if category == "laboratory_information_systems":
+        return ["lab.result.route", "lab.audit.read"]
+    if category == "erp_procurement":
+        return ["procurement.request.create", "procurement.approval.submit", "procurement.audit.read"]
+    if category == "security_siem":
+        return ["siem.audit.export", "siem.event.stream", "siem.alert.route"]
+    if category == "llm_providers":
+        return ["llm.prompt.route", "llm.output.audit", "llm.action.authorize"]
+    if category == "robotics_physical_ai":
+        return ["robot.command.authorize", "robot.emergency.stop", "robot.telemetry.read"]
+    if category == "messaging_workflow":
+        return ["workflow.approval.route", "workflow.notification.send", "workflow.audit.read"]
+    return ["connector.read", "connector.write"]
+
+
 def _build_connector_contract(target: Dict[str, Any]) -> Dict[str, Any]:
     patterns = list(target.get("integration_patterns", []))
     controls = list(target.get("required_controls", []))
@@ -449,6 +479,7 @@ def _build_connector_contract(target: Dict[str, Any]) -> Dict[str, Any]:
         "tested_versions": _infer_tested_versions(patterns),
         "requires_execution_binding": True,
         "approval_requirement": "step-up for writes; dual approval for high-risk writeback",
+        "capability_scopes": _infer_capability_scopes(target),
     }
 
 

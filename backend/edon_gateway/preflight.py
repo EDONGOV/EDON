@@ -50,7 +50,9 @@ def _step_kill_switch(ctx: PreflightContext) -> Optional[Any]:
         return None
     try:
         from .routes.kill_switch import is_kill_switch_active
-        if not is_kill_switch_active(ctx.tenant_id):
+        scope = (ctx.req_context.get("kill_switch_scope") or "tenant") if ctx.req_context else "tenant"
+        target_id = ctx.req_context.get("kill_switch_target") if ctx.req_context else None
+        if not is_kill_switch_active(ctx.tenant_id, scope=scope, target_id=target_id):
             return None
         from datetime import datetime, UTC
         from .schemas.v1_action import V1ActionResponse

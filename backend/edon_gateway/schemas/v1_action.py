@@ -205,6 +205,14 @@ class V1ActionResponse(BaseModel):
         None,
         description="SHA-256 of the canonicalised action params. Ties this response to the exact request payload.",
     )
+    decision_record: Optional[Dict[str, Any]] = field_with_example(
+        None,
+        description="Canonical signed DecisionRecord for the governed action.",
+    )
+    execution_token: Optional[Dict[str, Any]] = field_with_example(
+        None,
+        description="Signed downstream execution token derived from the DecisionRecord.",
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {

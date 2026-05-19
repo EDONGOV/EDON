@@ -54,6 +54,25 @@ _cache_expires: dict[str, float] = {} # tenant_id → monotonic time when DB re-
 _CACHE_TTL_S = 2.0
 
 
+def _scope_key(scope: str, target_id: Optional[str] = None) -> str:
+    scope = (scope or "tenant").strip().lower()
+    target_id = (target_id or "").strip()
+    return f"{scope}:{target_id}" if target_id else scope
+
+
+def _normalize_state(state: Optional[dict], tenant_id: str) -> dict:
+    base = {"active": False, "tenant_id": tenant_id, "scoped_controls": []}
+    if not state:
+        return base
+    normalized = dict(base)
+    normalized.update(state)
+    controls = normalized.get("scoped_controls") or []
+    if isinstance(controls, dict):
+        controls = [controls]
+    normalized["scoped_controls"] = [c for c in controls if isinstance(c, dict)]
+    return normalized
+
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def _db_read(tenant_id: str) -> Optional[dict]:
@@ -125,7 +144,11 @@ _load()
 
 # ── Core functions (used by v1_action) ────────────────────────────────────────
 
-def is_kill_switch_active(tenant_id: Optional[str]) -> bool:
+def is_kill_switch_active(
+    tenant_id: Optional[str],
+    scope: Optional[str] = None,
+    target_id: Optional[str] = None,
+) -> bool:
     """Return True if the kill switch is active for this tenant.
 
     Called on every /v1/action. Reads from a 2s TTL cache backed by DB so
@@ -136,17 +159,47 @@ def is_kill_switch_active(tenant_id: Optional[str]) -> bool:
     now = time.monotonic()
     with _lock:
         if now < _cache_expires.get(tenant_id, 0.0):
-            return bool(_state.get(tenant_id, {}).get("active", False))
+            state = _normalize_state(_state.get(tenant_id), tenant_id)
+            if bool(state.get("active", False)):
+                return True
+            if scope and target_id is not None:
+                wanted = _scope_key(scope, target_id)
+                return any(
+                    bool(entry.get("active", False))
+                    and _scope_key(entry.get("scope", ""), entry.get("target_id")) == wanted
+                    for entry in state.get("scoped_controls", [])
+                )
+            return False
     # Cache miss — refresh from DB
     db_state = _db_read(tenant_id)
     if db_state is not None:
         with _lock:
-            _state[tenant_id] = db_state
+            _state[tenant_id] = _normalize_state(db_state, tenant_id)
             _cache_expires[tenant_id] = time.monotonic() + _CACHE_TTL_S
-        return bool(db_state.get("active", False))
+        state = _state[tenant_id]
+        if bool(state.get("active", False)):
+            return True
+        if scope and target_id is not None:
+            wanted = _scope_key(scope, target_id)
+            return any(
+                bool(entry.get("active", False))
+                and _scope_key(entry.get("scope", ""), entry.get("target_id")) == wanted
+                for entry in state.get("scoped_controls", [])
+            )
+        return False
     # DB unavailable — use in-memory fallback
     with _lock:
-        return bool(_state.get(tenant_id, {}).get("active", False))
+        state = _normalize_state(_state.get(tenant_id), tenant_id)
+        if bool(state.get("active", False)):
+            return True
+        if scope and target_id is not None:
+            wanted = _scope_key(scope, target_id)
+            return any(
+                bool(entry.get("active", False))
+                and _scope_key(entry.get("scope", ""), entry.get("target_id")) == wanted
+                for entry in state.get("scoped_controls", [])
+            )
+        return False
 
 
 def get_kill_switch_state(tenant_id: str) -> dict:
@@ -154,39 +207,58 @@ def get_kill_switch_state(tenant_id: str) -> dict:
     db_state = _db_read(tenant_id)
     if db_state is not None:
         with _lock:
-            _state[tenant_id] = db_state
-        return db_state
+            _state[tenant_id] = _normalize_state(db_state, tenant_id)
+        return _state[tenant_id]
     with _lock:
-        return dict(_state.get(tenant_id, {"active": False, "tenant_id": tenant_id}))
+        return _normalize_state(_state.get(tenant_id), tenant_id)
 
 
 def activate_kill_switch(
     tenant_id: str,
     reason: str,
     activated_by: str,
+    scope: str = "tenant",
+    target_id: Optional[str] = None,
 ) -> dict:
     """Activate the kill switch for a tenant. Returns the new state."""
     now = datetime.now(UTC).isoformat()
-    entry = {
-        "active": True,
-        "tenant_id": tenant_id,
-        "reason": reason[:500],
-        "activated_by": activated_by,
-        "activated_at": now,
-        "deactivated_at": None,
-        "deactivated_by": None,
-        "history": [],
-    }
+    entry = _normalize_state(_state.get(tenant_id), tenant_id)
+    if scope == "tenant":
+        entry.update({
+            "active": True,
+            "tenant_id": tenant_id,
+            "reason": reason[:500],
+            "activated_by": activated_by,
+            "activated_at": now,
+            "deactivated_at": None,
+            "deactivated_by": None,
+        })
+    scope_key = _scope_key(scope, target_id)
     with _lock:
-        existing = _state.get(tenant_id, {})
-        if existing.get("history") is not None:
-            entry["history"] = existing["history"]
+        entry.setdefault("history", [])
         entry["history"] = (entry["history"] + [{
             "event": "activated",
             "at": now,
             "by": activated_by,
             "reason": reason[:200],
+            "scope": scope_key,
+            "target_id": target_id,
         }])[-20:]
+        scoped_controls = [
+            c for c in entry.get("scoped_controls", [])
+            if _scope_key(c.get("scope", ""), c.get("target_id")) != scope_key
+        ]
+        scoped_controls.append({
+            "scope": scope,
+            "target_id": target_id,
+            "active": True,
+            "reason": reason[:500],
+            "activated_by": activated_by,
+            "activated_at": now,
+            "deactivated_at": None,
+            "deactivated_by": None,
+        })
+        entry["scoped_controls"] = scoped_controls[-20:]
     if not _db_write(tenant_id, entry):
         raise HTTPException(status_code=503, detail="Kill switch activation failed to persist")
 
@@ -220,22 +292,41 @@ def deactivate_kill_switch(
     tenant_id: str,
     deactivated_by: str,
     note: Optional[str] = None,
+    scope: str = "tenant",
+    target_id: Optional[str] = None,
 ) -> dict:
     """Deactivate the kill switch for a tenant. Returns the new state."""
     now = datetime.now(UTC).isoformat()
     with _lock:
-        entry = dict(_state.get(tenant_id, {"active": False, "tenant_id": tenant_id}))
-        if not entry.get("active"):
+        entry = _normalize_state(_state.get(tenant_id), tenant_id)
+        scope_key = _scope_key(scope, target_id)
+        if scope == "tenant" and not entry.get("active"):
             return {**entry, "message": "Kill switch was not active"}
-        entry["active"] = False
-        entry["deactivated_at"] = now
-        entry["deactivated_by"] = deactivated_by
+        if scope != "tenant":
+            controls = entry.get("scoped_controls", [])
+            matched = False
+            for control in controls:
+                if _scope_key(control.get("scope", ""), control.get("target_id")) == scope_key:
+                    control["active"] = False
+                    control["deactivated_at"] = now
+                    control["deactivated_by"] = deactivated_by
+                    control["note"] = note or ""
+                    matched = True
+            if not matched:
+                return {**entry, "message": "Scoped kill switch was not active"}
+            entry["scoped_controls"] = controls
+        else:
+            entry["active"] = False
+            entry["deactivated_at"] = now
+            entry["deactivated_by"] = deactivated_by
         history = entry.get("history", [])
         history = (history + [{
             "event": "deactivated",
             "at": now,
             "by": deactivated_by,
             "note": note or "",
+            "scope": scope_key,
+            "target_id": target_id,
         }])[-20:]
         entry["history"] = history
     if not _db_write(tenant_id, entry):
@@ -263,11 +354,15 @@ class KillSwitchActivateBody(BaseModel):
         default="api",
         description="Identity of the person activating the kill switch"
     )
+    scope: str = Field(default="tenant", description="Kill-switch scope: tenant, connector, agent, workflow, edge_node")
+    target_id: Optional[str] = Field(default=None, description="Optional target identifier for scoped kill switches")
 
 
 class KillSwitchDeactivateBody(BaseModel):
     deactivated_by: str = Field(default="api")
     note: Optional[str] = Field(default=None, max_length=500)
+    scope: str = Field(default="tenant")
+    target_id: Optional[str] = Field(default=None)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -307,9 +402,15 @@ async def activate(request: Request, body: KillSwitchActivateBody):
         tenant_id=tenant_id,
         reason=body.reason,
         activated_by=body.activated_by,
+        scope=body.scope,
+        target_id=body.target_id,
     )
     return {
         **state,
+        "activation_scope": {
+            "scope": body.scope,
+            "target_id": body.target_id,
+        },
         "message": (
             "Kill switch activated. All AI agent actions are now BLOCKED. "
             "Deactivate at DELETE /settings/kill-switch when ready to resume."
@@ -331,8 +432,14 @@ async def deactivate(request: Request, body: KillSwitchDeactivateBody):
         tenant_id=tenant_id,
         deactivated_by=body.deactivated_by,
         note=body.note,
+        scope=body.scope,
+        target_id=body.target_id,
     )
     return {
         **state,
+        "deactivation_scope": {
+            "scope": body.scope,
+            "target_id": body.target_id,
+        },
         "message": "Kill switch deactivated. Normal governance resumed.",
     }

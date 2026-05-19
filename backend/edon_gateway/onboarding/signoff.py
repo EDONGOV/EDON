@@ -16,7 +16,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -66,6 +66,12 @@ class SignoffRequest:
     policy_count_hard_safety: int
     policy_count_operational: int
     policy_count_intent_contracts: int
+    governed_action_matrix: list[dict] = field(default_factory=list)
+    risk_tier_definitions: list[dict] = field(default_factory=list)
+    fail_open_exceptions: list[dict] = field(default_factory=list)
+    rollback_limits: list[str] = field(default_factory=list)
+    escalation_paths: list[str] = field(default_factory=list)
+    customer_signoff_artifacts: list[str] = field(default_factory=list)
 
     # Resolution
     status: str = "pending"         # "pending" | "approved" | "rejected"
@@ -125,6 +131,12 @@ class SignoffStore:
         policy_count_hard_safety: int = 0,
         policy_count_operational: int = 0,
         policy_count_intent_contracts: int = 0,
+        governed_action_matrix: Optional[list[dict]] = None,
+        risk_tier_definitions: Optional[list[dict]] = None,
+        fail_open_exceptions: Optional[list[dict]] = None,
+        rollback_limits: Optional[list[str]] = None,
+        escalation_paths: Optional[list[str]] = None,
+        customer_signoff_artifacts: Optional[list[str]] = None,
     ) -> SignoffRequest:
         tenant_id = _require_tenant_id(tenant_id, context="create a signoff request")
         signoff_id = f"so-{uuid.uuid4().hex[:10]}"
@@ -142,6 +154,12 @@ class SignoffStore:
             policy_count_hard_safety=policy_count_hard_safety,
             policy_count_operational=policy_count_operational,
             policy_count_intent_contracts=policy_count_intent_contracts,
+            governed_action_matrix=governed_action_matrix or [],
+            risk_tier_definitions=risk_tier_definitions or [],
+            fail_open_exceptions=fail_open_exceptions or [],
+            rollback_limits=rollback_limits or [],
+            escalation_paths=escalation_paths or [],
+            customer_signoff_artifacts=customer_signoff_artifacts or [],
         )
         with self._lock, self._conn() as conn:
             conn.execute(

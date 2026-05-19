@@ -135,6 +135,11 @@ class Action:
     estimated_blast_radius: int = 0
     estimated_risk: RiskLevel = RiskLevel.LOW
     computed_risk: Optional[RiskLevel] = None  # Server-side computed risk
+    data_class: str = "internal"
+    connector_scope: List[str] = field(default_factory=list)
+    approval_state: str = "unapproved"
+    rollback_mode: str = "standard"
+    actor_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -149,6 +154,11 @@ class Action:
             "estimated_blast_radius": self.estimated_blast_radius,
             "estimated_risk": self.estimated_risk.value,
             "computed_risk": self.computed_risk.value if self.computed_risk else None,
+            "data_class": self.data_class,
+            "connector_scope": self.connector_scope,
+            "approval_state": self.approval_state,
+            "rollback_mode": self.rollback_mode,
+            "actor_id": self.actor_id,
         }
 
 
