@@ -24,7 +24,6 @@ jobs:
           roots=(
             "EdonLP"
             "admin"
-            "backend/ui/console-ui"
             "console"
             "demos/admin-demo"
             "demos/healthcare-demo"

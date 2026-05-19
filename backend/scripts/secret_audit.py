@@ -196,7 +196,6 @@ def main() -> int:
         "frontend/.env",
         "frontend/.env.production",
         "backend/.env.production",
-        "backend/ui/console-ui/.env",
         "backend/edon_gateway/.env",
     ]
     history_hits = _scan_history(risky_paths, os.environ.get("SECRET_AUDIT_BASE_REF"))

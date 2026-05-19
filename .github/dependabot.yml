@@ -11,11 +11,6 @@ updates:
       interval: weekly
 
   - package-ecosystem: npm
-    directory: "/backend/ui/console-ui"
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: npm
     directory: "/console"
     schedule:
       interval: weekly
