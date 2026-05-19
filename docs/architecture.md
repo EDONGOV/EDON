@@ -46,6 +46,31 @@ immutable `DecisionRecord`, and downstream execution must bind to that record.
 See [repeatable-architecture-standard.md](./repeatable-architecture-standard.md)
 for the contract and proof requirements.
 
+## Enterprise integration catalog
+
+The gateway now exposes a canonical integration catalog at
+`GET /integrations/enterprise/catalog`. It makes the supported enterprise and
+hospital integration surfaces explicit:
+
+| Category | Example systems |
+|----------|-----------------|
+| EHR / EMR | Epic, Oracle Health (Cerner), MEDITECH |
+| IAM | Microsoft Entra ID, Okta, Ping Identity, Google Workspace |
+| Clinical communications | TigerConnect, Vocera |
+| Scheduling / staffing | UKG / Kronos, nurse staffing systems |
+| Revenue cycle / billing | Epic billing, RCM vendors, claims systems |
+| PACS / imaging | Radiology PACS, imaging AI tools |
+| Laboratory systems | Labcorp, pathology systems, LIS platforms |
+| ERP / procurement | SAP, Oracle ERP |
+| Security / SIEM | Microsoft Sentinel, Splunk, CrowdStrike |
+| AI / LLM providers | OpenAI, Anthropic, Ollama/Qwen, healthcare AI vendors |
+| Robotics / physical AI | Logistics robots, humanoids, autonomous carts, pharmacy robotics |
+| Messaging / workflow | Teams, Slack, ServiceNow, ticketing systems |
+
+Each category carries the auth, transport, and governance patterns EDON expects
+to enforce. The catalog is a contract for integration readiness, not a claim
+that every vendor connector is already custom-built.
+
 ## Governance Domains
 
 | Domain | Systems Governed |

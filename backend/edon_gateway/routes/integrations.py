@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, UTC
 from ..schemas.integrations import ClawdbotConnectRequest, ClawdbotConnectResponse
 from ..persistence import get_db
 from ..connectors.clawdbot_connector import ClawdbotConnector
+from ..integration_catalog import get_enterprise_integration_catalog, get_enterprise_integration_target
 from ..logging_config import get_logger
 from ..config import config
 from ..tenancy import get_request_tenant_id
@@ -132,6 +133,26 @@ async def get_connect_buttons() -> Dict[str, Any]:
         "services": CONNECT_SERVICES,
         "telegram_inline_keyboard": TELEGRAM_CONNECT_KEYBOARD,
     }
+
+
+@router.get("/enterprise/catalog")
+async def get_enterprise_catalog() -> Dict[str, Any]:
+    """Return the enterprise integration catalog.
+
+    This is the canonical list of the hospital, enterprise, and physical-AI
+    systems EDON is expected to integrate with. It records the auth and
+    transport patterns the gateway is designed to govern.
+    """
+    return get_enterprise_integration_catalog()
+
+
+@router.get("/enterprise/catalog/{identifier}")
+async def get_enterprise_catalog_target(identifier: str) -> Dict[str, Any]:
+    """Return one integration target by slug or category."""
+    target = get_enterprise_integration_target(identifier)
+    if not target:
+        raise HTTPException(status_code=404, detail="Enterprise integration target not found")
+    return target
 
 
 @router.post("/connect/link")
