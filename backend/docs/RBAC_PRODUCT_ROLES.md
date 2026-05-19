@@ -1,26 +1,39 @@
 # EDON Product Roles
 
-Canonical product roles:
+Canonical enterprise roles:
 
-- `user` (default for console/API keys)
-  - permissions: `read`, `write`, `action`, `audit`, `api_keys`
+- `super_admin`
+  - permissions: `*` (tenant setup, emergency controls, identity, billing)
+- `governance_admin`
+  - permissions: `read`, `write`, `action`, `audit`, `export`, `approvals`, `api_keys`
+- `security_admin`
+  - permissions: `read`, `audit`, `export`, `api_keys`, `incidents`
 - `operator`
-  - permissions: `read`, `write`, `action`, `audit`, `api_keys`
-- `admin`
-  - permissions: `*` (all)
+  - permissions: `read`, `write`, `action`, `audit`
+- `auditor`
+  - permissions: `read`, `audit`, `export`
+- `developer`
+  - permissions: `read`, `write`, `action`
+- `viewer`
+  - permissions: `read`
 
 Compatibility roles (legacy):
 
-- `agent` -> treated as `user`
-- `read_only` -> `read`, `audit`
+- `admin` -> treated as `super_admin`
+- `user` -> treated as `developer` or `operator` depending on tenant mapping
+- `agent` -> treated as `developer`
+- `read_only` -> `viewer`
 
 ## Key creation defaults
 
-- New API keys default to role `user` in both SQLite and PostgreSQL backends.
-- Existing legacy keys with role `agent` are normalized to `user` during startup migrations.
+- New enterprise API keys default to `viewer` or the least-privilege role
+  selected in the onboarding contract.
+- Existing legacy keys are normalized to tenant-scoped roles during startup
+  migrations.
 
 ## Why this model
 
-- Keeps console users fully functional by default (`audit` + controlled writes).
-- Preserves existing integrations still using legacy `agent`.
-- Provides clean operator/admin escalation when needed.
+- Keeps least privilege explicit for enterprise deployments.
+- Separates governance, security, and operations authority.
+- Preserves compatibility for older console/API key flows while steering new
+  deployments toward the enterprise role model.

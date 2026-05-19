@@ -85,6 +85,68 @@ They should call **POST /v1/action** before executing each governed action; use 
 
 ---
 
+## 2.1 Governed Action Matrix
+
+Use this in the pilot pack so procurement and security can see which actions are governed, how risky they are, and what happens if rollback is needed.
+
+| Action | Risk | Approval | Rollback | Logged |
+|--------|------|----------|----------|--------|
+| Draft patient note | Medium | Optional | Yes | Yes |
+| Record writeback | High | Required | Partial | Yes |
+| Medication update | Critical | Required | Limited | Yes |
+| Billing claim submission | High | Required | Partial | Yes |
+| Robot motion command | Critical | Required | Limited | Yes |
+
+---
+
+## 2.2 Pilot Safety Mode
+
+Start the pilot in constrained mode:
+
+- no autonomous clinical authority
+- all high-risk actions require human approval
+- no medication execution without explicit policy exception
+- rollback required on governed writebacks where supported
+- fail-closed on connector uncertainty
+
+---
+
+## 2.3 Operational Guarantees
+
+The pilot should advertise simple operational targets:
+
+- policy evaluation latency target: `< 500 ms`
+- audit persistence: `100%` for governed actions
+- rollback execution: documented and testable
+- tenant isolation: strict
+- pilot uptime: explicit and conservative
+
+---
+
+## 2.4 Deployment Classification
+
+Use a maturity ladder so everyone knows what mode the deployment is in:
+
+| Classification | Meaning |
+|----------------|---------|
+| Advisory | No execution authority |
+| Governed | Approval-bound execution with EDON decision binding |
+| Autonomous | Policy-scoped autonomous execution with strict bounds |
+
+---
+
+## 2.5 Edge Runtime Boundary
+
+If edge nodes are part of the deployment, keep the boundary explicit:
+
+- local policy evaluation is allowed
+- cloud escalation is optional
+- same governance semantics apply at the edge
+- no edge bypass around the decision kernel
+- edge node identity is required
+
+---
+
 ## Summary
 
 | Step | What | Time |

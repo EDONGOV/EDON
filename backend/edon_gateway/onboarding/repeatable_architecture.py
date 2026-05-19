@@ -34,6 +34,30 @@ class CustomerVariablePack:
 
 
 @dataclass(frozen=True)
+class GovernedActionMatrixEntry:
+    action: str
+    risk_tier: str
+    approval: str
+    rollback: str
+    logged: bool
+
+
+@dataclass(frozen=True)
+class OperationalGuarantee:
+    metric: str
+    target: str
+    scope: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class DeploymentClassification:
+    classification: str
+    meaning: str
+    enforcement_notes: list[str]
+
+
+@dataclass(frozen=True)
 class RepeatableArchitectureStandard:
     standard_id: str
     version: str
@@ -48,6 +72,11 @@ class RepeatableArchitectureStandard:
     forbidden_variation: list[str]
     deployment_modes: list[str]
     required_connectors: list[str]
+    governed_action_matrix: list[GovernedActionMatrixEntry]
+    pilot_safety_mode: dict[str, Any]
+    operational_guarantees: list[OperationalGuarantee]
+    deployment_classification: list[DeploymentClassification]
+    edge_runtime_boundary: list[str]
     policy_shape: dict[str, Any]
     notes: str = ""
 
@@ -290,6 +319,124 @@ def build_repeatable_architecture_standard(profile, topology, deployment_package
         "rollback plan",
     ]
 
+    governed_action_matrix = [
+        GovernedActionMatrixEntry(
+            action="draft_patient_note",
+            risk_tier="medium",
+            approval="optional",
+            rollback="yes",
+            logged=True,
+        ),
+        GovernedActionMatrixEntry(
+            action="record_writeback",
+            risk_tier="high",
+            approval="required",
+            rollback="partial",
+            logged=True,
+        ),
+        GovernedActionMatrixEntry(
+            action="medication_update",
+            risk_tier="critical",
+            approval="required",
+            rollback="limited",
+            logged=True,
+        ),
+        GovernedActionMatrixEntry(
+            action="billing_claim_submission",
+            risk_tier="high",
+            approval="required",
+            rollback="partial",
+            logged=True,
+        ),
+        GovernedActionMatrixEntry(
+            action="robot_motion_command",
+            risk_tier="critical",
+            approval="required",
+            rollback="limited",
+            logged=True,
+        ),
+    ]
+
+    pilot_safety_mode = {
+        "name": "constrained_pilot_mode",
+        "enabled": True,
+        "rules": [
+            "no autonomous clinical authority",
+            "all high-risk actions require human approval",
+            "no medication execution without explicit policy exception",
+            "rollback required on governed writebacks where supported",
+            "fail-closed on connector uncertainty",
+        ],
+    }
+
+    operational_guarantees = [
+        OperationalGuarantee(
+            metric="policy_evaluation_latency",
+            target="< 500 ms",
+            scope="governed actions",
+            notes="Policy verdicts should be fast enough for live workflow use.",
+        ),
+        OperationalGuarantee(
+            metric="audit_persistence",
+            target="100%",
+            scope="governed actions",
+            notes="Every governed action must persist an audit record.",
+        ),
+        OperationalGuarantee(
+            metric="rollback_execution",
+            target="documented and testable",
+            scope="pilot writebacks",
+            notes="Rollback plan must exist for every supported deployment path.",
+        ),
+        OperationalGuarantee(
+            metric="tenant_isolation",
+            target="strict",
+            scope="all tenants",
+            notes="No cross-tenant access unless explicitly approved.",
+        ),
+        OperationalGuarantee(
+            metric="pilot_uptime",
+            target="best-effort with incident response",
+            scope="pilot environment",
+            notes="Pilot SLAs should be explicit and conservative.",
+        ),
+    ]
+
+    deployment_classification = [
+        DeploymentClassification(
+            classification="advisory",
+            meaning="No execution authority; outputs are informational only.",
+            enforcement_notes=[
+                "never invoke downstream execution",
+                "audit and replay remain enabled",
+            ],
+        ),
+        DeploymentClassification(
+            classification="governed",
+            meaning="Approval-bound execution with EDON decision binding.",
+            enforcement_notes=[
+                "execution requires a signed decision token",
+                "human approval may be required by risk tier",
+            ],
+        ),
+        DeploymentClassification(
+            classification="autonomous",
+            meaning="Policy-scoped autonomous execution with strict bounds.",
+            enforcement_notes=[
+                "still requires EDON decision semantics",
+                "may be disallowed in pilot safety mode",
+            ],
+        ),
+    ]
+
+    edge_runtime_boundary = [
+        "local policy evaluation is allowed",
+        "cloud escalation is optional",
+        "same governance semantics apply at the edge",
+        "no edge bypass around the decision kernel",
+        "edge node identity is required",
+    ]
+
     proof_requirements = [
         "tenant isolation evidence",
         "restore drill evidence",
@@ -335,7 +482,8 @@ def build_repeatable_architecture_standard(profile, topology, deployment_package
     notes = (
         "The invariant architecture is stable across tenants. "
         "Only policy, integrations, workflows, permissions, and scale change per customer. "
-        "The Decision Kernel is the causal core and execution must bind to a committed decision record."
+        "The Decision Kernel is the causal core and execution must bind to a committed decision record. "
+        "Pilot deployments should use constrained pilot mode with explicit governed-action tiers and operational guarantees."
     )
 
     return RepeatableArchitectureStandard(
@@ -352,6 +500,11 @@ def build_repeatable_architecture_standard(profile, topology, deployment_package
         forbidden_variation=forbidden_variation,
         deployment_modes=sorted(set(topology.deployment_modes)),
         required_connectors=sorted(set(topology.required_connectors)),
+        governed_action_matrix=governed_action_matrix,
+        pilot_safety_mode=pilot_safety_mode,
+        operational_guarantees=operational_guarantees,
+        deployment_classification=deployment_classification,
+        edge_runtime_boundary=edge_runtime_boundary,
         policy_shape=policy_shape,
         notes=notes,
     )

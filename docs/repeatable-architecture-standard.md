@@ -60,6 +60,62 @@ The execution binding requirement means:
 - downstream systems reject unbound actions
 - shadow results never authorize live execution
 
+## Governed action matrix
+
+The pilot package should include a governed action matrix that defines, for
+each important action:
+
+- risk tier
+- approval requirements
+- rollback semantics
+- audit guarantees
+
+| Action | Risk | Approval | Rollback | Logged |
+|--------|------|----------|----------|--------|
+| draft_patient_note | medium | optional | yes | yes |
+| record_writeback | high | required | partial | yes |
+| medication_update | critical | required | limited | yes |
+| billing_claim_submission | high | required | partial | yes |
+| robot_motion_command | critical | required | limited | yes |
+
+## Pilot safety mode
+
+Enterprise pilots should start in constrained pilot mode:
+
+- no autonomous clinical authority
+- all high-risk actions require human approval
+- no medication execution without explicit policy exception
+- rollback required on governed writebacks where supported
+- fail-closed on connector uncertainty
+
+## Operational guarantees
+
+The pilot package should spell out operating targets:
+
+- policy evaluation latency target: `< 500 ms`
+- audit persistence: `100%` for governed actions
+- rollback execution: documented and testable
+- tenant isolation: strict
+- pilot uptime: explicit and conservative
+
+## Deployment classification
+
+Use a maturity ladder so customers know what mode they are in:
+
+- `advisory` - no execution authority
+- `governed` - approval-bound execution with EDON decision binding
+- `autonomous` - policy-scoped autonomous execution with strict bounds
+
+## Edge runtime boundary
+
+If edge nodes are in scope, the boundary must stay explicit:
+
+- local policy evaluation is allowed
+- cloud escalation is optional
+- same governance semantics apply at the edge
+- no edge bypass around the decision kernel
+- edge node identity is required
+
 ## How it is produced
 
 The onboarding flow can generate the repeatable architecture contract from the

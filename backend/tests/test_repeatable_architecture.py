@@ -64,5 +64,21 @@ def test_repeatable_architecture_standard_has_invariant_layers():
     assert "restore drill evidence" in standard.proof_requirements
     assert "execution binding evidence" in standard.proof_requirements
     assert "execution without a valid decision token" in standard.forbidden_variation
+    assert [row.action for row in standard.governed_action_matrix] == [
+        "draft_patient_note",
+        "record_writeback",
+        "medication_update",
+        "billing_claim_submission",
+        "robot_motion_command",
+    ]
+    assert standard.pilot_safety_mode["enabled"] is True
+    assert "no autonomous clinical authority" in standard.pilot_safety_mode["rules"]
+    assert any(g.metric == "policy_evaluation_latency" and g.target == "< 500 ms" for g in standard.operational_guarantees)
+    assert [item.classification for item in standard.deployment_classification] == [
+        "advisory",
+        "governed",
+        "autonomous",
+    ]
+    assert "no edge bypass around the decision kernel" in standard.edge_runtime_boundary
     assert standard.policy_shape["policy_layers"]["hard_safety"] >= 1
     assert "http_proxy" in standard.deployment_modes or "sidecar" in standard.deployment_modes
