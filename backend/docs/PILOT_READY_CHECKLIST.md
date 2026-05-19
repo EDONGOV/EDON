@@ -12,7 +12,7 @@
 fly secrets set DATABASE_URL="postgresql://postgres:YOUR_PASSWORD@database-1.c2r6emwsal3n.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=require" --app edon-gatewaybk
 ```
 
-**1.2** `psycopg2-binary` is already in `edon_gateway/requirements.txt`. No change needed if you have it; if not, add:
+**1.2** `psycopg2-binary` is already in `edon_gateway/requirements.gateway.txt`. No change needed if you have it; if not, add:
 
 ```
 psycopg2-binary>=2.9.0

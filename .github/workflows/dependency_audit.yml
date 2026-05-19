@@ -57,6 +57,4 @@ jobs:
       - name: Audit Python requirements
         run: |
           pip-audit -r backend/requirements.gateway.txt
-          pip-audit -r backend/requirements.txt
           pip-audit -r load_tests/requirements.txt
-

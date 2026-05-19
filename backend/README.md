@@ -38,7 +38,7 @@ backend/
 ├── Dockerfile           # Production image (used by Fly.io)
 ├── fly.toml             # Fly.io deploy config
 ├── requirements.gateway.txt  # Production dependencies (used by Docker)
-└── requirements.txt          # Development dependencies (includes pytest)
+└── requirements.gateway.txt  # Production and local gateway dependencies
 ```
 
 ## Key Endpoints
