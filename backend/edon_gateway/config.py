@@ -91,6 +91,7 @@ class Config:
             os.getenv("EDON_EDGE_REQUIRE_NODE_CERTIFICATE", "false").lower() == "true"
         )
         self._EDGE_REQUIRE_ATTESTATION = os.getenv("EDON_EDGE_REQUIRE_ATTESTATION", "false").lower() == "true"
+        self._EDGE_BUNDLE_SIGNING_KEY = os.getenv("EDON_EDGE_BUNDLE_SIGNING_KEY")
         self._ENTERPRISE_IDENTITY_PROVIDERS = [
             p.strip().lower()
             for p in (os.getenv("EDON_ENTERPRISE_IDENTITY_PROVIDERS", "clerk,oidc,saml")).split(",")
@@ -223,6 +224,10 @@ class Config:
         # =========================
         self._CAV_URL = os.getenv("CAV_URL", "http://localhost:8001").rstrip("/")
         self._CAV_ENABLED = os.getenv("CAV_ENABLED", "false").lower() == "true"
+        self._ENABLE_OPTIONAL_SURFACES = os.getenv(
+            "EDON_ENABLE_OPTIONAL_SURFACES",
+            "false" if self._ENTERPRISE_MODE else "true",
+        ).lower() == "true"
 
     # ===== Properties =====
     @property
@@ -268,6 +273,10 @@ class Config:
     @property
     def EDGE_REQUIRE_ATTESTATION(self) -> bool:
         return self._EDGE_REQUIRE_ATTESTATION
+
+    @property
+    def EDGE_BUNDLE_SIGNING_KEY(self) -> Optional[str]:
+        return self._EDGE_BUNDLE_SIGNING_KEY
 
     @property
     def ENTERPRISE_IDENTITY_PROVIDERS(self) -> List[str]:
@@ -438,6 +447,10 @@ class Config:
         return self._CAV_ENABLED
 
     @property
+    def ENABLE_OPTIONAL_SURFACES(self) -> bool:
+        return self._ENABLE_OPTIONAL_SURFACES
+
+    @property
     def TELEGRAM_BOT_SECRET(self) -> Optional[str]:
         return self._TELEGRAM_BOT_SECRET
 
@@ -582,6 +595,8 @@ class Config:
                 violations.append("CLERK_SECRET_KEY must be set in enterprise mode")
             if not issuer or not audience:
                 violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set in enterprise mode")
+            if not self.EDGE_BUNDLE_SIGNING_KEY:
+                violations.append("EDON_EDGE_BUNDLE_SIGNING_KEY must be set in enterprise mode")
 
         return violations
 

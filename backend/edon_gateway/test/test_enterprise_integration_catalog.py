@@ -50,14 +50,18 @@ def test_enterprise_catalog_lists_required_systems(_dev_environment):
 
     for item in targets:
         assert item["status_tier"] in {"supported", "pilot", "experimental", "blocked"}
+        assert item["certification_status"] in {"certified", "pilot", "experimental", "blocked"}
         contract = item["connector_contract"]
         assert contract["status_tier"] == item["status_tier"]
+        assert contract["certification_status"] == item["certification_status"]
         assert contract["tenant_scope"] == "tenant-bound"
         assert contract["requires_execution_binding"] is True
         assert contract["failure_mode"] in {"fail-closed", "advisory"}
         assert contract["approval_requirement"]
         assert contract["auth_modes"]
         assert contract["tested_versions"]
+        assert contract["last_verified"]
+        assert isinstance(contract["evidence_refs"], list)
 
 
 def test_enterprise_catalog_target_lookup_by_category(_dev_environment):

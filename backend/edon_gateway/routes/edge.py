@@ -11,6 +11,7 @@ the gateway) and sync back when reconnected.  This router provides:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from datetime import datetime, UTC, timedelta
@@ -99,6 +100,8 @@ def _ensure_edge_tables(db) -> None:
                 signed_config_bundle TEXT,
                 attestation TEXT,
                 identity_provider TEXT,
+                revoked_at TEXT,
+                revoked_reason TEXT,
                 registered_at TEXT NOT NULL
             )
         """)
@@ -134,6 +137,8 @@ def _ensure_edge_tables(db) -> None:
             ("signed_config_bundle TEXT", "signed_config_bundle"),
             ("attestation TEXT", "attestation"),
             ("identity_provider TEXT", "identity_provider"),
+            ("revoked_at TEXT", "revoked_at"),
+            ("revoked_reason TEXT", "revoked_reason"),
         ]:
             if column_name not in existing_columns:
                 conn.execute(f"ALTER TABLE edge_nodes ADD COLUMN {column_def}")
@@ -175,6 +180,55 @@ def _require_edge_identity(request: Request, req: Optional[EdgeNodeRegisterReque
         if not (req and req.identity_provider):
             raise HTTPException(status_code=403, detail="Edge node identity provider is required")
     return cert_fingerprint, signed_config_bundle, attestation
+
+
+def _canonical_edge_registration_payload(
+    tenant_id: str,
+    req: EdgeNodeRegisterRequest,
+    cert_fingerprint: Optional[str],
+    attestation: Optional[str],
+) -> str:
+    normalized_attestation = attestation or ""
+    if normalized_attestation:
+        try:
+            normalized_attestation = json.dumps(json.loads(normalized_attestation), sort_keys=True, separators=(",", ":"))
+        except Exception:
+            pass
+    payload = {
+        "tenant_id": tenant_id,
+        "node_id": req.node_id,
+        "name": req.name,
+        "capabilities": sorted(req.capabilities or []),
+        "metadata": req.metadata or {},
+        "cert_fingerprint": cert_fingerprint or "",
+        "attestation": normalized_attestation,
+        "identity_provider": (req.identity_provider or "").strip().lower(),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _edge_registration_signature(
+    tenant_id: str,
+    req: EdgeNodeRegisterRequest,
+    cert_fingerprint: Optional[str],
+    attestation: Optional[str],
+) -> Optional[str]:
+    signing_key = (config.EDGE_BUNDLE_SIGNING_KEY or "").strip()
+    if not signing_key:
+        return None
+    canonical = _canonical_edge_registration_payload(tenant_id, req, cert_fingerprint, attestation)
+    return hmac.new(signing_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _ensure_edge_not_revoked(db, node_id: str, tenant_id: str) -> None:
+    with db._get_connection() as conn:
+        row = conn.execute(
+            "SELECT status, revoked_at, revoked_reason FROM edge_nodes WHERE id = ? AND tenant_id = ?",
+            (node_id, tenant_id),
+        ).fetchone()
+    if row and str(row[0]).lower() == "revoked":
+        reason = row[2] or "revoked"
+        raise HTTPException(status_code=403, detail=f"Edge node '{node_id}' is revoked: {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +293,35 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
     db = get_db()
     _ensure_edge_tables(db)
     cert_fingerprint, signed_config_bundle, attestation = _require_edge_identity(request, req)
+    expected_signature = _edge_registration_signature(tenant_id, req, cert_fingerprint, attestation)
+    if config.ENTERPRISE_MODE and not expected_signature:
+        raise HTTPException(status_code=503, detail="Edge bundle signing key is required in enterprise mode")
+    if expected_signature and not signed_config_bundle:
+        raise HTTPException(status_code=403, detail="Edge node signed config bundle is required")
+    if expected_signature and signed_config_bundle != expected_signature:
+        raise HTTPException(status_code=403, detail="Edge node signed config bundle mismatch")
+    if expected_signature:
+        signed_config_bundle = expected_signature
+    attestation_payload = attestation
+    if attestation:
+        try:
+            attestation_obj = json.loads(attestation)
+        except Exception as exc:
+            raise HTTPException(status_code=403, detail=f"Invalid edge attestation payload: {exc}")
+        if not isinstance(attestation_obj, dict):
+            raise HTTPException(status_code=403, detail="Edge attestation must be a JSON object")
+        if config.ENTERPRISE_MODE:
+            if not attestation_obj.get("healthy", False):
+                raise HTTPException(status_code=403, detail="Edge attestation must report healthy=true in enterprise mode")
+            expires_at = attestation_obj.get("expires_at")
+            if expires_at:
+                try:
+                    expires_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                except Exception as exc:
+                    raise HTTPException(status_code=403, detail=f"Invalid edge attestation expiry: {exc}")
+                if expires_dt < datetime.now(UTC):
+                    raise HTTPException(status_code=403, detail="Edge attestation has expired")
+        attestation_payload = json.dumps(attestation_obj, sort_keys=True, separators=(",", ":"))
 
     now = datetime.now(UTC).isoformat()
     bundle = _compile_bundle(tenant_id, db)
@@ -249,8 +332,9 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
             """
             INSERT INTO edge_nodes (id, tenant_id, name, capabilities, status,
                                     last_seen, policy_version, metadata, cert_fingerprint,
-                                    signed_config_bundle, attestation, identity_provider, registered_at)
-            VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+                                    signed_config_bundle, attestation, identity_provider,
+                                    revoked_at, revoked_reason, registered_at)
+            VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 capabilities=excluded.capabilities,
@@ -260,7 +344,10 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
                 cert_fingerprint=excluded.cert_fingerprint,
                 signed_config_bundle=excluded.signed_config_bundle,
                 attestation=excluded.attestation,
-                identity_provider=excluded.identity_provider
+                identity_provider=excluded.identity_provider,
+                status='active',
+                revoked_at=NULL,
+                revoked_reason=NULL
             """,
             (
                 req.node_id,
@@ -272,8 +359,10 @@ async def register_edge_node(request: Request, req: EdgeNodeRegisterRequest):
                 json.dumps(req.metadata),
                 cert_fingerprint,
                 signed_config_bundle,
-                attestation,
+                attestation_payload,
                 (req.identity_provider or "mtls-proxy"),
+                None,
+                None,
                 now,
             ),
         )
@@ -304,6 +393,7 @@ async def get_policy_bundle(node_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Edge node '{node_id}' not found")
     if row[0] != tenant_id:
         raise HTTPException(status_code=403, detail="Not authorised for this edge node")
+    _ensure_edge_not_revoked(db, node_id, tenant_id)
     cert_fingerprint, _, _ = _require_edge_identity(request)
     if cert_fingerprint and config.ENTERPRISE_MODE:
         with db._get_connection() as conn:
@@ -349,6 +439,7 @@ async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest
         raise HTTPException(status_code=404, detail=f"Edge node '{node_id}' not found")
     if row[0] != tenant_id:
         raise HTTPException(status_code=403, detail="Not authorised for this edge node")
+    _ensure_edge_not_revoked(db, node_id, tenant_id)
     cert_fingerprint, _, _ = _require_edge_identity(request)
     if cert_fingerprint and config.ENTERPRISE_MODE:
         with db._get_connection() as conn:
@@ -410,6 +501,38 @@ async def sync_edge_actions(node_id: str, request: Request, req: EdgeSyncRequest
         new_policy_version=bundle["version"],
         synced_at=now,
     )
+
+
+class EdgeNodeRevokeRequest(BaseModel):
+    reason: str = Field(default="policy_revocation", min_length=1, max_length=500)
+
+
+@router.post("/{node_id}/revoke")
+async def revoke_edge_node(node_id: str, request: Request, body: EdgeNodeRevokeRequest):
+    tenant_id = _resolve_edge_tenant(request)
+    db = get_db()
+    _ensure_edge_tables(db)
+
+    with db._get_connection() as conn:
+        row = conn.execute(
+            "SELECT tenant_id FROM edge_nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Edge node '{node_id}' not found")
+        if row[0] != tenant_id:
+            raise HTTPException(status_code=403, detail="Not authorised for this edge node")
+
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "UPDATE edge_nodes SET status = 'revoked', revoked_at = ?, revoked_reason = ? WHERE id = ? AND tenant_id = ?",
+            (now, body.reason, node_id, tenant_id),
+        )
+        conn.commit()
+
+    logger.info("Edge node revoked: %s tenant=%s reason=%s", node_id, tenant_id, body.reason)
+    return {"node_id": node_id, "status": "revoked", "revoked_at": now, "reason": body.reason}
 
 
 @router.get("")

@@ -67,6 +67,19 @@ _FAILURE_MODE_REGISTRY: Dict[Tuple[str, str], str] = {
     ("ehr", "break_glass"): "fail_open",
 }
 
+FAIL_OPEN_EXCEPTION_REGISTRY: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("ehr", "emergency_access"): {
+        "requires_signoff": True,
+        "signoff_field": "exception_signoff_id",
+        "reason": "break_glass_emergency_access",
+    },
+    ("ehr", "break_glass"): {
+        "requires_signoff": True,
+        "signoff_field": "exception_signoff_id",
+        "reason": "break_glass_emergency_access",
+    },
+}
+
 # Tools that govern physical actuators Ã¢â‚¬â€ e-stop and safety envelope checks apply to these
 _PHYSICAL_TOOLS = frozenset({
     Tool.ROBOT, Tool.VEHICLE, Tool.DRONE,
@@ -215,6 +228,21 @@ class EDONGovernor:
             # Resolve per-action failure mode: per-rule Ã¢â€ â€™ static registry Ã¢â€ â€™ global setting
             _eff_mode = self._resolve_failure_mode(action, context)
             _fail_open = (_eff_mode == "fail_open") or (_eff_mode is None and _global_fail_safe_allow())
+            if _fail_open and _IS_PRODUCTION:
+                tool_str = action.tool.value if hasattr(action.tool, "value") else str(action.tool)
+                op_str = action.op
+                _exception_meta = FAIL_OPEN_EXCEPTION_REGISTRY.get((tool_str, op_str))
+                if _exception_meta and _exception_meta.get("requires_signoff"):
+                    signoff_field = str(_exception_meta.get("signoff_field") or "exception_signoff_id")
+                    signoff_id = (context or {}).get(signoff_field) or (context or {}).get("break_glass_approval_id")
+                    if not signoff_id:
+                        logger.warning(
+                            "Fail-open exception blocked in production: tool=%s op=%s missing %s",
+                            tool_str,
+                            op_str,
+                            signoff_field,
+                        )
+                        _fail_open = False
             if _fail_open:
                 decision = Decision(
                     verdict=Verdict.ALLOW,

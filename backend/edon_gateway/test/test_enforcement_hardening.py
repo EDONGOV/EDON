@@ -279,6 +279,52 @@ def test_governor_blocks_policy_engine_exceptions_in_production(monkeypatch):
     assert decision.reason_code == ReasonCode.POLICY_ENGINE_ERROR
 
 
+def test_governor_requires_explicit_signoff_for_production_break_glass(monkeypatch):
+    import backend.edon_gateway.governor as governor_module
+
+    governor = governor_module.EDONGovernor()
+    intent = IntentContract(
+        objective="emergency clinical access",
+        scope={"ehr": ["emergency_access"]},
+        constraints={},
+        risk_level=RiskLevel.HIGH,
+        approved_by_user=False,
+    )
+    action = Action(
+        tool="ehr",
+        op="emergency_access",
+        params={"patient_id": "p-1"},
+        estimated_risk=RiskLevel.HIGH,
+    )
+
+    monkeypatch.setattr(governor_module, "_IS_PRODUCTION", True)
+    monkeypatch.setattr(governor_module, "_STRICT_FAIL_CLOSED", False)
+    monkeypatch.setattr(governor_module, "POLICY_FAIL_SAFE", "allow_with_log")
+    monkeypatch.setattr(governor_module, "mag_enabled_for_tenant", lambda _tenant_id: False)
+    monkeypatch.setattr(governor_module, "authorize_action", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("policy engine down")))
+
+    blocked = governor.evaluate(
+        action=action,
+        intent=intent,
+        context={"tenant_id": "tenant-prod", "agent_id": "agent-1"},
+        tenant_id="tenant-prod",
+    )
+    assert blocked.verdict == Verdict.BLOCK
+    assert blocked.reason_code == ReasonCode.POLICY_ENGINE_ERROR
+
+    allowed = governor.evaluate(
+        action=action,
+        intent=intent,
+        context={
+            "tenant_id": "tenant-prod",
+            "agent_id": "agent-1",
+            "exception_signoff_id": "signoff-123",
+        },
+        tenant_id="tenant-prod",
+    )
+    assert allowed.verdict == Verdict.ALLOW
+
+
 def test_kill_switch_activation_fails_closed_when_estop_propagation_fails(monkeypatch):
     import backend.edon_gateway.routes.kill_switch as kill_switch_route
     import backend.edon_gateway.persistence as persistence

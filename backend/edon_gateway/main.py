@@ -108,6 +108,12 @@ def _register_routes(app: FastAPI) -> None:
     from .routes.decisions import router as decisions_router
     from .routes.clawdbot_proxy import router as clawdbot_proxy_router
 
+    def _include_optional(router, *, enabled: bool, label: str, **kwargs) -> None:
+        if enabled:
+            app.include_router(router, **kwargs)
+        else:
+            logger.info("Skipping optional route group '%s' (disabled by deployment tier)", label)
+
     # Core governance
     app.include_router(v1_action_router)
     app.include_router(v1_output_router)
@@ -136,7 +142,7 @@ def _register_routes(app: FastAPI) -> None:
     # Agents & devices
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
     app.include_router(devices_router)
-    app.include_router(swarm_router)
+    _include_optional(swarm_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="swarm")
     app.include_router(edge_router)
     # Security & hardening
     app.include_router(kill_switch_router)
@@ -147,32 +153,32 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(cicd_router)
     app.include_router(proof_router)
     # Autonomy
-    app.include_router(autonomous_router)
-    app.include_router(creao_router)
+    _include_optional(autonomous_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="autonomous")
+    _include_optional(creao_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="creao")
     # Copilots & assistant
-    app.include_router(jarvis_router)
-    app.include_router(assistant_router)
-    app.include_router(codex_router)
+    _include_optional(jarvis_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="jarvis")
+    _include_optional(assistant_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="assistant")
+    _include_optional(codex_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="codex")
     app.include_router(onboarding_router)
-    app.include_router(voice_router)
+    _include_optional(voice_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="voice")
     # Infrastructure & integrations
     app.include_router(integrations_router)
     app.include_router(analytics_router)
     app.include_router(telemetry_router)
     app.include_router(learning_router)
-    app.include_router(sandbox_router)
+    _include_optional(sandbox_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="sandbox")
     app.include_router(alerts_router)
     app.include_router(settings_router)
     app.include_router(webhooks_router)
     app.include_router(action_result_router)
     app.include_router(training_router)
-    app.include_router(telegram_bot_router)
+    _include_optional(telegram_bot_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="telegram_bot")
     app.include_router(estop_router)
-    app.include_router(physical_router)
+    _include_optional(physical_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="physical")
     # Platform ops, decision query, connector proxies
     app.include_router(ops_router)
     app.include_router(decisions_router)
-    app.include_router(clawdbot_proxy_router)
+    _include_optional(clawdbot_proxy_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="clawdbot_proxy")
 
 
 # ── App ────────────────────────────────────────────────────────────────────────

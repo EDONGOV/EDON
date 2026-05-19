@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 ENTERPRISE_STATUS_TIERS = {"supported", "pilot", "experimental", "blocked"}
 ENTERPRISE_APPROVED_STATUS = "supported"
+ENTERPRISE_CERTIFICATION_STATUSES = {"certified", "pilot", "experimental", "blocked"}
 
 
 ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
@@ -21,6 +22,13 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "title": "EHR / EMR Systems",
         "priority": "highest",
         "status_tier": "supported",
+        "certification_status": "certified",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/verification-ledger.md",
+            "docs/evidence/tenant-isolation.md",
+            "docs/evidence/audit-chain.md",
+        ],
         "examples": ["Epic Systems", "Oracle Health (Cerner)", "MEDITECH"],
         "integration_patterns": [
             "SMART on FHIR / OAuth 2.0",
@@ -47,6 +55,13 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "iam",
         "category": "identity_access_management",
         "title": "Identity & Access Management",
+        "status_tier": "supported",
+        "certification_status": "certified",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "backend/edon_gateway/test/test_enterprise_identity_controls.py",
+            "backend/edon_gateway/test/test_security_hardening.py",
+        ],
         "examples": ["Microsoft Entra ID", "Okta", "Ping Identity", "Google Workspace"],
         "integration_patterns": [
             "SAML 2.0",
@@ -72,6 +87,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "clinical-communications",
         "category": "clinical_communications",
         "title": "Clinical Communication Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["TigerConnect", "Vocera Communications"],
         "integration_patterns": [
             "Webhook delivery",
@@ -95,6 +116,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "scheduling-staffing",
         "category": "scheduling_staffing",
         "title": "Scheduling / Staffing Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["UKG / Kronos", "Nurse staffing tools"],
         "integration_patterns": [
             "REST API",
@@ -117,6 +144,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "revenue-cycle",
         "category": "revenue_cycle_billing",
         "title": "Revenue Cycle / Billing Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["Epic billing modules", "RCM vendors", "Claims systems"],
         "integration_patterns": [
             "REST API",
@@ -140,6 +173,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "pacs-imaging",
         "category": "pacs_imaging",
         "title": "PACS / Imaging Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["Radiology PACS", "Imaging AI tools"],
         "integration_patterns": [
             "DICOM",
@@ -162,6 +201,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "laboratory",
         "category": "laboratory_information_systems",
         "title": "Laboratory Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["Labcorp integrations", "Pathology systems", "LIS platforms"],
         "integration_patterns": [
             "HL7",
@@ -185,6 +230,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "erp-procurement",
         "category": "erp_procurement",
         "title": "ERP / Procurement Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["SAP", "Oracle ERP"],
         "integration_patterns": [
             "REST API",
@@ -208,6 +259,13 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "security-siem",
         "category": "security_siem",
         "title": "Security / SIEM Systems",
+        "status_tier": "supported",
+        "certification_status": "certified",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/audit-chain.md",
+            "docs/evidence/verification-ledger.md",
+        ],
         "examples": ["Microsoft Sentinel", "Splunk", "CrowdStrike"],
         "integration_patterns": [
             "Syslog / event forwarding",
@@ -231,6 +289,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "llm-providers",
         "category": "llm_providers",
         "title": "AI / LLM Providers",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["OpenAI", "Anthropic", "Ollama / Qwen runtime", "Healthcare AI vendors"],
         "integration_patterns": [
             "Provider API gateway",
@@ -254,6 +318,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "robotics-physical-ai",
         "category": "robotics_physical_ai",
         "title": "Robotics / Physical AI Systems",
+        "status_tier": "experimental",
+        "certification_status": "experimental",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["Logistics robots", "Humanoids", "Autonomous carts", "Pharmacy robotics"],
         "integration_patterns": [
             "Robot gateway API",
@@ -279,6 +349,12 @@ ENTERPRISE_INTEGRATION_TARGETS: List[Dict[str, Any]] = [
         "slug": "messaging-workflow",
         "category": "messaging_workflow",
         "title": "Messaging / Workflow Systems",
+        "status_tier": "pilot",
+        "certification_status": "pilot",
+        "last_verified": "2026-05-19",
+        "evidence_refs": [
+            "docs/evidence/production-advisory-review.md",
+        ],
         "examples": ["Microsoft Teams", "Slack", "ServiceNow", "Ticketing systems"],
         "integration_patterns": [
             "Webhook",
@@ -353,9 +429,17 @@ def _build_connector_contract(target: Dict[str, Any]) -> Dict[str, Any]:
     controls = list(target.get("required_controls", []))
     edon_role = list(target.get("edon_role", []))
     tier = target.get("status_tier") or _STATUS_TIER_BY_STATUS.get(target.get("status"), "pilot")
+    certification_status = target.get("certification_status") or (
+        "certified" if tier == "supported" else tier
+    )
+    if certification_status not in ENTERPRISE_CERTIFICATION_STATUSES:
+        certification_status = "pilot"
     fail_mode = "fail-closed" if tier in {"supported", "pilot"} else "advisory"
     return {
         "status_tier": tier,
+        "certification_status": certification_status,
+        "last_verified": target.get("last_verified") or "unverified",
+        "evidence_refs": list(target.get("evidence_refs", [])),
         "auth_modes": _infer_auth_modes(patterns),
         "tenant_scope": "tenant-bound",
         "allowed_actions": edon_role,
@@ -374,7 +458,11 @@ def _decorate_target(target: Dict[str, Any]) -> Dict[str, Any]:
     if status_tier not in ENTERPRISE_STATUS_TIERS:
         status_tier = "pilot"
     decorated["status_tier"] = status_tier
-    decorated["enterprise_supported"] = status_tier == ENTERPRISE_APPROVED_STATUS
+    certification_status = decorated.get("certification_status") or ("certified" if status_tier == ENTERPRISE_APPROVED_STATUS else status_tier)
+    if certification_status not in ENTERPRISE_CERTIFICATION_STATUSES:
+        certification_status = "pilot"
+    decorated["certification_status"] = certification_status
+    decorated["enterprise_supported"] = status_tier == ENTERPRISE_APPROVED_STATUS and certification_status == "certified"
     decorated["connector_contract"] = _build_connector_contract(decorated)
     return decorated
 
