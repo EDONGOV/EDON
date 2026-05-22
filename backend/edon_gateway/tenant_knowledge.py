@@ -110,6 +110,18 @@ def _build_compliance_health(db, tenant_id: str) -> dict[str, Any]:
         return {"status": "unavailable", "error": str(exc)[:200]}
 
 
+def _summarize_agents(agents: list[dict[str, Any]]) -> dict[str, Any]:
+    vendors = sorted({str(a.get("vendor_id") or "").strip() for a in agents if a.get("vendor_id")})
+    departments = sorted({str(a.get("department") or "").strip() for a in agents if a.get("department")})
+    return {
+        "count": len(agents),
+        "vendors": vendors,
+        "departments": departments,
+        "vendor_count": len(vendors),
+        "department_count": len(departments),
+    }
+
+
 def _build_drift_status(db, tenant_id: str) -> dict[str, Any]:
     try:
         catalog = get_enterprise_integration_catalog(approved_only=False)
@@ -242,6 +254,7 @@ def build_tenant_knowledge_snapshot(tenant_id: str) -> TenantKnowledgeSnapshot:
 
     compliance_health = _build_compliance_health(db, tenant_id)
     drift = _build_drift_status(db, tenant_id)
+    agent_summary = _summarize_agents(agents)
 
     snapshot = TenantKnowledgeSnapshot(
         tenant_id=tenant_id,
@@ -262,6 +275,12 @@ def build_tenant_knowledge_snapshot(tenant_id: str) -> TenantKnowledgeSnapshot:
         compliance_health=compliance_health,
         drift=drift,
     )
+    snapshot.preferences = {
+        **snapshot.preferences,
+        "agent_count": str(agent_summary["count"]),
+        "vendor_count": str(agent_summary["vendor_count"]),
+        "department_count": str(agent_summary["department_count"]),
+    }
     snapshot.snapshot_hash = _json_hash(snapshot.as_dict())
     return snapshot
 
@@ -293,7 +312,14 @@ def render_tenant_knowledge_snapshot(snapshot: TenantKnowledgeSnapshot) -> str:
             )
 
     lines.append(f"  Active policy rules: {len(data.get('policy_rules') or [])}")
-    lines.append(f"  Registered agents: {len(data.get('agents') or [])}")
+    agents = data.get("agents") or []
+    lines.append(f"  Registered agents: {len(agents)}")
+    if agents:
+        summary = _summarize_agents(agents)
+        if summary.get("vendor_count"):
+            lines.append(f"  Agent vendors: {summary.get('vendor_count')} ({', '.join(summary.get('vendors')[:8])})")
+        if summary.get("department_count"):
+            lines.append(f"  Agent departments: {summary.get('department_count')} ({', '.join(summary.get('departments')[:12])})")
 
     connected = data.get("connected_services") or []
     if connected:

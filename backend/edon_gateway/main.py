@@ -67,6 +67,7 @@ def _register_routes(app: FastAPI) -> None:
     from .routes.policy import router as policy_router, router_packs as policy_packs_router, router_signing as signing_router
     from .routes.market_packs import router as market_packs_router
     from .routes.api_keys import router as api_keys_router
+    from .routes.access import router as access_router
     from .routes.admin import router as admin_router
     from .routes.agents import router as agents_router
     from .routes.telemetry import router as telemetry_router
@@ -104,6 +105,7 @@ def _register_routes(app: FastAPI) -> None:
     from .routes.codex import router as codex_router
     from .routes.proposals import router as proposals_router
     from .routes.onboarding import router as onboarding_router
+    from .routes.reconciliation import router as reconciliation_router
     from .routes.estop import router as estop_router
     from .routes.physical import router as physical_router
     from .routes.ops import router as ops_router
@@ -139,6 +141,7 @@ def _register_routes(app: FastAPI) -> None:
     # Auth & tenancy
     app.include_router(auth_router)
     app.include_router(api_keys_router)
+    app.include_router(access_router)
     app.include_router(admin_router)
     app.include_router(live_key_router)
     app.include_router(bootstrap_router)
@@ -165,6 +168,7 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(onboarding_router)
     _include_optional(voice_router, enabled=config.ENABLE_OPTIONAL_SURFACES, label="voice")
     # Infrastructure & integrations
+    app.include_router(reconciliation_router)
     app.include_router(integrations_router)
     app.include_router(analytics_router)
     app.include_router(telemetry_router)

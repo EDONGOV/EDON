@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from ..department_scope import department_allowed, record_department
 from ..tenancy import get_request_tenant_id
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,7 @@ async def list_review_queue(request: Request, status: str = "pending"):
             if (tenant_id is None or v["tenant_id"] == tenant_id)
             and v.get("status") == status
             and v.get("created_at", "") >= cutoff
+            and department_allowed(request, record_department(v))
         ]
     items.sort(key=lambda x: x["created_at"], reverse=True)
     return {"queue": items, "count": len(items)}
@@ -208,6 +210,8 @@ async def get_review_item(decision_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Escalation not found")
     if tenant_id and record["tenant_id"] != tenant_id:
         raise HTTPException(status_code=403, detail="Access denied")
+    if not department_allowed(request, record_department(record)):
+        raise HTTPException(status_code=403, detail="Department-scoped users cannot view this review item")
     return record
 
 
@@ -250,6 +254,8 @@ async def approve_escalation(decision_id: str, request: Request, body: ReviewDec
             raise HTTPException(status_code=404, detail="Escalation not found")
         if tenant_id and record["tenant_id"] != tenant_id:
             raise HTTPException(status_code=403, detail="Access denied")
+        if not department_allowed(request, record_department(record)):
+            raise HTTPException(status_code=403, detail="Department-scoped users cannot approve this review item")
         if record["status"] != "pending":
             raise HTTPException(status_code=409, detail=f"Already resolved: {record['status']}")
         if body.resolved_by and body.resolved_by == record.get("agent_id"):
@@ -288,6 +294,8 @@ async def reject_escalation(decision_id: str, request: Request, body: ReviewDeci
             raise HTTPException(status_code=404, detail="Escalation not found")
         if tenant_id and record["tenant_id"] != tenant_id:
             raise HTTPException(status_code=403, detail="Access denied")
+        if not department_allowed(request, record_department(record)):
+            raise HTTPException(status_code=403, detail="Department-scoped users cannot reject this review item")
         if record["status"] != "pending":
             raise HTTPException(status_code=409, detail=f"Already resolved: {record['status']}")
         if body.resolved_by and body.resolved_by == record.get("agent_id"):

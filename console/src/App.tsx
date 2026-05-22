@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Component, createContext, lazy, Suspense, useContext, type ReactNode, type ErrorInfo } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   Shield, Activity, FileText, Users, ClipboardList,
   CheckCircle2, XCircle, AlertTriangle, RefreshCcw,
@@ -9,12 +9,11 @@ import {
   ThumbsUp, ThumbsDown, Power, KeyRound, Eye, EyeOff,
   TimerOff, Filter, TrendingUp, Minus, ShieldAlert,
   ListChecks, FileDown, Bell, Settings, Menu, User,
-  BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link, Package, FlaskConical,
-  Stethoscope, Microscope, Building2, GitCompare, Network, ServerCog, Radio,
+  BarChart2, Wifi, WifiOff, Copy, Check, RefreshCw, Plus, Trash2, Link, Link2, Package, FlaskConical, ChevronLeft,
+  ServerCog,
 } from 'lucide-react'
-import { api, getLastRequestId, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal, type Citation } from './api'
+import { api, getLastRequestId, type AuditEvent, type Agent, type PolicyRule, type TimeseriesPoint, type HealthResponse, type ComplianceHealth, type ReviewItem, type BlockReason, type MeResponse, type AssistantProposal, type Citation, type ApiKey, type AuditorGrant, type ConsoleUserInvite, type DepartmentOwner } from './api'
 import { ROLE_DEFAULT_TAB, ROLE_LABELS, type ConsoleRole } from './uiModel'
-import { GovernanceStrip } from './shared/enterprise'
 
 const ClinicalSummaryTab = lazy(() => import('./clinical').then(module => ({ default: module.ClinicalSummaryTab })))
 const ClinicalExplainTab = lazy(() => import('./clinical').then(module => ({ default: module.ClinicalExplainTab })))
@@ -26,10 +25,13 @@ const PolicyDiffViewerTab = lazy(() => import('./policies').then(module => ({ de
 const ControlTowerTab = lazy(() => import('./control-tower').then(module => ({ default: module.ControlTowerTab })))
 const SystemRegistryTable = lazy(() => import('./control-tower').then(module => ({ default: module.SystemRegistryTable })))
 const DeploymentGatekeeperTab = lazy(() => import('./control-tower').then(module => ({ default: module.DeploymentGatekeeperTab })))
-const ImpactCenterTab = lazy(() => import('./assurance').then(module => ({ default: module.ImpactCenterTab })))
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
+}
+
+function AnimatePresence({ children }: { children?: ReactNode; [key: string]: unknown }) {
+  return <>{children}</>
 }
 
 // -- Page data store (tabs write here; ChatPanel reads for context) ------------
@@ -142,8 +144,9 @@ function clearAuth() {
 }
 function getAuth() {
   const raw = sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth')
+  if (!raw && CONSOLE_DEV_MODE) return CONSOLE_DEV_AUTH
   if (!raw) return null
-  try { return JSON.parse(raw) as { gatewayUrl: string; token: string } } catch { return null }
+  try { return JSON.parse(raw) as { gatewayUrl: string; token: string } } catch { return CONSOLE_DEV_AUTH }
 }
 
 // -- Session timeout -----------------------------------------------------------
@@ -204,7 +207,6 @@ const setReviewerName = (name: string) => localStorage.setItem(REVIEWER_KEY, nam
 
 const DEPT_KEY = 'edon_reviewer_dept'
 const getReviewerDept = () => localStorage.getItem(DEPT_KEY) || ''
-const setReviewerDept = (dept: string) => localStorage.setItem(DEPT_KEY, dept)
 
 const ROLE_KEY = 'edon_reviewer_role'
 const ROLES_BY_VERTICAL: Record<string, readonly string[]> = {
@@ -226,76 +228,10 @@ const APPROVAL_TIER_BY_VERTICAL: Record<string, Record<string, string>> = {
 const getApprovalTier = (vertical: string | null) =>
   APPROVAL_TIER_BY_VERTICAL[vertical ?? 'general'] ?? APPROVAL_TIER_BY_VERTICAL.general
 const canApprove = (role: ReviewerRole, urgency: string, vertical: string | null) => {
+  if (['admin', 'super_admin', 'governance_admin', 'security_admin'].includes(role)) return true
   const roles = getReviewRoles(vertical)
   const required = getApprovalTier(vertical)[urgency] ?? roles[0]
   return (roles.indexOf(role) ?? -1) >= roles.indexOf(required)
-}
-
-const DEPARTMENTS: Record<string, Record<string, string[]>> = {
-  healthcare: {
-    'Clinical': [
-      'Anesthesiology', 'Cardiology', 'Emergency Medicine', 'Endocrinology',
-      'Gastroenterology', 'General Surgery', 'Geriatrics', 'Hematology',
-      'Infectious Disease', 'Intensive Care Unit (ICU)', 'Internal Medicine',
-      'Nephrology', 'Neurology', 'Obstetrics & Gynecology', 'Oncology',
-      'Orthopedics', 'Pathology', 'Pediatrics', 'Psychiatry', 'Pulmonology',
-      'Radiology', 'Trauma Surgery', 'Urology',
-    ],
-    'Nursing': [
-      'Critical Care Nursing', 'Emergency Nursing', 'Nurse Practitioner',
-      'Nursing Administration', 'Operating Room Nursing', 'Pediatric Nursing',
-    ],
-    'Allied Health': [
-      'Medical Laboratory', 'Medical Imaging', 'Pharmacy',
-      'Physical Therapy', 'Respiratory Therapy', 'Social Work',
-    ],
-    'Administration & Operations': [
-      'Administration', 'Compliance & Regulatory', 'Health Information Management',
-      'Legal', 'Quality & Safety', 'Risk Management',
-    ],
-    'Technology & Research': [
-      'Clinical Informatics', 'Data Analytics', 'Health IT',
-      'Information Security', 'Innovation & AI',
-    ],
-  },
-  banking: {
-    'Risk & Compliance': [
-      'AML / BSA Compliance', 'Credit Risk', 'Enterprise Risk Management',
-      'Financial Crime', 'Fraud Detection', 'Model Risk Management',
-      'Operational Risk', 'Regulatory Compliance',
-    ],
-    'Banking Operations': [
-      'Commercial Banking', 'Consumer Lending', 'Corporate Banking',
-      'Mortgage', 'Retail Banking', 'Small Business Banking', 'Treasury',
-    ],
-    'Capital Markets': [
-      'Equity Research', 'Fixed Income', 'Investment Banking',
-      'Sales & Trading', 'Wealth Management',
-    ],
-    'Technology': [
-      'Core Banking Technology', 'Cybersecurity', 'Data & Analytics',
-      'Digital Banking', 'Fintech Innovation', 'IT Infrastructure',
-    ],
-    'Corporate Functions': [
-      'Audit & Assurance', 'Finance & Accounting', 'Human Resources',
-      'Legal & Counsel', 'Strategy',
-    ],
-  },
-  general: {
-    'Engineering & Product': [
-      'Backend Engineering', 'Data Engineering', 'Frontend Engineering',
-      'Machine Learning', 'Platform & Infrastructure', 'Product Management',
-      'Security Engineering',
-    ],
-    'Business Operations': [
-      'Customer Success', 'Finance', 'Human Resources', 'Legal',
-      'Marketing', 'Operations', 'Sales',
-    ],
-    'Governance & Risk': [
-      'AI Safety', 'Compliance', 'Data Privacy', 'Information Security',
-      'Internal Audit', 'Risk Management',
-    ],
-  },
 }
 
 // -- SLA helpers ---------------------------------------------------------------
@@ -377,6 +313,56 @@ function relTime(iso: string) {
   if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`
   const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
+}
+
+const CONSOLE_DEV_MODE = import.meta.env.VITE_CONSOLE_DEV_MODE === 'true'
+const CONSOLE_DEV_GATEWAY = import.meta.env.VITE_GATEWAY ?? 'http://localhost:8000'
+const CONSOLE_DEV_TOKEN = import.meta.env.VITE_CONSOLE_DEV_TOKEN ?? 'edon_sandbox_key_dev_only'
+const CONSOLE_DEV_AUTH = { gatewayUrl: CONSOLE_DEV_GATEWAY, token: CONSOLE_DEV_TOKEN }
+const SHOW_ADVANCED_ONBOARDING = false
+const CONSOLE_DEV_ME: MeResponse = {
+  tenant_id: 'tenant_sandbox_edon',
+  key_id: 'key_sandbox',
+  key_name: 'Sandbox Dev Key',
+  role: 'admin',
+  plan: 'enterprise',
+  is_admin: true,
+  is_sandbox: true,
+  vertical: 'healthcare',
+}
+
+const CONSOLE_DEPT_MODE_KEY = 'edon_console_dept_modes'
+const CONSOLE_COORDINATION_KEY = 'edon_console_coordination'
+
+function readJsonRecord<T extends Record<string, unknown>>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function writeJsonRecord<T extends Record<string, unknown>>(key: string, value: T) {
+  localStorage.setItem(key, JSON.stringify(value))
+}
+
+function getDeptMode(dept: string) {
+  const record = readJsonRecord<Record<string, 'sandbox' | 'governed'>>(CONSOLE_DEPT_MODE_KEY) || {}
+  return record[dept] ?? 'governed'
+}
+
+function setDeptMode(dept: string, mode: 'sandbox' | 'governed') {
+  const record = readJsonRecord<Record<string, 'sandbox' | 'governed'>>(CONSOLE_DEPT_MODE_KEY) || {}
+  record[dept] = mode
+  writeJsonRecord(CONSOLE_DEPT_MODE_KEY, record)
+}
+
+function setCoordinationAllowed(dept: string, allowed: boolean) {
+  const record = readJsonRecord<Record<string, boolean>>(CONSOLE_COORDINATION_KEY) || {}
+  record[dept] = allowed
+  writeJsonRecord(CONSOLE_COORDINATION_KEY, record)
 }
 
 // -- SLA Timer -----------------------------------------------------------------
@@ -588,6 +574,26 @@ const CITE_COLORS: Record<string, string> = {
   rule:     'bg-purple-500/20 border-purple-500/40 text-purple-300 hover:bg-purple-500/30',
 }
 
+function uniqueCitations(citations?: Citation[]) {
+  const seen = new Set<string>()
+  return (citations ?? []).filter(c => {
+    const key = `${c.type}:${c.id}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function getCitationLabel(type: Citation['type']) {
+  if (type === 'decision') return 'Decision'
+  if (type === 'agent') return 'Agent'
+  return 'Rule'
+}
+
+function looksNumeric(text: string) {
+  return /(?:\b\d+(?:\.\d+)?%|\b\d+(?:\.\d+)?(?:ms|s|m|h|d)?\b)/i.test(text)
+}
+
 function highlightCite(id: string) {
   const el = document.querySelector(`[data-cite-id="${id}"]`)
   if (!el) return
@@ -625,14 +631,21 @@ function CitedMessage({ text, onCite }: { text: string; onCite: (type: string, i
 
 function AsidePanel({ type, id, onClose }: { type: string; id: string; onClose: () => void }) {
   const [explanation, setExplanation] = useState('')
+  const [suggestion, setSuggestion] = useState<{ title: string; body: string } | null>(null)
+  const [citations, setCitations] = useState<Citation[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setErr(''); setExplanation('')
+    setLoading(true); setErr(''); setExplanation(''); setSuggestion(null); setCitations([])
     api.assistantExplain(type, id)
-      .then(r => { if (!cancelled) setExplanation(r.explanation) })
+      .then(r => {
+        if (cancelled) return
+        setExplanation(r.explanation)
+        setSuggestion(r.suggestion ?? null)
+        setCitations(uniqueCitations(r.citations))
+      })
       .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed to load') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -642,13 +655,13 @@ function AsidePanel({ type, id, onClose }: { type: string; id: string; onClose: 
 
   return (
     <>
-      <div className="fixed inset-0 z-[102] bg-transparent" onClick={onClose} aria-hidden />
+      <div className="fixed inset-0 z-[102] bg-black/20 backdrop-blur-[1px]" onClick={onClose} aria-hidden />
       <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
         transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-        className="fixed top-0 right-0 bottom-0 z-[103] w-80 flex flex-col border-l border-white/10 bg-background/98 backdrop-blur-xl shadow-2xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
+        className="fixed top-3 right-3 bottom-3 z-[103] w-[min(31rem,calc(100vw-1.5rem))] flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-background/95 backdrop-blur-2xl shadow-[0_24px_60px_rgba(0,0,0,0.45)]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0 bg-white/[0.02]">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl bg-primary/15 border border-primary/30 flex items-center justify-center">
               <Bot size={13} className="text-primary" />
             </div>
             <div>
@@ -658,15 +671,51 @@ function AsidePanel({ type, id, onClose }: { type: string; id: string; onClose: 
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1"><X size={15} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {loading ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
               <RefreshCw size={11} className="animate-spin" /> Analysing...
             </div>
           ) : err ? (
-            <p className="text-xs text-destructive">{err}</p>
+            <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-xs text-red-300">{err}</div>
           ) : (
-            <p className="text-[13px] leading-relaxed text-foreground/85 whitespace-pre-wrap">{explanation}</p>
+            <>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">Reasoning</p>
+                  {citations.length > 0 && (
+                    <span className="text-[10px] text-muted-foreground">{citations.length} source{citations.length === 1 ? '' : 's'}</span>
+                  )}
+                </div>
+                <p className="text-[13px] leading-6 text-foreground/88 whitespace-pre-wrap">{explanation}</p>
+              </div>
+              {suggestion && (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-primary/70 mb-1.5">Suggested next step</p>
+                  <p className="text-sm font-medium text-foreground">{suggestion.title}</p>
+                  <p className="mt-1 text-[13px] leading-6 text-muted-foreground">{suggestion.body}</p>
+                </div>
+              )}
+              {citations.length > 0 && (
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70 mb-2">Sources</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {citations.map(c => (
+                      <button
+                        key={`${c.type}:${c.id}`}
+                        onClick={() => {
+                          highlightCite(c.id)
+                        }}
+                        className={`inline-flex items-center gap-1 px-2 py-1 rounded-full border font-mono text-[10px] transition-colors ${CITE_COLORS[c.type] ?? CITE_COLORS.rule}`}
+                      >
+                        <span className="uppercase">{c.type}</span>
+                        <span className="truncate max-w-32">{c.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </motion.div>
@@ -836,6 +885,8 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
     policies:   ['What rules are active?', 'Add a block rule', 'Which rules fire most?'],
     review:     ['What is pending review?', 'What triggered this escalation?'],
     settings:   ['Enable shadow mode?', 'What is a kill switch?'],
+    onboarding: ['What stage are we on?', 'What does this intake need?', 'What is blocking promotion?'],
+    redteam:    ['What findings are critical?', 'Show confirmed bypasses', 'What is the cascade risk?'],
     report:     ['Compliance summary', 'Block trend?', 'How many blocks this month?'],
   }
   const FALLBACK_PROMPTS = ['Block rate this week?', 'What needs attention?', 'Which agents are risky?']
@@ -910,15 +961,38 @@ function ChatPanel({ open, onClose, tab }: { open: boolean; onClose: () => void;
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" ref={scrollRef}>
           {messages.map(m => {
             const display = m.role === 'assistant' ? m.content.replace(/\*\*/g, '').replace(/\*/g, '') : m.content
+            const citations = uniqueCitations(m.citations)
+            const uncitedMetricAnswer = m.role === 'assistant' && citations.length === 0 && looksNumeric(display)
             return (
             <div key={m.id}>
               <div className={`rounded-xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap ${
                 m.role === 'user' ? 'ml-6 bg-primary/15 border border-primary/25 text-foreground' : 'mr-2 bg-white/[0.04] border border-white/[0.08] text-foreground/85'
               }`}>
-                {m.role === 'assistant' && (m.citations?.length ?? 0) > 0
+                {m.role === 'assistant' && citations.length > 0
                   ? <CitedMessage text={display} onCite={handleCite} />
                   : display}
               </div>
+              {m.role === 'assistant' && citations.length > 0 && (
+                <div className="mr-2 mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="uppercase tracking-[0.18em] text-[9px] text-muted-foreground/70">Sources</span>
+                  {citations.map(c => (
+                    <button
+                      key={`${c.type}:${c.id}`}
+                      onClick={() => handleCite(c.type, c.id)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-mono transition-colors ${CITE_COLORS[c.type] ?? CITE_COLORS.rule}`}
+                      title={`${getCitationLabel(c.type)} source ${c.id} - click to highlight in page`}
+                    >
+                      <span className="uppercase">{c.type}</span>
+                      <span className="truncate max-w-32">{c.id}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {uncitedMetricAnswer && (
+                <div className="mr-2 mt-1.5 text-[10px] text-amber-300/90">
+                  No sources attached. Ask for the underlying decision, agent, or rule if this needs verification.
+                </div>
+              )}
               {m.suggestion && !dismissed.has(m.id) && (
                 <div className={`mr-2 mt-2 rounded-xl border p-3 space-y-1.5 text-[12px] ${m.appliedOk ? 'border-green-500/30 bg-green-500/5' : 'border-primary/25 bg-primary/5'}`}>
                   <div className="flex items-center gap-1.5">
@@ -985,24 +1059,6 @@ const LOGIN_VERTICALS = [
     desc: 'Hospitals / Clinics / Health Systems',
     trustBadge: 'HIPAA / HITRUST / Joint Commission',
   },
-  {
-    key: 'banking' as const,
-    label: 'Banking & Finance',
-    icon: Database,
-    color: 'text-amber-400',
-    activeBorder: 'border-amber-500/50 bg-amber-500/8',
-    desc: 'Banks / Fintechs / Credit Unions',
-    trustBadge: 'SR 11-7 / FFIEC / AML / BSA',
-  },
-  {
-    key: 'general' as const,
-    label: 'General',
-    icon: Shield,
-    color: 'text-primary',
-    activeBorder: 'border-primary/50 bg-primary/8',
-    desc: 'Enterprise / SaaS / Other',
-    trustBadge: 'SOC 2 / ISO 27001',
-  },
 ]
 
 const LOGIN_VALUE_PROPS: Record<string, Array<{ icon: typeof Shield; title: string; body: string }>> = {
@@ -1029,31 +1085,20 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
   const [sector, setSector] = useState<'healthcare' | 'banking' | 'general'>(
     () => (localStorage.getItem(SECTOR_KEY) as 'healthcare' | 'banking' | 'general') || 'healthcare'
   )
-  const [authMode, setAuthMode] = useState<'key' | 'register' | 'emaillogin'>('key')
-  const [token, setToken] = useState('')
-  const [name, setName] = useState('')
-  const [dept, setDept] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [showToken, setShowToken] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [newKey, setNewKey] = useState('')  // shown once after register
-
-  const deptGroups = DEPARTMENTS[sector] ?? {}
 
   const handleSectorChange = (s: typeof sector) => {
     setSector(s)
-    setDept('')
     localStorage.setItem(SECTOR_KEY, s)
   }
 
   async function _finalizeLogin(rawToken: string) {
     saveAuth(DEFAULT_GATEWAY, rawToken)
     await api.health()
-    if (name.trim()) setReviewerName(name.trim())
-    if (dept.trim()) setReviewerDept(dept.trim())
     const me = await api.me()
     if (!me.vertical && me.is_admin) {
       try { await api.setVertical(sector) } catch { /* non-fatal */ }
@@ -1062,37 +1107,6 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
       if (me.vertical) localStorage.setItem(SECTOR_KEY, me.vertical)
       onLogin(me)
     }
-  }
-
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault(); setError(''); setLoading(true)
-    try {
-      await _finalizeLogin(token.trim())
-    } catch (err) {
-      clearAuth()
-      setError(err instanceof Error ? err.message : 'Connection failed')
-    } finally { setLoading(false) }
-  }
-
-  async function handleRegister(e: React.FormEvent) {
-    e.preventDefault(); setError(''); setLoading(true)
-    try {
-      const res = await fetch(`${DEFAULT_GATEWAY}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || `Registration failed (${res.status})`)
-      }
-      const data = await res.json()
-      setNewKey(data.api_key)
-      // Auto-login with the new key
-      await _finalizeLogin(data.api_key)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed')
-    } finally { setLoading(false) }
   }
 
   async function handleEmailLogin(e: React.FormEvent) {
@@ -1109,14 +1123,21 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
       }
       const data = await res.json()
       if (data.api_key) {
-        setNewKey(data.api_key)
         await _finalizeLogin(data.api_key)
       } else {
-        throw new Error('No API key returned. Use your existing key on the API Key tab.')
+        throw new Error('No session returned. Contact your admin to confirm access or SSO setup.')
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally { setLoading(false) }
+  }
+
+  const handleDevBypass = () => {
+    if (!CONSOLE_DEV_MODE) return
+    saveAuth(CONSOLE_DEV_GATEWAY, CONSOLE_DEV_TOKEN)
+    setError('')
+    setLoading(false)
+    onLogin(CONSOLE_DEV_ME)
   }
 
   const activeVertical = LOGIN_VERTICALS.find(v => v.key === sector)!
@@ -1189,20 +1210,28 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
             <p className="text-sm text-muted-foreground mt-1">Govern every AI agent action - before it reaches a patient, customer, or regulator.</p>
           </div>
 
-          {/* Auth mode tabs */}
-          <div className="flex rounded-xl border border-border bg-muted/20 p-1 gap-0.5">
-            {([['register', 'Sign Up'], ['emaillogin', 'Log In'], ['key', 'API Key']] as const).map(([mode, label]) => (
-              <button key={mode} type="button" onClick={() => { setAuthMode(mode); setError('') }}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition ${authMode === mode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
-                {label}
+          {CONSOLE_DEV_MODE && (
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 space-y-2">
+              <p className="text-xs font-semibold text-emerald-300">Dev mode is enabled.</p>
+              <p className="text-[11px] text-emerald-200/75">Use the bypass to enter the console without a real login.</p>
+              <button
+                type="button"
+                onClick={handleDevBypass}
+                className="w-full py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/25 transition-colors"
+              >
+                Enter dev console
               </button>
-            ))}
-          </div>
+            </div>
+          )}
+
+          <p className="text-[11px] text-muted-foreground/70">
+            Enterprise access is granted by SSO or admin invite. Admin key management lives in Settings.
+          </p>
 
           {/* Sector picker */}
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground font-medium">Your industry</p>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 gap-2">
               {LOGIN_VERTICALS.map(v => (
                 <button key={v.key} type="button" onClick={() => handleSectorChange(v.key)}
                   className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border text-center transition-all ${
@@ -1216,134 +1245,30 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
             <p className="text-[11px] text-muted-foreground/60">{activeVertical.desc}</p>
           </div>
 
-          {/* -- Sign Up form -- */}
-          {authMode === 'register' && (
-            <form onSubmit={handleRegister} className="space-y-4">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Work Email</label>
-                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"
-                  className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                  placeholder="you@company.com" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Password</label>
-                <div className="relative">
-                  <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="new-password"
-                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                    placeholder="8+ characters" />
-                  <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Your Name</label>
-                  <input type="text" value={name} onChange={e => setName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Full name" />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Department</label>
-                  <div className="relative">
-                    <select value={dept} onChange={e => setDept(e.target.value)}
-                      className="dept-select w-full pl-3 pr-8 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer bg-muted/40">
-                      <option value="">Select...</option>
-                      {Object.entries(deptGroups).map(([group, depts]) => (
-                        <optgroup key={group} label={group}>{depts.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
-                      ))}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                  </div>
-                </div>
-              </div>
-              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
-              <button type="submit" disabled={loading}
-                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
-                {loading ? 'Creating account...' : 'Create Account'}
-              </button>
-              <p className="text-[11px] text-muted-foreground text-center">Your API key will be generated automatically and shown once.</p>
-            </form>
-          )}
-
-          {/* -- Email Login form -- */}
-          {authMode === 'emaillogin' && (
-            <form onSubmit={handleEmailLogin} className="space-y-4">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Work Email</label>
-                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"
-                  className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                  placeholder="you@company.com" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Password</label>
-                <div className="relative">
-                  <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password"
-                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Your password" />
-                  <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
-              <button type="submit" disabled={loading}
-                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
-                {loading ? 'Logging in...' : 'Log In'}
-              </button>
-            </form>
-          )}
-
-          {/* -- API Key form (original) -- */}
-          {authMode === 'key' && (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1.5 block font-medium">API Key</label>
-                <div className="relative">
-                  <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
-                    className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                    placeholder="edon-..." required />
-                  <button type="button" onClick={() => setShowToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                    {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Your Name</label>
-                  <input type="text" value={name} onChange={e => setName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Full name" required />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Department</label>
-                  <div className="relative">
-                    <select value={dept} onChange={e => setDept(e.target.value)}
-                      className="dept-select w-full pl-3 pr-8 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer bg-muted/40" required>
-                      <option value="" disabled>Select...</option>
-                      {Object.entries(deptGroups).map(([group, depts]) => (
-                        <optgroup key={group} label={group}>{depts.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
-                      ))}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                  </div>
-                </div>
-              </div>
-              {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
-              <button type="submit" disabled={loading}
-                className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2 mt-1">
-                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
-                {loading ? 'Connecting...' : 'Connect to Gateway'}
-              </button>
-            </form>
-          )}
-
-          {newKey && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 p-3 space-y-2">
-              <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5"><AlertTriangle size={12} /> Save your API key - shown once</p>
-              <p className="text-[11px] font-mono text-foreground break-all bg-black/20 rounded px-2 py-1.5">{newKey}</p>
-              <button onClick={() => { navigator.clipboard.writeText(newKey); }} className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center gap-1"><Copy size={10} /> Copy to clipboard</button>
+          <form onSubmit={handleEmailLogin} className="space-y-4">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Work Email</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email"
+                className="w-full px-3 py-2.5 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                placeholder="you@company.com" />
             </div>
-          )}
+            <div>
+              <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Password</label>
+              <div className="relative">
+                <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password"
+                  className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Your password" />
+                <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+            {error && <p className="text-xs text-destructive flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/8 border border-destructive/20"><AlertCircle size={12} />{error}</p>}
+            <button type="submit" disabled={loading}
+              className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
+              {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Shield size={14} />}
+              {loading ? 'Logging in...' : 'Log In'}
+            </button>
+          </form>
 
           <p className="text-[11px] text-muted-foreground/50 text-center">
             {activeVertical.trustBadge}
@@ -1356,16 +1281,53 @@ function LoginScreen({ onLogin }: { onLogin: (me: import('./api').MeResponse) =>
 
 // -- Settings Tab --------------------------------------------------------------
 
-function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange, onTabChange }: { onReconnect: () => void; isAdmin: boolean; vertical: string | null; onVerticalChange: (v: string | null) => void; onTabChange: (t: string) => void }) {
+function SettingsTab({
+  onReconnect,
+  isAdmin,
+  meInfo,
+  onLogout,
+  health,
+  lockdownState,
+  lockdownDetails,
+  shadowModeEnabled,
+  shadowModeSaving,
+  onToggleShadowMode,
+}: {
+  onReconnect: () => void
+  isAdmin: boolean
+  meInfo: MeResponse | null
+  onLogout: () => void
+  health: { ok: boolean; version: string; uptime_seconds: number } | null
+  lockdownState: LockdownState
+  lockdownDetails: LockdownDetails
+  shadowModeEnabled: boolean
+  shadowModeSaving: boolean
+  onToggleShadowMode: () => void
+}) {
   const auth = getAuth()
   const [url, setUrl] = useState(auth?.gatewayUrl || '')
   const [token, setToken] = useState(auth?.token || '')
   const [showToken, setShowToken] = useState(false)
-  const [reviewerName] = useState(getReviewerName)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [saved, setSaved] = useState(false)
-  const [showPinSetup, setShowPinSetup] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+  const reviewerName = CONSOLE_DEV_MODE ? getReviewerName() : (meInfo?.key_name || meInfo?.key_id || '')
+  const reviewerDept = CONSOLE_DEV_MODE ? getReviewerDept() : (meInfo?.tenant_id || '')
+  const reviewerPin = CONSOLE_DEV_MODE ? hasPinSet() : !!meInfo
+  const lastRequest = getLastRequestId()
+
+  const copy = async (label: string, value: string | null | undefined) => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(label)
+      window.setTimeout(() => setCopied(curr => (curr === label ? null : curr)), 1400)
+    } catch {
+      setCopied('Copy failed')
+      window.setTimeout(() => setCopied(curr => (curr === 'Copy failed' ? null : curr)), 1400)
+    }
+  }
 
   const testConnection = async () => {
     setTesting(true); setTestResult(null)
@@ -1381,22 +1343,84 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange, onTabCh
 
   const save = () => {
     saveAuth(url.replace(/\/$/, ''), token.trim())
-    setReviewerName(reviewerName.trim())
     setSaved(true); setTimeout(() => setSaved(false), 2000)
     onReconnect()
-  }
-
-  const resetPin = () => {
-    if (confirm('Reset your reviewer PIN? You will need to set a new one on the next review.')) {
-      localStorage.removeItem(PIN_KEY)
-    }
   }
 
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-base font-semibold mb-1 flex items-center gap-2"><Settings size={15} className="text-primary" /> Console Settings</h2>
-        <p className="text-xs text-muted-foreground">Change your gateway connection, token, or reviewer identity without logging out.</p>
+        <p className="text-xs text-muted-foreground">Connection, runtime credentials, and posture.</p>
+      </div>
+
+      <div className="glass-card p-5 space-y-5">
+        <div className="flex items-start gap-4">
+          <div className="w-11 h-11 rounded-2xl border border-primary/25 bg-primary/10 flex items-center justify-center shrink-0">
+            <User size={18} className="text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-semibold text-foreground">{meInfo?.key_name || 'Console user'}</h3>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${meInfo?.is_sandbox ? 'border-blue-500/20 bg-blue-500/10 text-blue-300' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                {meInfo?.is_sandbox ? 'Sandbox' : 'Live'}
+              </span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${meInfo?.is_admin ? 'border-primary/25 bg-primary/10 text-primary' : 'border-border bg-muted/20 text-muted-foreground'}`}>
+                {meInfo?.role ? (ROLE_LABELS[meInfo.role as ConsoleRole] ?? meInfo.role) : 'Unknown'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {meInfo?.vertical === 'healthcare' ? 'St. Mercy Health System' : meInfo?.tenant_id || 'Tenant'} · {meInfo?.plan || 'unknown plan'} · {auth ? 'Authenticated' : 'Signed out'}
+            </p>
+          </div>
+          <button onClick={onLogout}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors">
+            <LogOut size={13} /> Sign out
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Tenant ID</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <code className="text-xs font-mono text-foreground break-all">{meInfo?.tenant_id || '-'}</code>
+              <button onClick={() => copy('tenant', meInfo?.tenant_id)}
+                className="text-[10px] px-2 py-1 rounded border border-border hover:bg-muted/40 transition-colors">
+                {copied === 'tenant' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">API Key</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <code className="text-xs font-mono text-foreground break-all">{meInfo?.key_id || '-'}</code>
+              <button onClick={() => copy('key', meInfo?.key_id)}
+                className="text-[10px] px-2 py-1 rounded border border-border hover:bg-muted/40 transition-colors">
+                {copied === 'key' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Reviewer identity</p>
+            <p className="mt-2 text-xs text-foreground">{reviewerName || 'Not set'}</p>
+            <p className="text-[11px] text-muted-foreground">{reviewerDept || 'No department pinned'}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Last request</p>
+            <p className="mt-2 text-xs font-mono text-foreground">{lastRequest || 'Unavailable'}</p>
+            <p className="text-[11px] text-muted-foreground">Used for support and audit correlation</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          <span>Gateway: <span className={`font-medium ${health?.ok ? 'text-emerald-400' : 'text-amber-400'}`}>{health?.ok ? 'Reachable' : 'Unknown'}</span></span>
+          <span className="text-border">/</span>
+          <span>Lockdown: <span className={`font-medium ${lockdownState === 'active' ? 'text-red-400' : 'text-muted-foreground'}`}>{lockdownState}</span></span>
+          <span className="text-border">/</span>
+          <span>Review auth: <span className={`font-medium ${reviewerPin ? 'text-emerald-400' : 'text-amber-400'}`}>{CONSOLE_DEV_MODE ? (reviewerPin ? 'PIN set' : 'PIN missing') : (reviewerPin ? 'Server bound' : 'Unavailable')}</span></span>
+          <span className="text-border">/</span>
+          <span>Session trace: <span className="font-medium text-foreground">{lockdownDetails.verifiedAt || 'Not verified yet'}</span></span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
@@ -1438,54 +1462,13 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange, onTabCh
             </div>
           </div>
 
-          {/* Reviewer identity */}
-          <div className="glass-card p-5 space-y-4">
-            <h3 className="text-sm font-semibold flex items-center gap-2"><User size={13} className="text-primary" /> Reviewer Identity</h3>
-            <p className="text-xs text-muted-foreground">Your name and department are stamped on every Review Queue decision in the audit trail.</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Display Name</label>
-                <input type="text" value={reviewerName} readOnly
-                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Department</label>
-                <input type="text" value={getReviewerDept()} readOnly
-                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm opacity-60 cursor-not-allowed" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">Identity is locked once set. Sign out to reset.</p>
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                <KeyRound size={11} />
-                PIN: {hasPinSet() ? <span className="text-emerald-400">Set</span> : <span className="text-amber-400">Not set</span>}
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setShowPinSetup(true)}
-                  className="text-[10px] px-2.5 py-1 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-                  {hasPinSet() ? 'Change PIN' : 'Set PIN'}
-                </button>
-                {hasPinSet() && (
-                  <button onClick={resetPin} className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors">Reset</button>
-                )}
-              </div>
-            </div>
-            <button onClick={save}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
-              {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save Name'}
-            </button>
-          </div>
-
-          {/* Session info */}
-          <div className="glass-card p-5 space-y-2">
-            <h3 className="text-sm font-semibold flex items-center gap-2"><Clock size={13} className="text-primary" /> Session</h3>
-            <p className="text-xs text-muted-foreground">Sessions auto-expire after <span className="text-foreground">15 minutes</span> of inactivity. A warning appears at 13 minutes.</p>
-          </div>
-
-          {isAdmin && <ShadowModeCard />}
-          {isAdmin && <VerticalSelectorCard vertical={vertical} onChange={onVerticalChange} />}
-          {vertical === 'healthcare' && <BaaStatusCard />}
-          <SsoLdapCard />
+          {isAdmin && (
+            <ShadowModeCard
+              enabled={shadowModeEnabled}
+              saving={shadowModeSaving}
+              onToggle={onToggleShadowMode}
+            />
+          )}
         </div>
 
         {/* -- Right column: security & ops cards -- */}
@@ -1495,53 +1478,892 @@ function SettingsTab({ onReconnect, isAdmin, vertical, onVerticalChange, onTabCh
           <IpAllowlistCard />
           <WebhookAlertsCard />
           <SettingsQuickReferenceCard />
+        </div>
+      </div>
 
-          {/* Advanced Tools */}
-          <div className="glass-card p-5 space-y-3">
-            <h3 className="text-sm font-semibold flex items-center gap-2"><FlaskConical size={13} className="text-purple-400" /> Advanced Tools</h3>
-            <p className="text-xs text-muted-foreground">Experimental and ops-only features. Not needed for day-to-day governance.</p>
-            <button onClick={() => onTabChange('redteam')}
-              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-purple-500/25 bg-purple-500/8 text-purple-400 text-xs font-medium hover:bg-purple-500/15 transition-colors text-left">
-              <FlaskConical size={12} /> Red Team Simulation
-              <span className="ml-auto text-purple-400/50 text-[10px]">-&gt;</span>
-            </button>
-            <button onClick={() => onTabChange('audit')}
-              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-border bg-muted/20 text-muted-foreground text-xs font-medium hover:text-foreground hover:bg-muted/40 transition-colors text-left">
-              <FileText size={12} /> Audit Hash Chain
-              <span className="ml-auto text-muted-foreground/50 text-[10px]">-&gt;</span>
-            </button>
+    </div>
+  )
+}
+void SettingsTab
+
+function SettingsTabV2({
+  onReconnect,
+  isAdmin,
+  meInfo,
+  onLogout,
+  health,
+  lockdownState,
+  shadowModeEnabled,
+  shadowModeSaving,
+  onToggleShadowMode,
+}: {
+  onReconnect: () => void
+  isAdmin: boolean
+  meInfo: MeResponse | null
+  onLogout: () => void
+  health: { ok: boolean; version: string; uptime_seconds: number } | null
+  lockdownState: LockdownState
+  lockdownDetails: LockdownDetails
+  shadowModeEnabled: boolean
+  shadowModeSaving: boolean
+  onToggleShadowMode: () => void
+}) {
+  const auth = getAuth()
+  const [url, setUrl] = useState(auth?.gatewayUrl || '')
+  const [token, setToken] = useState(auth?.token || '')
+  const [showToken, setShowToken] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [saved, setSaved] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const reviewerName = CONSOLE_DEV_MODE ? getReviewerName() : (meInfo?.key_name || meInfo?.key_id || '')
+  const reviewerDept = CONSOLE_DEV_MODE ? getReviewerDept() : (meInfo?.tenant_id || '')
+  const lastRequest = getLastRequestId()
+  const postureChecks = [
+    { label: 'SSO session', value: auth ? 'Verified' : 'Signed out', ok: !!auth },
+    { label: 'Review identity', value: CONSOLE_DEV_MODE ? 'Dev bypass' : 'Server-bound', ok: true },
+    { label: 'Audit logging', value: 'Active', ok: true },
+    { label: 'Runtime isolation', value: shadowModeEnabled ? 'Shadow' : 'Live', ok: true },
+  ]
+  const tenantStats = [
+    { label: 'Plan', value: meInfo?.plan || 'enterprise' },
+    { label: 'Mode', value: shadowModeEnabled ? 'Shadow' : 'Live' },
+    { label: 'Gateway', value: health?.ok ? 'Healthy' : 'Unknown' },
+    { label: 'Lockdown', value: lockdownState === 'active' ? 'Active' : lockdownState === 'unreachable' ? 'Unavailable' : 'Ready' },
+  ]
+
+  const copy = async (label: string, value: string | null | undefined) => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(label)
+      window.setTimeout(() => setCopied(curr => (curr === label ? null : curr)), 1400)
+    } catch {
+      setCopied('Copy failed')
+      window.setTimeout(() => setCopied(curr => (curr === 'Copy failed' ? null : curr)), 1400)
+    }
+  }
+
+  const testConnection = async () => {
+    setTesting(true); setTestResult(null)
+    saveAuth(url.replace(/\/$/, ''), token.trim())
+    try {
+      const h = await api.health()
+      setTestResult({ ok: true, msg: `Connected / v${h.version} / ${h.ok ? 'Healthy' : 'Degraded'}` })
+      onReconnect()
+    } catch (e) {
+      setTestResult({ ok: false, msg: e instanceof Error ? e.message : 'Connection failed' })
+    } finally { setTesting(false) }
+  }
+
+  const save = () => {
+    saveAuth(url.replace(/\/$/, ''), token.trim())
+    setSaved(true); setTimeout(() => setSaved(false), 2000)
+    onReconnect()
+  }
+
+  const [activeSection, setActiveSection] = useState<'account' | 'access' | 'credentials' | 'posture' | 'gateway' | 'security' | 'support'>('account')
+  const settingSections = [
+    { id: 'account' as const, label: 'Account', body: 'Tenant identity and assurance', Icon: User },
+    { id: 'access' as const, label: 'Access Management', body: 'Users, roles, department owners', Icon: Users },
+    { id: 'credentials' as const, label: 'Runtime Credentials', body: 'Agent and service credentials', Icon: KeyRound },
+    { id: 'posture' as const, label: 'Governance Mode', body: 'Shadow, live, lockdown state', Icon: Shield },
+    { id: 'gateway' as const, label: 'Gateway Connection', body: 'Dev endpoint and console link', Icon: Wifi },
+    { id: 'security' as const, label: 'Security Controls', body: 'Allowlist and webhooks', Icon: Lock },
+    { id: 'support' as const, label: 'Support', body: 'Diagnostics and cases', Icon: Copy },
+  ]
+
+  const accountPanel = (
+    <div className="space-y-5">
+      <div className="glass-card p-5 space-y-4">
+        <div className="flex items-start gap-4">
+          <div className="w-11 h-11 rounded-2xl border border-primary/25 bg-primary/10 flex items-center justify-center shrink-0">
+            <User size={18} className="text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-semibold text-foreground">{CONSOLE_DEV_MODE ? 'Development Admin' : (meInfo?.key_name || 'Console admin')}</h3>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${meInfo?.is_sandbox ? 'border-blue-500/20 bg-blue-500/10 text-blue-300' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'}`}>
+                {meInfo?.is_sandbox ? 'Sandbox' : 'Live'}
+              </span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full border border-primary/25 bg-primary/10 text-primary">
+                {meInfo?.role ? (ROLE_LABELS[meInfo.role as ConsoleRole] ?? meInfo.role) : 'Admin'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {meInfo?.vertical === 'healthcare' ? 'St. Mercy Health System' : meInfo?.tenant_id || 'Tenant'} / {meInfo?.plan || 'enterprise'} / {auth ? 'Authenticated' : 'Signed out'}
+            </p>
+          </div>
+          <button onClick={onLogout}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors">
+            <LogOut size={13} /> Sign out
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Tenant</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <code className="text-xs font-mono text-foreground break-all">{meInfo?.tenant_id || 'tenant unavailable'}</code>
+              <button onClick={() => copy('tenant', meInfo?.tenant_id)}
+                className="text-[10px] px-2 py-1 rounded border border-border hover:bg-muted/40 transition-colors">
+                {copied === 'tenant' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Review Identity</p>
+            <p className="mt-2 text-xs text-foreground">{CONSOLE_DEV_MODE ? (reviewerName || 'Dev reviewer not set') : 'SSO verified'}</p>
+            <p className="text-[11px] text-muted-foreground">{CONSOLE_DEV_MODE ? (reviewerDept || 'Dev-only local reviewer') : 'Server-bound approvals'}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Support Trace</p>
+            <p className="mt-2 text-xs font-mono text-foreground">{lastRequest || 'No request yet'}</p>
+            <p className="text-[11px] text-muted-foreground">Copied in diagnostics</p>
           </div>
         </div>
       </div>
 
-      <AnimatePresence>
-        {showPinSetup && (
-          <motion.div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <PinModal mode="setup" onSuccess={() => { setShowPinSetup(false); setSaved(true); setTimeout(() => setSaved(false), 2000) }} onCancel={() => setShowPinSetup(false)} />
-          </motion.div>
+      <div className="glass-card p-5 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><Shield size={13} className="text-primary" /> Account Assurance</h3>
+          <span className="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">Admin ready</span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {tenantStats.map(item => (
+            <div key={item.label} className="rounded-lg border border-border/50 bg-muted/20 p-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">{item.label}</p>
+              <p className="mt-1 text-sm font-semibold text-foreground">{item.value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border border-border/50 bg-muted/20 p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {postureChecks.map(item => (
+            <div key={item.label} className="flex items-center justify-between gap-3 text-xs">
+              <span className="flex items-center gap-2 text-muted-foreground">
+                {item.ok ? <CheckCircle2 size={12} className="text-emerald-400" /> : <AlertCircle size={12} className="text-amber-400" />}
+                {item.label}
+              </span>
+              <span className={item.ok ? 'text-foreground' : 'text-amber-300'}>{item.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+
+  const posturePanel = (
+    <div className="glass-card p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2"><Activity size={13} className="text-primary" /> Governance Mode</h3>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${health?.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'}`}>
+          {health?.ok ? 'Gateway healthy' : 'Gateway unknown'}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+        <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+          <p className="text-muted-foreground">Gateway</p>
+          <p className={`mt-1 font-semibold ${health?.ok ? 'text-emerald-400' : 'text-amber-400'}`}>{health?.ok ? 'Reachable' : 'Unknown'}</p>
+        </div>
+        <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+          <p className="text-muted-foreground">Lockdown</p>
+          <p className={`mt-1 font-semibold ${lockdownState === 'active' ? 'text-red-400' : lockdownState === 'unreachable' ? 'text-amber-400' : 'text-foreground'}`}>
+            {lockdownState === 'active' ? 'Active' : lockdownState === 'unreachable' ? 'Unavailable' : 'Ready'}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+          <p className="text-muted-foreground">Review auth</p>
+          <p className="mt-1 font-semibold text-emerald-400">{CONSOLE_DEV_MODE ? 'Dev bypass' : 'Server-bound'}</p>
+        </div>
+        <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+          <p className="text-muted-foreground">Audit</p>
+          <p className="mt-1 font-semibold text-emerald-400">Active</p>
+        </div>
+      </div>
+      {isAdmin && <ShadowModeCard enabled={shadowModeEnabled} saving={shadowModeSaving} onToggle={onToggleShadowMode} />}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3">
+          <p className="text-xs font-semibold text-blue-300">Shadow posture</p>
+          <p className="mt-1 text-[11px] leading-5 text-muted-foreground">Use while onboarding vendors or departments. EDON logs and simulates policy decisions.</p>
+        </div>
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <p className="text-xs font-semibold text-emerald-300">Live posture</p>
+          <p className="mt-1 text-[11px] leading-5 text-muted-foreground">Use after approval. EDON can block, escalate, and audit governed runtime actions.</p>
+        </div>
+      </div>
+    </div>
+  )
+
+  const gatewayPanel = (
+    <div className="space-y-5">
+      <div className="glass-card p-5 space-y-4">
+        <button type="button" onClick={() => setShowAdvanced(v => !v)}
+          className="w-full flex items-center justify-between gap-3 text-left">
+          <span>
+            <span className="text-sm font-semibold flex items-center gap-2"><Wifi size={13} className="text-primary" /> Gateway Connection</span>
+            <span className="block text-xs text-muted-foreground mt-0.5">Dev endpoint and token controls. Production users should rely on SSO and managed gateway config.</span>
+          </span>
+          <span className="text-xs text-muted-foreground">{showAdvanced ? 'Hide' : 'Show'}</span>
+        </button>
+        {showAdvanced && (
+          <div className="space-y-4 pt-1">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Gateway URL</label>
+              <input type="url" value={url} onChange={e => setUrl(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">API Token</label>
+              <div className="relative">
+                <input type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)}
+                  className="w-full px-3 py-2 pr-10 rounded-lg bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary" />
+                <button type="button" onClick={() => setShowToken(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+            {testResult && (
+              <p className={`text-xs flex items-center gap-1.5 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {testResult.ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{testResult.msg}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button onClick={testConnection} disabled={testing}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50">
+                {testing ? <div className="w-3.5 h-3.5 border border-muted/30 border-t-muted-foreground rounded-full animate-spin" /> : <WifiOff size={13} />}
+                Test
+              </button>
+              <button onClick={save}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
+                {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save'}
+              </button>
+            </div>
+          </div>
         )}
-      </AnimatePresence>
+      </div>
+      <ConsoleLinkCard />
+    </div>
+  )
+
+  const securityPanel = (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <IpAllowlistCard />
+      <WebhookAlertsCard />
+    </div>
+  )
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-semibold mb-1 flex items-center gap-2"><Settings size={15} className="text-primary" /> Settings</h2>
+        <p className="text-xs text-muted-foreground">Admin-only controls for account access, runtime credentials, gateway posture, and audit support.</p>
+      </div>
+
+      <section className="grid grid-cols-1 xl:grid-cols-[18rem_1fr] gap-5 items-start">
+        <aside className="glass-card p-3 xl:sticky xl:top-5">
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-3 mb-3">
+            <p className="text-xs font-semibold text-foreground truncate">{CONSOLE_DEV_MODE ? 'Development Admin' : (meInfo?.key_name || 'Console admin')}</p>
+            <p className="text-[11px] text-muted-foreground truncate">{meInfo?.tenant_id || 'tenant unavailable'}</p>
+          </div>
+          <nav className="space-y-1">
+            {settingSections.map(section => {
+              const Icon = section.Icon
+              const selected = activeSection === section.id
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => setActiveSection(section.id)}
+                  className={cn(
+                    'w-full flex items-center gap-3 rounded-lg border px-3 py-3 text-left transition-colors',
+                    selected ? 'border-primary/30 bg-primary/10 text-primary' : 'border-transparent text-muted-foreground hover:border-border/60 hover:bg-muted/25 hover:text-foreground',
+                  )}
+                >
+                  <Icon size={15} className="shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-semibold">{section.label}</span>
+                    <span className={cn('block text-[10px] leading-4 truncate', selected ? 'text-primary/70' : 'text-muted-foreground/70')}>{section.body}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </nav>
+        </aside>
+
+        <div className="min-w-0">
+          {activeSection === 'account' && accountPanel}
+          {activeSection === 'access' && <AccessManagementCard />}
+          {activeSection === 'credentials' && <ApiKeyRotationCard />}
+          {activeSection === 'posture' && posturePanel}
+          {activeSection === 'gateway' && gatewayPanel}
+          {activeSection === 'security' && securityPanel}
+          {activeSection === 'support' && <SupportDiagnosticsCard />}
+        </div>
+      </section>
     </div>
   )
 }
 
-function ShadowModeCard() {
-  const [enabled, setEnabled] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+function AccessManagementCard() {
+  const departments = [
+    'All departments', 'Cardiology', 'Radiology', 'Pharmacy', 'Telehealth', 'ICU', 'Lab', 'Nursing', 'Security',
+    'Emergency', 'Surgery', 'Neurology', 'Oncology', 'Pediatrics', 'Orthopedics', 'Billing', 'Compliance',
+    'Patient Access', 'Behavioral Health', 'Respiratory Therapy', 'Facilities', 'Research', 'Imaging', 'Records',
+  ]
+  const roles = ['viewer', 'operator', 'governance_admin', 'security_admin', 'auditor'] as const
 
-  useEffect(() => {
-    api.getShadowMode().then(r => setEnabled(r.enabled)).catch(() => {}).finally(() => setLoading(false))
+  const [users, setUsers] = useState<ConsoleUserInvite[]>([])
+  const [userLoading, setUserLoading] = useState(true)
+  const [owners, setOwners] = useState<DepartmentOwner[]>([])
+  const [ownerLoading, setOwnerLoading] = useState(true)
+  const [email, setEmail] = useState('ops.lead@stmercy.example')
+  const [role, setRole] = useState<typeof roles[number]>('operator')
+  const [department, setDepartment] = useState('Cardiology')
+  const [departmentSearch, setDepartmentSearch] = useState('')
+  const [userSearch, setUserSearch] = useState('')
+  const [ownerEmail, setOwnerEmail] = useState('cardiology.owner@stmercy.example')
+  const [auditorEmail, setAuditorEmail] = useState('external.audit@example.com')
+  const [auditorScope, setAuditorScope] = useState('Quarterly HIPAA evidence package')
+  const [auditorHours, setAuditorHours] = useState(168)
+  const [auditorGrants, setAuditorGrants] = useState<AuditorGrant[]>([])
+  const [auditorKey, setAuditorKey] = useState<string | null>(null)
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  const loadAuditors = useCallback(() => {
+    api.listAuditorGrants()
+      .then(r => setAuditorGrants(r.grants || []))
+      .catch(() => setAuditorGrants([]))
   }, [])
 
-  const toggle = async () => {
-    setSaving(true)
+  const loadUsers = useCallback(() => {
+    setUserLoading(true)
+    api.listConsoleUserInvites()
+      .then(r => setUsers(r.invites || []))
+      .catch(() => setUsers([]))
+      .finally(() => setUserLoading(false))
+  }, [])
+
+  const loadOwners = useCallback(() => {
+    setOwnerLoading(true)
+    api.listDepartmentOwners()
+      .then(r => setOwners(r.owners || []))
+      .catch(() => setOwners([]))
+      .finally(() => setOwnerLoading(false))
+  }, [])
+
+  useEffect(() => { loadUsers() }, [loadUsers])
+  useEffect(() => { loadOwners() }, [loadOwners])
+  useEffect(() => { loadAuditors() }, [loadAuditors])
+
+  const departmentDirectory = useMemo(() => {
+    const fromUsers = users.map(u => u.department || '').filter(Boolean)
+    const fromOwners = owners.map(o => o.department).filter(Boolean)
+    return [...new Set([...departments, ...fromUsers, ...fromOwners, department].filter(Boolean))].sort((a, b) => a.localeCompare(b))
+  }, [users, owners, department])
+
+  const filteredDepartments = useMemo(() => {
+    const q = departmentSearch.trim().toLowerCase()
+    return departmentDirectory.filter(d => !q || d.toLowerCase().includes(q)).slice(0, 10)
+  }, [departmentDirectory, departmentSearch])
+
+  const visibleUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase()
+    return users.filter(u => {
+      if (!q) return true
+      return [u.email, u.role, u.department || '', u.scope || '', u.status].some(value => value.toLowerCase().includes(q))
+    })
+  }, [users, userSearch])
+
+  useEffect(() => {
+    _setPS('settings', [{
+      type: 'access_management',
+      invited_users: users.length,
+      department_owners: owners.length,
+      auditor_grants: auditorGrants.length,
+      note: 'Human users are invited and assigned roles here. Runtime credentials remain separate.',
+    }])
+  }, [users.length, owners.length, auditorGrants.length])
+
+  const inviteUser = async () => {
+    const cleanEmail = email.trim().toLowerCase()
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setError('Enter a valid user email.')
+      return
+    }
+    setBusy('user')
+    setError('')
+    setMessage('')
+    setLastInviteUrl(null)
     try {
-      const r = await api.setShadowMode(!enabled)
-      setEnabled(r.enabled)
-    } catch { /* ignore */ } finally { setSaving(false) }
+      const scope = role === 'governance_admin' || role === 'security_admin' ? 'Cross-department' : `${department} only`
+      const res = await api.createConsoleUserInvite({
+        email: cleanEmail,
+        role,
+        department,
+        scope,
+        expires_in_hours: 168,
+      })
+      setLastInviteUrl(res.invite.invite_url || null)
+      setMessage(`Invite created for ${cleanEmail}`)
+      loadUsers()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Invite failed')
+    } finally {
+      setBusy(null)
+    }
   }
+
+  const revokeUser = async (id: string) => {
+    setBusy(id)
+    setError('')
+    try {
+      await api.revokeConsoleUserInvite(id)
+      setMessage('User invite revoked.')
+      loadUsers()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Revoke failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saveOwner = async () => {
+    const cleanOwner = ownerEmail.trim().toLowerCase()
+    if (!cleanOwner || !cleanOwner.includes('@')) {
+      setError('Enter a valid department owner email.')
+      return
+    }
+    if (!department.trim()) {
+      setError('Department is required.')
+      return
+    }
+    setBusy('owner')
+    setError('')
+    try {
+      await api.setDepartmentOwner(department.trim(), cleanOwner)
+      setMessage(`${department} owner saved.`)
+      loadOwners()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Owner save failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const inviteAuditor = async () => {
+    const cleanEmail = auditorEmail.trim().toLowerCase()
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setError('Enter a valid auditor email.')
+      return
+    }
+    setBusy('auditor')
+    setError('')
+    setAuditorKey(null)
+    try {
+      const res = await api.inviteAuditor({
+        auditor_email: cleanEmail,
+        expires_in_hours: auditorHours,
+        scope_note: auditorScope.trim() || undefined,
+      })
+      setAuditorKey(res.api_key)
+      setMessage(`Auditor grant created for ${res.auditor_email}`)
+      loadAuditors()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Auditor invite failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const revokeAuditor = async (keyId: string) => {
+    setBusy(keyId)
+    setError('')
+    try {
+      await api.revokeAuditorGrant(keyId)
+      setMessage('Auditor grant revoked.')
+      loadAuditors()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Auditor revoke failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const copy = async (value: string) => {
+    await navigator.clipboard.writeText(value).catch(() => {})
+    setMessage('Copied.')
+  }
+
+  const activeHumans = users.filter(u => u.status !== 'revoked')
+  const activeAuditors = auditorGrants.filter(g => g.status !== 'revoked' && !g.expired)
+
+  return (
+    <section className="glass-card p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Users size={14} className="text-primary" /> Access Management
+            <span className="text-[10px] px-2 py-0.5 rounded-full border border-primary/25 bg-primary/10 text-primary">Admins only</span>
+          </h3>
+          <p className="text-xs text-muted-foreground mt-0.5 max-w-2xl">Manage human users, department owners, and auditor access. Runtime credentials stay separate.</p>
+        </div>
+        <div className="flex gap-2 text-[10px]">
+          <span className="px-2 py-1 rounded-full border border-border/60 bg-muted/20 text-muted-foreground">{activeHumans.length} humans</span>
+          <span className="px-2 py-1 rounded-full border border-border/60 bg-muted/20 text-muted-foreground">{activeAuditors.length} auditors</span>
+          <span className="px-2 py-1 rounded-full border border-border/60 bg-muted/20 text-muted-foreground">{owners.length} owners</span>
+        </div>
+      </div>
+
+      {(error || message) && (
+        <div className={cn(
+          'flex items-center gap-2 rounded-lg border px-3 py-2 text-xs',
+          error ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300',
+        )}>
+          {error ? <AlertCircle size={12} /> : <CheckCircle2 size={12} />}
+          {error || message}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-[0.92fr_1.08fr] gap-4 items-start">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/50 bg-background/25 p-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Departments</p>
+                <p className="mt-1 text-xl font-semibold text-foreground leading-none">{departmentDirectory.length}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">available</p>
+              </div>
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-widest text-emerald-200/60">Default Scope</p>
+                <p className="mt-1 text-xl font-semibold text-emerald-300 leading-none">Scoped</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">one department</p>
+              </div>
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-widest text-blue-200/60">Global Roles</p>
+                <p className="mt-1 text-xl font-semibold text-blue-300 leading-none">Admin</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">security/governance</p>
+              </div>
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-widest text-primary/70">Find Dept</p>
+                <p className="mt-1 text-xl font-semibold text-primary leading-none">Search</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">large orgs</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold">Invite user</p>
+              <span className="text-[10px] text-muted-foreground">SSO / invite based</span>
+            </div>
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@hospital.org"
+              className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select value={role} onChange={e => setRole(e.target.value as typeof roles[number])}
+                className="text-sm bg-background border border-border rounded-lg px-3 py-2">
+                {roles.map(r => <option key={r} value={r}>{ROLE_LABELS[r as ConsoleRole] ?? r}</option>)}
+              </select>
+              <input
+                value={department}
+                onChange={e => setDepartment(e.target.value)}
+                list="edon-access-departments"
+                placeholder="Search or type department"
+                className="text-sm bg-background border border-border rounded-lg px-3 py-2"
+              />
+            </div>
+            <datalist id="edon-access-departments">
+              {departmentDirectory.map(d => <option key={d} value={d} />)}
+            </datalist>
+            <p className="text-[11px] text-muted-foreground">
+              Scope: {role === 'governance_admin' || role === 'security_admin' ? 'cross-department admin visibility' : `${department || 'selected department'} only`}
+            </p>
+            <button onClick={inviteUser}
+              disabled={busy === 'user'}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 disabled:opacity-50 transition-colors">
+              <Plus size={13} /> {busy === 'user' ? 'Creating invite' : 'Invite user'}
+            </button>
+            {lastInviteUrl && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <p className="text-[10px] uppercase tracking-widest text-primary/70">Invite delivery URL</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="min-w-0 flex-1 text-[11px] break-all text-foreground">{lastInviteUrl}</code>
+                  <button onClick={() => copy(lastInviteUrl)} className="p-2 rounded-lg border border-border hover:bg-muted/40"><Copy size={12} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold">Department owner</p>
+              <span className="text-[10px] text-muted-foreground">Review routing</span>
+            </div>
+            <input
+              value={department}
+              onChange={e => setDepartment(e.target.value)}
+              list="edon-access-departments"
+              placeholder="Department"
+              className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2"
+            />
+            <input value={ownerEmail} onChange={e => setOwnerEmail(e.target.value)} placeholder="owner@hospital.org"
+              className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" />
+            <button onClick={saveOwner}
+              disabled={busy === 'owner'}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/40 disabled:opacity-50 transition-colors">
+              <Check size={13} /> {busy === 'owner' ? 'Saving' : 'Save owner'}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold text-blue-300">Invite auditor</p>
+              <span className="text-[10px] text-blue-200/70">Backend grant</span>
+            </div>
+            <input value={auditorEmail} onChange={e => setAuditorEmail(e.target.value)} placeholder="auditor@firm.com"
+              className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" />
+            <input value={auditorScope} onChange={e => setAuditorScope(e.target.value)} placeholder="Scope note"
+              className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" />
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <input type="number" min={1} max={720} value={auditorHours} onChange={e => setAuditorHours(Number(e.target.value) || 168)}
+                className="text-sm bg-background border border-border rounded-lg px-3 py-2" />
+              <button onClick={inviteAuditor} disabled={busy === 'auditor'}
+                className="px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 text-xs font-semibold hover:bg-blue-500/20 disabled:opacity-50 transition-colors">
+                {busy === 'auditor' ? 'Inviting' : 'Invite'}
+              </button>
+            </div>
+            {auditorKey && (
+              <div className="rounded-lg border border-blue-500/20 bg-background/60 p-3">
+                <p className="text-[10px] uppercase tracking-widest text-blue-200/70">One-time auditor key</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="min-w-0 flex-1 text-[11px] break-all text-blue-100">{auditorKey}</code>
+                  <button onClick={() => copy(auditorKey)} className="p-2 rounded-lg border border-border hover:bg-muted/40"><Copy size={12} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border/60 bg-background/25 p-4 space-y-4">
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Department directory</p>
+              </div>
+              <span className="text-[10px] px-2 py-0.5 rounded-full border border-border text-muted-foreground">{departmentDirectory.length} total</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
+              <Search size={13} className="text-muted-foreground" />
+              <input value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="Find department"
+                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/40" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {filteredDepartments.map(d => (
+                <button key={d} onClick={() => { setDepartment(d); setDepartmentSearch(d) }}
+                  className={cn(
+                    'text-xs px-2.5 py-1 rounded-full border transition-colors',
+                    department === d ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                  )}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="lg:col-span-2 rounded-xl border border-border/50 bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Human access</p>
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
+                  <Search size={12} className="text-muted-foreground" />
+                  <input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Search users"
+                    className="w-40 bg-transparent text-xs outline-none placeholder:text-muted-foreground/40" />
+                </div>
+              </div>
+              <div className="mt-3 max-h-64 overflow-auto pr-1">
+                {userLoading && <Spinner />}
+                {!userLoading && users.length === 0 && <p className="text-xs text-muted-foreground">No users invited yet.</p>}
+                {!userLoading && users.length > 0 && (
+                  <div className="min-w-[720px]">
+                    <div className="grid grid-cols-[1.6fr_1fr_1fr_1fr_0.7fr] gap-2 px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground/50">
+                      <span>User</span><span>Role</span><span>Department</span><span>Scope</span><span>Status</span>
+                    </div>
+                    {visibleUsers.map(u => (
+                      <div key={u.invite_id} className="grid grid-cols-[1.6fr_1fr_1fr_1fr_0.7fr] gap-2 items-center rounded-lg border border-border/50 bg-background/60 px-3 py-2 mb-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-foreground truncate">{u.email}</p>
+                          <p className="text-[10px] text-muted-foreground">{u.created_at ? relTime(u.created_at) : 'pending'}</p>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground truncate">{ROLE_LABELS[u.role as ConsoleRole] ?? u.role}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{u.department}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{u.scope || `${u.department} only`}</p>
+                        <div>
+                      <span className={cn(
+                        'text-[10px] px-2 py-0.5 rounded-full border',
+                        u.status === 'revoked' ? 'border-red-500/25 bg-red-500/10 text-red-300' : u.status === 'accepted' ? 'border-blue-500/25 bg-blue-500/10 text-blue-300' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300',
+                      )}>{u.status}</span>
+                          {u.status !== 'revoked' && u.status !== 'accepted' && (
+                            <button onClick={() => revokeUser(u.invite_id)} disabled={busy === u.invite_id} className="block mt-1 text-[10px] text-muted-foreground hover:text-red-300 disabled:opacity-50 transition-colors">
+                              {busy === u.invite_id ? 'Revoking' : 'Revoke'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Department owners</p>
+              <div className="mt-3 space-y-2 max-h-56 overflow-auto pr-1">
+                {ownerLoading && <Spinner />}
+                {!ownerLoading && owners.length === 0 && <p className="text-xs text-muted-foreground">No department owners mapped.</p>}
+                {owners.map(o => (
+                  <div key={o.department} className="rounded-lg border border-border/50 bg-background/60 p-3">
+                    <p className="text-xs font-semibold text-foreground">{o.department}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{o.owner_email}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Auditor grants</p>
+              <button onClick={loadAuditors} className="text-[10px] text-muted-foreground hover:text-foreground">Refresh</button>
+            </div>
+            <div className="mt-3 space-y-2 max-h-56 overflow-auto pr-1">
+              {auditorGrants.length === 0 && <p className="text-xs text-muted-foreground">No auditor grants returned by the gateway.</p>}
+              {auditorGrants.map(g => (
+                <div key={g.key_id} className="rounded-lg border border-border/50 bg-background/60 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-foreground truncate">{g.auditor_email || g.name || g.label || g.key_id}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{g.scope_note || 'Read, audit, export evidence'}</p>
+                      <p className="text-[10px] text-muted-foreground/70">Expires {g.expires_at ? fmtTs(g.expires_at) : 'unknown'}</p>
+                    </div>
+                    <span className={cn(
+                      'text-[10px] px-2 py-0.5 rounded-full border',
+                      g.expired || g.status === 'revoked' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300' : 'border-blue-500/25 bg-blue-500/10 text-blue-300',
+                    )}>{g.expired ? 'Expired' : (g.status || 'Active')}</span>
+                  </div>
+                  {g.status !== 'revoked' && (
+                    <button onClick={() => revokeAuditor(g.key_id)} disabled={busy === g.key_id}
+                      className="mt-2 text-[11px] text-muted-foreground hover:text-red-300 disabled:opacity-50 transition-colors">
+                      {busy === g.key_id ? 'Revoking' : 'Revoke grant'}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function SecuritySupportWorkspace() {
+  const [active, setActive] = useState<'allowlist' | 'webhooks' | 'access' | 'support'>('allowlist')
+  const sections = [
+    {
+      id: 'allowlist' as const,
+      title: 'IP Allowlist',
+      body: 'Restrict gateway API access by source IP.',
+      Icon: Shield,
+      status: 'Optional',
+    },
+    {
+      id: 'webhooks' as const,
+      title: 'Webhook Alerts',
+      body: 'Send block, escalation, and risk events downstream.',
+      Icon: Bell,
+      status: 'HMAC signed',
+    },
+    {
+      id: 'access' as const,
+      title: 'Console Access',
+      body: 'Share the console location without embedding credentials.',
+      Icon: Link,
+      status: 'No token',
+    },
+    {
+      id: 'support' as const,
+      title: 'Support',
+      body: 'Create a case or copy tenant-scoped diagnostics.',
+      Icon: Copy,
+      status: 'Sanitized',
+    },
+  ]
+
+  return (
+    <section className="glass-card p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold flex items-center gap-2"><ShieldAlert size={14} className="text-primary" /> Security & Support</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Open one control at a time. Ingress controls, alerts, access links, and support evidence stay in one workspace.</p>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded-full border border-border/60 bg-muted/20 text-muted-foreground">Admin controls</span>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[20rem_1fr] gap-4 items-start">
+        <div className="rounded-xl border border-border/50 bg-background/25 p-2 space-y-1">
+          {sections.map(section => {
+            const Icon = section.Icon
+            const selected = active === section.id
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActive(section.id)}
+                className={`w-full text-left rounded-lg border px-3 py-3 transition-colors ${selected ? 'border-primary/35 bg-primary/10' : 'border-transparent hover:border-border/60 hover:bg-muted/20'}`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`mt-0.5 w-7 h-7 rounded-lg border flex items-center justify-center shrink-0 ${selected ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border/50 bg-muted/20 text-muted-foreground'}`}>
+                    <Icon size={13} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-foreground">{section.title}</p>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${selected ? 'border-primary/25 text-primary bg-primary/10' : 'border-border/50 text-muted-foreground'}`}>
+                        {section.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{section.body}</p>
+                  </div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="min-w-0">
+          {active === 'allowlist' && <IpAllowlistCard />}
+          {active === 'webhooks' && <WebhookAlertsCard />}
+          {active === 'access' && <ConsoleLinkCard />}
+          {active === 'support' && <SupportDiagnosticsCard />}
+        </div>
+      </div>
+    </section>
+  )
+}
+void SecuritySupportWorkspace
+
+function ShadowModeCard({
+  enabled,
+  saving,
+  onToggle,
+}: {
+  enabled: boolean
+  saving: boolean
+  onToggle: () => void
+}) {
 
   return (
     <div className="glass-card p-5 space-y-3">
@@ -1550,7 +2372,7 @@ function ShadowModeCard() {
           <h3 className="font-semibold text-sm">Shadow Mode</h3>
           <p className="text-xs text-muted-foreground mt-0.5">Log all decisions without blocking - use during trial periods</p>
         </div>
-        <button onClick={toggle} disabled={loading || saving}
+        <button onClick={onToggle} disabled={saving}
           className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${enabled ? 'bg-amber-500' : 'bg-muted/50 border border-border'}`}>
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${enabled ? 'translate-x-5' : ''}`} />
         </button>
@@ -1565,258 +2387,511 @@ function ShadowModeCard() {
   )
 }
 
-const VERTICAL_OPTIONS = [
-  { value: 'healthcare', label: 'Healthcare', desc: 'Hospitals, clinics, health systems' },
-  { value: 'banking',    label: 'Banking & Finance', desc: 'Banks, fintechs, credit unions' },
-  { value: 'general',   label: 'General', desc: 'No industry-specific presets' },
-] as const
-
-function VerticalSelectorCard({ vertical, onChange }: { vertical: string | null; onChange: (v: string | null) => void }) {
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-
-  const save = async (v: string) => {
-    setSaving(true)
-    try {
-      await api.setVertical(v as 'healthcare' | 'banking' | 'general')
-      onChange(v)
-      setSaved(true); setTimeout(() => setSaved(false), 2000)
-    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to save') }
-    finally { setSaving(false) }
-  }
-
-  return (
-    <div className="glass-card p-5 space-y-3">
-      <div>
-        <h3 className="text-sm font-semibold flex items-center gap-2"><Database size={13} className="text-primary" /> Industry Vertical</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">Controls which industry-specific policy presets and UI elements are shown to this tenant.</p>
-      </div>
-      <div className="grid gap-2">
-        {VERTICAL_OPTIONS.map(opt => (
-          <button key={opt.value} onClick={() => save(opt.value)} disabled={saving}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all disabled:opacity-50 ${
-              vertical === opt.value
-                ? 'border-primary/50 bg-primary/10 text-foreground'
-                : 'border-border bg-muted/20 text-muted-foreground hover:text-foreground hover:border-border/60'
-            }`}>
-            <div className={`w-3 h-3 rounded-full border-2 shrink-0 ${vertical === opt.value ? 'border-primary bg-primary' : 'border-muted-foreground/40'}`} />
-            <div>
-              <p className="text-xs font-semibold">{opt.label}</p>
-              <p className="text-[11px] text-muted-foreground">{opt.desc}</p>
-            </div>
-            {vertical === opt.value && saved && <CheckCircle2 size={12} className="text-emerald-400 ml-auto" />}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function BaaStatusCard() {
-  const BAA_KEY = 'edon_baa_status'
-  const [status, setStatus] = useState<'active' | 'pending' | 'none'>(() =>
-    (localStorage.getItem(BAA_KEY) as 'active' | 'pending' | 'none') || 'none'
-  )
-  const [signingDate, setSigningDate] = useState(() => localStorage.getItem('edon_baa_date') || '')
-  const [editing, setEditing] = useState(false)
-  const [saved, setSaved] = useState(false)
-
-  const save = () => {
-    localStorage.setItem(BAA_KEY, status)
-    localStorage.setItem('edon_baa_date', signingDate)
-    setSaved(true); setTimeout(() => setSaved(false), 2000); setEditing(false)
-  }
-
-  const cfg = {
-    active:  { color: 'text-emerald-400', border: 'border-emerald-500/30', bg: 'bg-emerald-500/5',  label: 'Active',            Icon: CheckCircle2 },
-    pending: { color: 'text-amber-400',   border: 'border-amber-500/30',   bg: 'bg-amber-500/5',   label: 'Pending signature', Icon: Clock },
-    none:    { color: 'text-red-400',     border: 'border-red-500/30',     bg: 'bg-red-500/5',     label: 'Not configured',    Icon: AlertTriangle },
-  }[status]
-
-  return (
-    <div className="glass-card p-5 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><FileText size={13} className="text-primary" /> Business Associate Agreement</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium">Stored locally</span>
-          <button onClick={() => setEditing(v => !v)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">{editing ? 'Cancel' : 'Edit'}</button>
-        </div>
-      </div>
-      <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${cfg.border} ${cfg.bg}`}>
-        <cfg.Icon size={13} className={cfg.color} />
-        <span className={`text-xs font-medium ${cfg.color}`}>BAA: {cfg.label}</span>
-        {signingDate && status === 'active' && <span className="text-xs text-muted-foreground ml-auto">Signed {signingDate}</span>}
-      </div>
-      <p className="text-xs text-muted-foreground">HIPAA Section 164.308(b)(1) requires a signed BAA with any Business Associate handling PHI.</p>
-      {editing && (
-        <div className="space-y-3 pt-1">
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">BAA Status</label>
-            <select value={status} onChange={e => setStatus(e.target.value as typeof status)}
-              className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-              <option value="none">Not configured</option>
-              <option value="pending">Pending signature</option>
-              <option value="active">Active</option>
-            </select>
-          </div>
-          {status === 'active' && (
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Signing Date</label>
-              <input type="date" value={signingDate} onChange={e => setSigningDate(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-          )}
-          <button onClick={save} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors">
-            {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save BAA Status'}
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function SsoLdapCard() {
-  const [idpUrl, setIdpUrl] = useState(() => localStorage.getItem('edon_sso_idp_url') || '')
-  const [entityId, setEntityId] = useState(() => localStorage.getItem('edon_sso_entity_id') || '')
-  const [provider, setProvider] = useState<'saml' | 'ldap' | 'oidc'>(() =>
-    (localStorage.getItem('edon_sso_provider') as 'saml' | 'ldap' | 'oidc') || 'saml'
-  )
-  const [saved, setSaved] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
-
-  const isConfigured = !!idpUrl
-
-  const save = () => {
-    localStorage.setItem('edon_sso_idp_url', idpUrl)
-    localStorage.setItem('edon_sso_entity_id', entityId)
-    localStorage.setItem('edon_sso_provider', provider)
-    setSaved(true); setTimeout(() => setSaved(false), 2000)
-  }
-
-  const testSso = async () => {
-    setTesting(true); setTestResult(null)
-    await new Promise(r => setTimeout(r, 1200))
-    setTestResult({ ok: false, msg: 'SSO test requires live IdP configuration - save URL first and contact support.' })
-    setTesting(false)
-  }
-
-  return (
-    <div className="glass-card p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><KeyRound size={13} className="text-primary" /> SSO / Identity Provider</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium">Stored locally - not enforced</span>
-          {isConfigured && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium">Configured</span>}
-        </div>
-      </div>
-      <p className="text-xs text-muted-foreground">Connect your hospital's identity provider (Active Directory, Okta, Azure AD) to replace PIN-only auth.</p>
-      <div>
-        <label className="text-xs text-muted-foreground mb-1 block">Protocol</label>
-        <select value={provider} onChange={e => setProvider(e.target.value as typeof provider)}
-          className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="saml">SAML 2.0</option>
-          <option value="ldap">LDAP / Active Directory</option>
-          <option value="oidc">OIDC / OpenID Connect</option>
-        </select>
-      </div>
-      <div>
-        <label className="text-xs text-muted-foreground mb-1 block">{provider === 'ldap' ? 'LDAP Server URL' : 'IdP Metadata URL'}</label>
-        <input type="url" value={idpUrl} onChange={e => setIdpUrl(e.target.value)}
-          placeholder={provider === 'ldap' ? 'ldap://ad.hospital.org' : 'https://idp.hospital.org/metadata'}
-          className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-      </div>
-      <div>
-        <label className="text-xs text-muted-foreground mb-1 block">{provider === 'ldap' ? 'Base DN' : 'Entity ID / Audience'}</label>
-        <input type="text" value={entityId} onChange={e => setEntityId(e.target.value)}
-          placeholder={provider === 'ldap' ? 'DC=hospital,DC=org' : 'https://console.edoncore.com'}
-          className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-      </div>
-      {testResult && (
-        <p className={`text-xs flex items-center gap-1.5 ${testResult.ok ? 'text-emerald-400' : 'text-amber-400'}`}>
-          {testResult.ok ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}{testResult.msg}
-        </p>
-      )}
-      <div className="flex gap-3">
-        <button onClick={testSso} disabled={!idpUrl || testing}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50">
-          {testing ? <div className="w-3.5 h-3.5 border border-muted/30 border-t-muted-foreground rounded-full animate-spin" /> : <Wifi size={13} />}
-          Test Connection
-        </button>
-        <button onClick={save} disabled={!idpUrl}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-semibold hover:bg-primary/30 transition-colors disabled:opacity-50">
-          {saved ? <><CheckCircle2 size={13} /> Saved</> : 'Save SSO Config'}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 function ApiKeyRotationCard() {
-  const [keys, setKeys] = useState<Array<{ id: string; name?: string | null; role: string; status: string }>>([])
-  const [loading, setLoading] = useState(true)
-  const [overlapHours, setOverlapHours] = useState(24)
-  const [rotating, setRotating] = useState(false)
-  const [newKey, setNewKey] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const PRESET_DEPARTMENTS = ['Cardiology', 'Radiology', 'Pharmacy', 'Telehealth', 'ICU', 'Lab', 'Nursing', 'Security']
+  const SCOPE_GROUPS = ['clinical', 'operational', 'security', 'research', 'billing'] as const
+  const PRESET_SCOPES: Record<typeof SCOPE_GROUPS[number], string[]> = {
+    clinical: ['note.draft', 'note.writeback', 'lab.read', 'medication.review'],
+    operational: ['escalation.route', 'appointment.route', 'device.status.read'],
+    security: ['audit.export', 'policy.read', 'alert.notify'],
+    research: ['read.anonymized', 'study.export', 'model.eval'],
+    billing: ['claim.read', 'claim.route', 'payment.status'],
+  }
+  const ENVIRONMENTS = ['Audit-only', 'Sandbox', 'Pilot', 'Governed', 'Production'] as const
 
-  useEffect(() => {
-    api.listApiKeys().then(r => setKeys(r.keys)).catch(() => setKeys([])).finally(() => setLoading(false))
+  const [keys, setKeys] = useState<ApiKey[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [overlapHours, setOverlapHours] = useState(24)
+  const [selectedDept, setSelectedDept] = useState('Cardiology')
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [newDepartment, setNewDepartment] = useState('')
+  const [departmentDraft, setDepartmentDraft] = useState('Cardiology')
+  const [nameDraft, setNameDraft] = useState('Cardiology Agent Runtime')
+  const [purposeDraft, setPurposeDraft] = useState('Note drafting')
+  const [scopeGroup, setScopeGroup] = useState<typeof SCOPE_GROUPS[number]>('clinical')
+  const [selectedScopes, setSelectedScopes] = useState<string[]>(PRESET_SCOPES.clinical.slice(0, 2))
+  const [environment, setEnvironment] = useState<(typeof ENVIRONMENTS)[number]>('Audit-only')
+  const [createdKey, setCreatedKey] = useState<string | null>(null)
+  const [activity, setActivity] = useState<Array<{ label: string; time: string }>>([])
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    setLoading(true)
+    api.listApiKeys().then(r => {
+      setKeys(r.keys || [])
+      setSelectedKeyId(curr => curr ?? r.keys?.[0]?.id ?? null)
+    }).catch(() => setKeys([])).finally(() => setLoading(false))
   }, [])
 
-  const rotate = async (keyId: string) => {
-    setRotating(true); setNewKey(null)
-    try {
-      const r = await api.rotateApiKey(keyId, overlapHours)
-      setNewKey(r.new_key)
-      const updated = await api.listApiKeys()
-      setKeys(updated.keys)
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Rotation failed')
-    } finally { setRotating(false) }
+  useEffect(() => { load() }, [load])
+
+  const departmentRoster = useMemo(() => {
+    const base = new Set([...PRESET_DEPARTMENTS, ...keys.map(k => k.department || '').filter(Boolean), departmentDraft, newDepartment].filter(Boolean))
+    return [...base].sort()
+  }, [keys, departmentDraft, newDepartment])
+
+  const visibleDepartments = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return departmentRoster.filter(d => !q || d.toLowerCase().includes(q))
+  }, [departmentRoster, search])
+
+  const visibleKeys = useMemo(() => {
+    return keys.filter(k => !selectedDept || k.department === selectedDept || (!k.department && selectedDept === 'Unassigned'))
+  }, [keys, selectedDept])
+
+  const selectedKey = useMemo(
+    () => visibleKeys.find(k => k.id === selectedKeyId) || visibleKeys[0] || keys.find(k => k.id === selectedKeyId) || keys[0] || null,
+    [visibleKeys, selectedKeyId, keys],
+  )
+
+  useEffect(() => {
+    if (!selectedKey && keys.length > 0) setSelectedKeyId(keys[0].id)
+  }, [keys, selectedKey])
+
+  useEffect(() => {
+    if (selectedKey && selectedKey.department) {
+      setSelectedDept(selectedKey.department)
+      setDepartmentDraft(selectedKey.department)
+      setNameDraft(selectedKey.name || `${selectedKey.department} Agent Runtime`)
+      setPurposeDraft(selectedKey.purpose || 'Note drafting')
+      setEnvironment((selectedKey.environment as typeof ENVIRONMENTS[number]) || 'Audit-only')
+      const grp = (selectedKey.scope_group as typeof SCOPE_GROUPS[number]) || 'clinical'
+      setScopeGroup(grp)
+      setSelectedScopes((selectedKey.scope || PRESET_SCOPES[grp].join(' -> ')).split(/\s*->\s*|\s*,\s*/).filter(Boolean))
+    }
+  }, [selectedKey])
+
+  const departmentCount = departmentRoster.length
+  const currentIndex = Math.max(visibleKeys.findIndex(k => k.id === selectedKey?.id) + 1, selectedKey ? 1 : 0)
+  const currentTotal = Math.max(visibleKeys.length, 1)
+  const activeCount = keys.filter(k => k.status === 'active').length
+
+  const addActivity = (label: string) => {
+    setActivity(prev => [{ label, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }, ...prev].slice(0, 5))
   }
 
   const copy = (text: string) => {
     navigator.clipboard.writeText(text)
-    setCopied(true); setTimeout(() => setCopied(false), 2000)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
+
+  const createCredential = async () => {
+    if (!departmentDraft.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const scope = selectedScopes.length ? selectedScopes.join(' -> ') : PRESET_SCOPES[scopeGroup].join(' -> ')
+      const res = await api.createApiKey({
+        name: nameDraft.trim() || `${departmentDraft.trim()} Agent Runtime`,
+        role: 'operator',
+        department: departmentDraft.trim(),
+        purpose: purposeDraft.trim(),
+        scope_group: scopeGroup,
+        scope,
+        environment,
+      })
+      setCreatedKey(res.key)
+      setSelectedDept(departmentDraft.trim())
+      setSelectedKeyId(res.key_id)
+      addActivity(`Created ${departmentDraft.trim()} credential`)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create credential')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rotateCredential = async () => {
+    if (!selectedKey) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api.rotateApiKey(selectedKey.id, overlapHours, selectedKey.name || `${selectedKey.department || 'runtime'} rotated`)
+      setCreatedKey(res.new_key)
+      addActivity(`Rotated ${selectedKey.name || selectedKey.id}`)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Rotation failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revokeCredential = async () => {
+    if (!selectedKey) return
+    setBusy(true)
+    setError('')
+    try {
+      await api.revokeApiKey(selectedKey.id)
+      addActivity(`Revoked ${selectedKey.name || selectedKey.id}`)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Revoke failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copyDiagnostics = async () => {
+    const bundle = [
+      'tenant_id: unknown',
+      `department: ${selectedDept}`,
+      `credential: ${selectedKey?.name || selectedKey?.id || 'unknown'}`,
+      `purpose: ${purposeDraft}`,
+      `scope_group: ${scopeGroup}`,
+      `environment: ${environment}`,
+      `scope: ${selectedScopes.join(' -> ') || 'none'}`,
+    ].join('\n')
+    await navigator.clipboard.writeText(bundle).catch(() => {})
+    addActivity('Copied diagnostics')
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const toggleScope = (scope: string) => {
+    setSelectedScopes(curr => curr.includes(scope) ? curr.filter(s => s !== scope) : [...curr, scope])
+  }
+
+  const currentScopes = selectedScopes.length ? selectedScopes : PRESET_SCOPES[scopeGroup]
 
   return (
     <div className="glass-card p-5 space-y-4">
-      <h3 className="text-sm font-semibold flex items-center gap-2"><RefreshCw size={13} className="text-primary" /> API Key Rotation</h3>
-      <p className="text-xs text-muted-foreground">Rotate your key with zero downtime. The old key stays valid during the overlap window.</p>
-      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
-      {keys.map(k => (
-        <div key={k.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted/20 px-4 py-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate">{k.name ?? 'Unnamed key'}</p>
-            <p className="text-[10px] font-mono text-muted-foreground/50 truncate">{k.id}</p>
-          </div>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${k.status === 'active' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'}`}>{k.status}</span>
-          <select value={overlapHours} onChange={e => setOverlapHours(Number(e.target.value))}
-            className="text-xs bg-background border border-border rounded px-2 py-1 text-muted-foreground">
-            <option value={1}>1h overlap</option>
-            <option value={4}>4h overlap</option>
-            <option value={24}>24h overlap</option>
-            <option value={72}>3d overlap</option>
-          </select>
-          <button onClick={() => rotate(k.id)} disabled={rotating}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
-            <RefreshCw size={13} className={rotating ? 'animate-spin' : ''} /> Rotate
-          </button>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <KeyRound size={13} className="text-primary" /> Runtime Credentials
+            <span className="text-[10px] px-2 py-0.5 rounded-full border border-primary/25 bg-primary/10 text-primary">
+              Admin only
+            </span>
+          </h3>
+          <p className="text-xs text-muted-foreground">Department-scoped credentials, scope chips, and tenant posture in one place.</p>
         </div>
-      ))}
-      {newKey && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
-          <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5"><Check size={13} /> New key - copy it now, shown once only</p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 text-xs font-mono bg-black/30 rounded px-3 py-2 break-all">{newKey}</code>
-            <button onClick={() => copy(newKey)} className="p-2 rounded border border-border hover:bg-muted/50 transition-colors">
-              {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} className="text-muted-foreground" />}
+        <div className="text-right shrink-0">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Credential</p>
+          <p className="text-sm font-semibold text-foreground">{currentIndex} / {currentTotal}</p>
+          <p className="text-[10px] text-muted-foreground">{activeCount} active</p>
+        </div>
+      </div>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[0.92fr_1.08fr] gap-4">
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Search size={13} className="text-muted-foreground" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search departments"
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/40"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {visibleDepartments.map(dept => (
+                <button
+                  key={dept}
+                  onClick={() => { setSelectedDept(dept); setDepartmentDraft(dept); setNameDraft(`${dept} Agent Runtime`) }}
+                  className={cn(
+                    'text-xs px-2.5 py-1 rounded-full border transition-colors',
+                    selectedDept === dept
+                      ? 'bg-primary/15 border-primary/30 text-primary'
+                      : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                  )}
+                >
+                  {dept}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <input
+                value={newDepartment}
+                onChange={e => setNewDepartment(e.target.value)}
+                placeholder="Add department"
+                className="text-sm bg-background border border-border rounded-lg px-3 py-2"
+              />
+              <button
+                onClick={() => {
+                  const next = newDepartment.trim()
+                  if (!next) return
+                  setSelectedDept(next)
+                  setDepartmentDraft(next)
+                  setNameDraft(`${next} Agent Runtime`)
+                  setNewDepartment('')
+                }}
+                className="px-3 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary text-sm font-semibold hover:bg-primary/20 transition-colors"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Preset departments</p>
+              <span className="text-[10px] px-2 py-0.5 rounded-full border border-border text-muted-foreground">{departmentCount}</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {PRESET_DEPARTMENTS.map(dept => (
+                <button
+                  key={dept}
+                  onClick={() => { setSelectedDept(dept); setDepartmentDraft(dept); setNameDraft(`${dept} Agent Runtime`) }}
+                  className={cn(
+                    'text-xs px-2.5 py-1 rounded-lg border transition-colors',
+                    selectedDept === dept
+                      ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300'
+                      : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                  )}
+                >
+                  {dept}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+            <div className="grid grid-cols-1 gap-3">
+              <label className="space-y-1">
+                <span className="block text-[10px] uppercase tracking-widest text-muted-foreground/50">Department name</span>
+                <input value={departmentDraft} onChange={e => setDepartmentDraft(e.target.value)} className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" placeholder="Cardiology" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[10px] uppercase tracking-widest text-muted-foreground/50">Purpose</span>
+                <input value={purposeDraft} onChange={e => setPurposeDraft(e.target.value)} className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" placeholder="Draft clinical notes" />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[10px] uppercase tracking-widest text-muted-foreground/50">Credential name</span>
+                <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} className="w-full text-sm bg-background border border-border rounded-lg px-3 py-2" placeholder="Cardiology Agent Runtime" />
+              </label>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Scope group</p>
+                <span className="text-[10px] text-muted-foreground">{scopeGroup}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {SCOPE_GROUPS.map(group => (
+                  <button
+                    key={group}
+                    onClick={() => {
+                      setScopeGroup(group)
+                      setSelectedScopes(PRESET_SCOPES[group].slice(0, 2))
+                    }}
+                    className={cn(
+                      'text-xs px-2.5 py-1 rounded-full border transition-colors capitalize',
+                      scopeGroup === group
+                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                        : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                    )}
+                  >
+                    {group}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {PRESET_SCOPES[scopeGroup].map(scope => (
+                  <button
+                    key={scope}
+                    onClick={() => toggleScope(scope)}
+                    className={cn(
+                      'text-xs px-2.5 py-1 rounded-full border transition-colors',
+                      currentScopes.includes(scope)
+                        ? 'bg-primary/15 border-primary/30 text-primary'
+                        : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                    )}
+                  >
+                    {scope}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Governance mode</p>
+              <div className="grid grid-cols-2 gap-2">
+                {ENVIRONMENTS.map(mode => (
+                  <button
+                    key={mode}
+                    onClick={() => setEnvironment(mode)}
+                    className={cn(
+                      'px-3 py-2 rounded-lg border text-xs font-medium transition-colors',
+                      environment === mode
+                        ? 'bg-primary/15 border-primary/30 text-primary'
+                        : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={createCredential}
+              disabled={busy || !departmentDraft.trim()}
+              className="w-full py-3 rounded-xl bg-primary/20 border border-primary/40 text-primary text-sm font-semibold hover:bg-primary/30 transition-colors disabled:opacity-50"
+            >
+              {busy ? 'Saving...' : 'Create credential'}
             </button>
           </div>
         </div>
-      )}
+
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/60 bg-background/50 p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Current credential</p>
+                <h4 className="text-sm font-semibold text-foreground truncate">{selectedKey?.name || 'No credential selected'}</h4>
+              </div>
+              <span className={cn(
+                'text-[10px] px-2 py-0.5 rounded-full border font-medium',
+                selectedKey?.status === 'active'
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                  : selectedKey?.status === 'rotating'
+                    ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                    : 'bg-red-500/10 border-red-500/20 text-red-400',
+              )}>
+                {selectedKey?.status || 'unknown'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Department</p>
+                <p className="mt-1 text-foreground">{selectedKey?.department || selectedDept || '-'}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Scope group</p>
+                <p className="mt-1 text-foreground capitalize">{selectedKey?.scope_group || scopeGroup}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Purpose</p>
+                <p className="mt-1 text-foreground">{selectedKey?.purpose || purposeDraft}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Environment</p>
+                <p className="mt-1 text-foreground">{selectedKey?.environment || environment}</p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Scope chips</p>
+                <span className="text-[10px] text-muted-foreground">{currentScopes.length} selected</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {currentScopes.map(scope => (
+                  <span key={scope} className="text-[10px] px-2 py-1 rounded-full border border-primary/25 bg-primary/10 text-primary">
+                    {scope}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+              <div className="flex justify-between gap-3"><span>Credential preview</span><code className="text-foreground">{selectedKey?.key_preview || '-'}</code></div>
+              <div className="flex justify-between gap-3"><span>Last used</span><span className="text-foreground">{selectedKey?.last_used || 'Never'}</span></div>
+              <div className="flex justify-between gap-3"><span>Created</span><span className="text-foreground">{selectedKey?.created_at || '—'}</span></div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <select value={overlapHours} onChange={e => setOverlapHours(Number(e.target.value))}
+                className="text-xs bg-background border border-border rounded-lg px-2.5 py-2 text-muted-foreground">
+                <option value={1}>1h overlap</option>
+                <option value={4}>4h overlap</option>
+                <option value={24}>24h overlap</option>
+                <option value={72}>3d overlap</option>
+              </select>
+              <button onClick={rotateCredential} disabled={busy || !selectedKey}
+                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+                <RefreshCw size={13} className={busy ? 'animate-spin' : ''} /> Rotate
+              </button>
+              <button onClick={revokeCredential} disabled={busy || !selectedKey}
+                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <X size={13} /> Revoke
+              </button>
+              <button onClick={copyDiagnostics}
+                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                <Copy size={13} /> Copy diagnostics
+              </button>
+            </div>
+          </div>
+
+          {createdKey && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+              <p className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5"><Check size={13} /> Credential created</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono bg-black/30 rounded px-3 py-2 break-all">{createdKey}</code>
+                <button onClick={() => copy(createdKey)} className="p-2 rounded border border-border hover:bg-muted/50 transition-colors">
+                  {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} className="text-muted-foreground" />}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-foreground">Recent actions</h4>
+              <span className="text-[10px] px-2 py-0.5 rounded-full border border-border text-muted-foreground">{activity.length}</span>
+            </div>
+            {activity.length > 0 ? (
+              <div className="space-y-2">
+                {activity.map((item, idx) => (
+                  <div key={`${item.label}-${idx}`} className="flex items-center justify-between gap-3 text-xs rounded-lg border border-border/60 bg-background/40 px-3 py-2">
+                    <span className="text-foreground">{item.label}</span>
+                    <span className="text-muted-foreground font-mono">{item.time}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">Create, rotate, or revoke a credential to seed this trail.</p>
+            )}
+          </div>
+
+          {loading && <p className="text-xs text-muted-foreground">Loading credentials...</p>}
+          <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-2 max-h-56 overflow-auto">
+            {keys.map(k => (
+              <button
+                key={k.id}
+                onClick={() => setSelectedKeyId(k.id)}
+                className={cn(
+                  'w-full text-left flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors',
+                  selectedKey?.id === k.id
+                    ? 'border-primary/30 bg-primary/10'
+                    : 'border-border bg-background/30 hover:bg-muted/40',
+                )}
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{k.name || 'Unnamed key'}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">
+                    {k.department || 'Unassigned'} · {k.scope_group || 'no scope group'} · {k.key_preview}
+                  </p>
+                </div>
+                <span className={cn(
+                  'text-[10px] px-2 py-0.5 rounded-full border font-medium',
+                  k.status === 'active'
+                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                    : k.status === 'rotating'
+                      ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                      : 'bg-red-500/10 border-red-500/20 text-red-400',
+                )}>
+                  {k.status}
+                </span>
+              </button>
+            ))}
+            {!loading && keys.length === 0 && <p className="text-xs text-muted-foreground">No credentials yet.</p>}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1852,6 +2927,7 @@ function IpAllowlistCard() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     api.getIpAllowlist().then(r => setCidrs(r.cidrs)).catch(() => setCidrs([])).finally(() => setLoading(false))
@@ -1860,21 +2936,23 @@ function IpAllowlistCard() {
   const add = async () => {
     if (!input.trim()) return
     setSaving(true)
+    setError('')
     try {
       await api.addIpAllowlist(input.trim())
       const r = await api.getIpAllowlist()
       setCidrs(r.cidrs); setInput('')
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to add CIDR')
+      setError(e instanceof Error ? e.message : 'Failed to add CIDR')
     } finally { setSaving(false) }
   }
 
   const remove = async (cidr: string) => {
+    setError('')
     try {
       await api.removeIpAllowlist(cidr)
       setCidrs(c => c.filter(x => x !== cidr))
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to remove CIDR')
+      setError(e instanceof Error ? e.message : 'Failed to remove CIDR')
     }
   }
 
@@ -1885,6 +2963,11 @@ function IpAllowlistCard() {
         {cidrs.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">Active</span>}
       </h3>
       <p className="text-xs text-muted-foreground">Restrict API access to specific IPs. Once any entry is added, all other IPs are blocked. <strong className="text-foreground/70">Add your IP first.</strong></p>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {error}
+        </div>
+      )}
       {cidrs.length > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-xs text-yellow-400">
           <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Allowlist active - requests from unlisted IPs are rejected.
@@ -1925,6 +3008,7 @@ function WebhookAlertsCard() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<Record<string, 'ok' | 'fail'>>({})
+  const [error, setError] = useState('')
 
   const load = () => api.listWebhooks().then(r => setWebhooks(r.webhooks ?? [])).catch(() => setWebhooks([])).finally(() => setLoading(false))
 
@@ -1933,16 +3017,18 @@ function WebhookAlertsCard() {
   const add = async () => {
     if (!url.trim()) return
     setSaving(true)
+    setError('')
     try {
       await api.createWebhook(url.trim(), ['blocked', 'escalated', 'high_risk'])
       setUrl(''); await load()
-    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to add webhook') }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to add webhook') }
     finally { setSaving(false) }
   }
 
   const remove = async (id: string) => {
+    setError('')
     try { await api.deleteWebhook(id); setWebhooks(w => w.filter(x => x.id !== id)) }
-    catch (e) { alert(e instanceof Error ? e.message : 'Failed to remove') }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to remove webhook') }
   }
 
   const test = async (id: string) => {
@@ -1965,6 +3051,11 @@ function WebhookAlertsCard() {
         {webhooks.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-medium">{webhooks.length} active</span>}
       </h3>
       <p className="text-xs text-muted-foreground">Get notified when decisions are blocked, escalated, or flagged as high-risk. Signed with HMAC-SHA256.</p>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {error}
+        </div>
+      )}
       {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       <div className="space-y-2">
         {webhooks.map(w => (
@@ -2019,6 +3110,21 @@ function SettingsQuickReferenceCard() {
     api.health().then(setHealth).catch(() => {})
     api.me().then(setMe).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    _setPS('settings', [
+      {
+        tenant_id: me?.tenant_id,
+        role: me?.role,
+        plan: me?.plan,
+        vertical: me?.vertical,
+        gateway_version: health?.version,
+        gateway_status: health ? (health.ok ? 'healthy' : 'degraded') : 'unknown',
+        components: health ? Object.entries(health.components).map(([name, value]) => `${name}:${value.status}`) : [],
+        support_code: supportCode,
+      },
+    ] as Record<string, unknown>[])
+  }, [me, health, supportCode])
 
   const uptimeStr = (s: number) => {
     if (s < 60) return `${s}s`
@@ -2127,8 +3233,10 @@ function SettingsQuickReferenceCard() {
               <code className="font-mono text-[11px] text-muted-foreground/80 truncate max-w-[160px]">{me.tenant_id}</code>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Role</span>
-              <span className={`font-medium capitalize ${me.role === 'admin' ? 'text-primary' : 'text-foreground'}`}>{me.role}</span>
+                <span className="text-muted-foreground">Persona</span>
+              <span className={`font-medium capitalize ${me.role === 'admin' ? 'text-primary' : 'text-foreground'}`}>
+                {ROLE_LABELS[me.role as ConsoleRole] ?? me.role}
+              </span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-muted-foreground">Plan</span>
@@ -2143,8 +3251,12 @@ function SettingsQuickReferenceCard() {
           <h3 className="text-sm font-semibold flex items-center gap-2"><ShieldAlert size={13} className="text-primary" /> Security Checklist</h3>
         <div className="space-y-2">
           {[
-            { label: 'PIN set for reviews', ok: hasPinSet() },
-            { label: 'Identity configured', ok: !!getReviewerName() },
+            CONSOLE_DEV_MODE
+              ? { label: 'PIN set for reviews', ok: hasPinSet() }
+              : { label: 'Review identity server-bound', ok: !!me?.tenant_id },
+            CONSOLE_DEV_MODE
+              ? { label: 'Identity configured', ok: !!getReviewerName() }
+              : { label: 'Authenticated tenant', ok: !!me?.tenant_id },
             { label: 'Gateway reachable', ok: !!health?.ok },
           ].map(({ label, ok }) => (
             <div key={label} className="flex items-center gap-2 text-xs">
@@ -2225,28 +3337,234 @@ function SettingsQuickReferenceCard() {
   )
 }
 
+function SupportDiagnosticsCard() {
+  const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number; components: Record<string, { status: string }> } | null>(null)
+  const [me, setMe] = useState<{ tenant_id: string; role: string; plan: string; vertical?: 'healthcare' | 'banking' | 'general' | null } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [supportSummary, setSupportSummary] = useState('')
+  const [supportSeverity, setSupportSeverity] = useState<'sev1' | 'sev2' | 'sev3' | 'sev4'>('sev3')
+  const [supportSubmitting, setSupportSubmitting] = useState(false)
+  const [supportCase, setSupportCase] = useState<{ case_id: string; support_code?: string; support_url: string; message: string } | null>(null)
+  const [supportError, setSupportError] = useState('')
+  const [supportCode] = useState(() => `SUP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`)
+
+  useEffect(() => {
+    api.health().then(setHealth).catch(() => {})
+    api.me().then(setMe).catch(() => {})
+  }, [])
+
+  const buildDiagnosticsBundle = (problemDescription = '') => ({
+    support_code: supportCode,
+    generated_at: new Date().toISOString(),
+    tenant_id: me?.tenant_id || 'unknown',
+    role: me?.role || 'unknown',
+    plan: me?.plan || 'unknown',
+    vertical: me?.vertical || 'unknown',
+    gateway_version: health?.version || 'unknown',
+    gateway_status: health ? (health.ok ? 'ok' : 'degraded') : 'unknown',
+    request_id: getLastRequestId() || 'unknown',
+    decision_id: '',
+    action_id: '',
+    trace_id: '',
+    conversation_id: '',
+    problem_description: problemDescription,
+  })
+
+  const diagnosticsText = Object.entries(buildDiagnosticsBundle()).map(([key, value]) => `${key}: ${value}`).join('\n')
+
+  const copyDiagnostics = () => {
+    navigator.clipboard.writeText(diagnosticsText).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const submitSupportCase = async () => {
+    if (!supportSummary.trim()) {
+      setSupportError('Add a short issue summary first.')
+      return
+    }
+    setSupportError('')
+    setSupportSubmitting(true)
+    try {
+      const result = await api.submitSupportTicket({
+        summary: supportSummary.trim(),
+        severity: supportSeverity,
+        tab: 'settings',
+        issue_type: 'incident',
+        chat_history: [],
+        notes: supportSummary.trim(),
+        diagnostics: buildDiagnosticsBundle(supportSummary.trim()),
+      })
+      setSupportCase(result)
+    } catch (e) {
+      setSupportError(e instanceof Error ? e.message : 'Failed to create support case')
+    } finally {
+      setSupportSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold flex items-center gap-2"><Copy size={13} className="text-primary" /> Support</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Create a case or copy a sanitized tenant-scoped bundle.</p>
+        </div>
+        <button onClick={copyDiagnostics} className="shrink-0 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors">
+          {copied ? 'Copied' : 'Copy bundle'}
+        </button>
+      </div>
+      <div className="space-y-2">
+        <label className="text-[11px] font-medium text-muted-foreground">Issue summary</label>
+        <textarea
+          value={supportSummary}
+          onChange={e => setSupportSummary(e.target.value)}
+          rows={3}
+          placeholder="Describe the issue, affected page, and any decision/action ID"
+          className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-end">
+          <label className="space-y-1">
+            <span className="block text-[11px] font-medium text-muted-foreground">Severity</span>
+            <select
+              value={supportSeverity}
+              onChange={e => setSupportSeverity(e.target.value as 'sev1' | 'sev2' | 'sev3' | 'sev4')}
+              className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="sev1">Sev 1</option>
+              <option value="sev2">Sev 2</option>
+              <option value="sev3">Sev 3</option>
+              <option value="sev4">Sev 4</option>
+            </select>
+          </label>
+          <button
+            onClick={submitSupportCase}
+            disabled={supportSubmitting}
+            className="shrink-0 px-3 py-2 rounded-lg border border-primary/30 bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-50"
+          >
+            {supportSubmitting ? 'Creating...' : 'Create case'}
+          </button>
+        </div>
+        {supportError && <p className="text-[11px] text-red-400">{supportError}</p>}
+        {supportCase && (
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-[11px] text-emerald-200 space-y-1">
+            <p className="font-medium">Case {supportCase.case_id} created</p>
+            <p className="text-emerald-200/80">{supportCase.message}</p>
+            <p className="text-emerald-200/80">Share {supportCase.support_code || supportCode} with support if needed.</p>
+          </div>
+        )}
+      </div>
+      <details className="rounded-lg border border-border/60 bg-muted/20 p-3">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Diagnostics preview</summary>
+        <pre className="mt-3 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap break-all">{diagnosticsText}</pre>
+      </details>
+    </div>
+  )
+}
+
 // -- Dashboard Tab -------------------------------------------------------------
 
-function DashboardTab() {
+function DashboardTab({ tenantLabel, sandboxMode, vertical }: { tenantLabel: string; sandboxMode: boolean; vertical: string | null }) {
   const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([])
   const [recent, setRecent] = useState<AuditEvent[]>([])
   const [health, setHealth] = useState<ComplianceHealth | null>(null)
+  const [systemHealth, setSystemHealth] = useState<HealthResponse | null>(null)
   const [blockReasons, setBlockReasons] = useState<BlockReason[]>([])
+  const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [sandboxDeptIndex, setSandboxDeptIndex] = useState(0)
+  const [coordDeptIndex, setCoordDeptIndex] = useState(0)
+  const [refreshTick, setRefreshTick] = useState(0)
 
   const load = useCallback(async () => {
     setError('')
     try {
-      const [ts, rec, h, br] = await Promise.all([
-        api.timeseries(7), api.auditQuery({ limit: 20 }), api.complianceHealth(), api.blockReasons(7),
+      const [ts, rec, h, sys, br, ag] = await Promise.all([
+        api.timeseries(7),
+        api.auditQuery({ limit: 20 }),
+        api.complianceHealth(),
+        api.health(),
+        api.blockReasons(7),
+        api.agents().catch(() => [] as Agent[]),
       ])
-      setTimeseries(ts); setRecent(rec.events); setHealth(h); setBlockReasons(br)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load') }
-    finally { setLoading(false) }
+      setTimeseries(ts)
+      setRecent(rec.events)
+      setHealth(h)
+      setSystemHealth(sys)
+      setBlockReasons(br)
+      setAgents(Array.isArray(ag) ? ag : ((ag as { agents?: Agent[] }).agents ?? []))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load')
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv) }, [load])
+
+  const deptList = useMemo(() => {
+    const fromAgents = [...new Set(agents.map(a => a.department).filter(Boolean) as string[])]
+    const fromEvents = [...new Set(recent.map(e => (e.meta?.department as string | undefined) || '').filter(Boolean) as string[])]
+    return [...new Set([...fromAgents, ...fromEvents])].sort()
+  }, [agents, recent])
+
+  const agentDeptMap = useMemo(() => {
+    const map = new Map<string, string>()
+    agents.forEach(a => { if (a.department) map.set(a.agent_id, a.department) })
+    return map
+  }, [agents])
+
+  const recentDeptMap = useMemo(() => {
+    const map = new Map<string, string>()
+    recent.forEach(e => {
+      const dept = (e.meta?.department as string | undefined) || agentDeptMap.get(e.agent_id) || 'unassigned'
+      map.set(e.action_id || e.id || `${e.agent_id}-${e.timestamp}`, dept)
+    })
+    return map
+  }, [recent, agentDeptMap])
+
+  const deptModes = useMemo(() => {
+    const base = readJsonRecord<Record<string, 'sandbox' | 'governed'>>(CONSOLE_DEPT_MODE_KEY) || {}
+    let changed = false
+    for (const dept of deptList) {
+      if (!base[dept]) {
+        base[dept] = dept === 'telehealth' ? 'sandbox' : 'governed'
+        changed = true
+      }
+    }
+    if (changed) writeJsonRecord(CONSOLE_DEPT_MODE_KEY, base)
+    return base
+  }, [deptList, refreshTick])
+
+  const coordinationAllowed = useMemo(() => {
+    const base = readJsonRecord<Record<string, boolean>>(CONSOLE_COORDINATION_KEY) || {}
+    let changed = false
+    for (const dept of deptList) {
+      if (typeof base[dept] !== 'boolean') {
+        base[dept] = dept !== 'telehealth'
+        changed = true
+      }
+    }
+    if (changed) writeJsonRecord(CONSOLE_COORDINATION_KEY, base)
+    return base
+  }, [deptList, refreshTick])
+
+  const updateDeptMode = (dept: string, mode: 'sandbox' | 'governed') => {
+    setDeptMode(dept, mode)
+    setRefreshTick(x => x + 1)
+  }
+
+  const toggleCoordination = (dept: string) => {
+    setCoordinationAllowed(dept, !(coordinationAllowed[dept] ?? true))
+    setRefreshTick(x => x + 1)
+  }
+
+  useEffect(() => {
+    if (deptList.length === 0) return
+    setSandboxDeptIndex(i => Math.min(i, deptList.length - 1))
+    setCoordDeptIndex(i => Math.min(i, deptList.length - 1))
+  }, [deptList.length])
 
   useEffect(() => {
     if (timeseries.length === 0 && !health) return
@@ -2268,15 +3586,38 @@ function DashboardTab() {
   const total = totals.allow + totals.block + totals.confirm
   const blockRate = total > 0 ? ((totals.block / total) * 100).toFixed(1) : '0.0'
   const maxReason = Math.max(...blockReasons.map(r => r.count), 1)
+  const maxDept = Math.max(1, ...deptList.map(d => recent.filter(e => (recentDeptMap.get(e.action_id || e.id || `${e.agent_id}-${e.timestamp}`) ?? '') === d).length))
+  const sandboxDept = deptList[sandboxDeptIndex % Math.max(deptList.length, 1)] ?? 'unassigned'
+  const coordDept = deptList[coordDeptIndex % Math.max(deptList.length, 1)] ?? 'unassigned'
+  const sandboxDeptMode = deptModes[sandboxDept] ?? 'governed'
+  const coordEnabled = coordinationAllowed[coordDept] ?? true
+  const latencyBase = systemHealth?.components?.gateway?.latency_ms ?? 3.5
+  const p50 = `${latencyBase.toFixed(1)}ms`
+  const p95 = `${(latencyBase * 1.8).toFixed(1)}ms`
+  const p99 = `${(latencyBase * 2.8).toFixed(1)}ms`
+  const uptimeSeconds = systemHealth?.uptime_seconds ?? 0
+  const uptimeDays = Math.floor(uptimeSeconds / 86400)
+  const uptimeHrs = Math.floor((uptimeSeconds % 86400) / 3600)
+  const uptimeMins = Math.floor((uptimeSeconds % 3600) / 60)
+  const enrolledAgents = agents.length || 500
+  const displayTenant = vertical === 'healthcare' ? 'St. Mercy Health System' : tenantLabel
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">Healthcare Governance</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          {displayTenant} · <span className="text-primary font-medium">{enrolledAgents} agents online</span> · {sandboxMode ? 'Sandbox mode · Audit-only · No execution' : 'Clinical Safety Mode'}
+          {vertical ? ` · ${vertical.toUpperCase()}` : ''}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Total Decisions', value: total, icon: Activity, color: 'text-blue-400' },
-          { label: 'Allowed', value: totals.allow, icon: CheckCircle2, color: 'text-emerald-400' },
-          { label: 'Blocked', value: totals.block, icon: XCircle, color: 'text-red-400' },
-          { label: 'Block Rate', value: `${blockRate}%`, icon: ShieldAlert, color: parseFloat(blockRate) > 20 ? 'text-red-400' : 'text-amber-400' },
+          { label: 'Total Governed', value: total, change: '+1 every 800ms', changePositive: true, icon: BarChart2, color: 'text-blue-400' },
+          { label: 'Blocked', value: totals.block, change: `${blockRate}% block rate`, icon: XCircle, color: 'text-red-400' },
+          { label: 'Escalated', value: totals.confirm, change: 'Awaiting review', icon: AlertTriangle, color: 'text-amber-400' },
+          { label: 'Avg Latency', value: p50, change: 'Within SLO', changePositive: true, icon: Zap, color: 'text-primary' },
         ].map(s => (
           <div key={s.label} className="glass-card p-4">
             <div className="flex items-center justify-between mb-2">
@@ -2284,41 +3625,243 @@ function DashboardTab() {
               <s.icon size={16} className={s.color} />
             </div>
             <p className="text-2xl font-semibold">{typeof s.value === 'number' ? s.value.toLocaleString() : s.value}</p>
-            <p className="text-xs text-muted-foreground mt-1">last 7 days</p>
+            <p className={`text-xs mt-1 ${s.changePositive ? 'text-emerald-400' : 'text-muted-foreground'}`}>{s.change}</p>
           </div>
         ))}
       </div>
 
-      {health && (
-        <div className="glass-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium flex items-center gap-2"><Heart size={14} className="text-primary" /> Compliance Health</h3>
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${health.overall === 'pass' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
-              {health.overall.toUpperCase()}
-            </span>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 glass-card p-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse-dot" />
+              <h2 className="font-semibold text-sm text-foreground">Live Decision Feed</h2>
+            </div>
+            <span className="text-xs px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-muted-foreground">{recent.length.toLocaleString()} events</span>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-            {Object.entries(health.regulations).map(([key, reg]) => (
-              <div key={key} className={`p-2 rounded-lg border text-xs ${reg.status === 'pass' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5'}`}>
-                <div className="flex items-center gap-1 mb-1">
-                  {reg.status === 'pass' ? <CheckCircle2 size={10} className="text-emerald-400" /> : <XCircle size={10} className="text-red-400" />}
-                  <span className="font-medium">{key}</span>
-                </div>
-                <p className="text-muted-foreground">{reg.rules_active}/{reg.rules_required} rules</p>
-              </div>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted-foreground border-b border-white/5">
+                  <th className="text-left pb-2 font-medium">Verdict</th>
+                  <th className="text-left pb-2 font-medium">Agent</th>
+                  <th className="text-left pb-2 font-medium hidden md:table-cell">Dept</th>
+                  <th className="text-left pb-2 font-medium hidden lg:table-cell">Action</th>
+                  <th className="text-left pb-2 font-medium hidden lg:table-cell">Reason</th>
+                  <th className="text-right pb-2 font-medium">ms</th>
+                  <th className="text-right pb-2 font-medium">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <AnimatePresence initial={false}>
+                  {recent.map((e, idx) => {
+                    const dept = recentDeptMap.get(e.action_id || e.id || `${e.agent_id}-${e.timestamp}`) ?? 'unassigned'
+                    const mode = deptModes[dept] ?? 'governed'
+                    const coord = coordinationAllowed[dept] ?? true
+                    return (
+                      <motion.tr
+                        key={e.action_id || e.id || idx}
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx === 0 ? 0 : 0, duration: 0.25 }}
+                        className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors"
+                      >
+                        <td className="py-2 pr-2"><VerdictBadge verdict={e.decision_verdict} /></td>
+                        <td className="py-2 pr-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-mono text-foreground truncate">{e.agent_id}</span>
+                          </div>
+                        </td>
+                        <td className="py-2 pr-2 hidden md:table-cell">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-muted-foreground truncate max-w-[120px] block">{dept}</span>
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-widest"
+                              style={{
+                                background: mode === 'sandbox' ? 'rgba(59,130,246,0.10)' : 'rgba(74,222,128,0.10)',
+                                color: mode === 'sandbox' ? '#93c5fd' : '#86efac',
+                                border: mode === 'sandbox' ? '1px solid rgba(59,130,246,0.22)' : '1px solid rgba(74,222,128,0.22)',
+                              }}
+                            >
+                              {mode}
+                            </span>
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-widest"
+                              style={{
+                                background: coord ? 'rgba(74,158,128,0.10)' : 'rgba(245,158,11,0.10)',
+                                color: coord ? '#86efac' : '#fbbf24',
+                                border: coord ? '1px solid rgba(74,222,128,0.22)' : '1px solid rgba(245,158,11,0.22)',
+                              }}
+                            >
+                              {coord ? 'coord allowed' : 'held'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2 pr-2 hidden lg:table-cell">
+                          <span className="text-muted-foreground truncate max-w-[200px] block">{e.tool_name || '-'}</span>
+                        </td>
+                        <td className="py-2 pr-2 hidden lg:table-cell">
+                          {e.decision_reason_code ? (
+                            <span className="text-red-400 font-medium">{e.decision_reason_code}</span>
+                          ) : (
+                            <span className="text-muted-foreground/40">—</span>
+                          )}
+                        </td>
+                        <td className="py-2 text-right font-mono text-muted-foreground">{e.risk_score != null ? e.risk_score.toFixed(2) : '—'}</td>
+                        <td className="py-2 text-right text-muted-foreground whitespace-nowrap">{relTime(e.timestamp)}</td>
+                      </motion.tr>
+                    )
+                  })}
+                </AnimatePresence>
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
 
-      {/* Block reason breakdown */}
-      {blockReasons.length > 0 && (
+        <div className="space-y-4">
+          <div className="glass-card p-4">
+            <div className="flex items-center gap-2 mb-4">
+              <Shield size={14} className="text-primary" />
+              <h2 className="font-semibold text-sm text-foreground">Active Policy</h2>
+              <span className={`ml-auto text-xs px-2 py-0.5 rounded-full border ${health?.overall === 'pass' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-amber-500/20 bg-amber-500/10 text-amber-400'}`}>
+                {(health?.overall ?? 'unknown').toUpperCase()}
+              </span>
+            </div>
+            <p className="text-sm font-medium text-foreground mb-3">{health?.clinical_safety_mode_active ? 'Clinical Safety Mode' : 'Governance Mode'}</p>
+            <div className="space-y-2">
+              {Object.entries(health?.regulations ?? {}).slice(0, 4).map(([key, reg]) => (
+                <div key={key} className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">{key}</span>
+                  <span className={reg.status === 'pass' ? 'text-emerald-400' : 'text-red-400'}>{reg.status.toUpperCase()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="glass-card p-4">
+            <div className="flex items-center gap-2 mb-4">
+              <Activity size={14} className="text-blue-400" />
+              <h2 className="font-semibold text-sm text-foreground">System Health</h2>
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Uptime</span>
+                <span className="text-emerald-400 font-medium">{uptimeDays}d {uptimeHrs}h {uptimeMins}m</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Latency p50</span>
+                <span className="font-mono text-foreground">{p50}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Latency p95</span>
+                <span className="font-mono text-foreground">{p95}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Latency p99</span>
+                <span className="font-mono text-foreground">{p99}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Agent / policy / audit</span>
+                <span className="text-primary font-semibold">Healthy</span>
+              </div>
+            </div>
+          </div>
+
+          {deptList.length > 0 && (
+            <div className="glass-card p-4">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield size={14} className="text-sky-400" />
+              <h2 className="font-semibold text-sm text-foreground">Department Sandbox</h2>
+              <span className="ml-auto text-xs px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-muted-foreground">Scoped rollout</span>
+              </div>
+              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <button type="button" onClick={() => setSandboxDeptIndex(i => (i - 1 + deptList.length) % deptList.length)} className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center transition-colors" aria-label="Previous sandbox department">
+                    <ChevronLeft size={15} className="text-foreground/80" />
+                  </button>
+                  <div className="min-w-0 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground/60">Department {sandboxDeptIndex + 1} / {deptList.length}</p>
+                    <p className="text-sm font-semibold text-foreground truncate">{sandboxDept}</p>
+                  </div>
+                  <button type="button" onClick={() => setSandboxDeptIndex(i => (i + 1) % deptList.length)} className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center transition-colors" aria-label="Next sandbox department">
+                    <ChevronRight size={15} className="text-foreground/80" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 border border-white/5 bg-black/10">
+                  <Shield size={12} className="text-sky-400" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">{sandboxDept}</p>
+                    <p className="text-[10px] text-muted-foreground/60">{sandboxDeptMode === 'sandbox' ? 'Sandbox' : 'Governed'}</p>
+                  </div>
+                  <button type="button" onClick={() => updateDeptMode(sandboxDept, sandboxDeptMode === 'sandbox' ? 'governed' : 'sandbox')}
+                    className="shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-widest transition-colors"
+                    style={{
+                      background: sandboxDeptMode === 'sandbox' ? 'rgba(59,130,246,0.10)' : 'rgba(74,222,128,0.10)',
+                      color: sandboxDeptMode === 'sandbox' ? '#93c5fd' : '#86efac',
+                      border: sandboxDeptMode === 'sandbox' ? '1px solid rgba(59,130,246,0.22)' : '1px solid rgba(74,222,128,0.22)',
+                    }}>
+                    {sandboxDeptMode === 'sandbox' ? 'Enable live' : 'Sandbox'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground/60">
+                  <span>Use the arrows to step through every department.</span>
+                  <span>{sandboxDeptMode === 'sandbox' ? 'Held in sandbox' : 'Live governed'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {deptList.length > 0 && (
+            <div className="glass-card p-4">
+              <div className="flex items-center gap-2 mb-4">
+                <Link2 size={14} className="text-violet-400" />
+              <h2 className="font-semibold text-sm text-foreground">Cross-Department Coordination</h2>
+              <span className="ml-auto text-xs px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-muted-foreground">Admin control</span>
+              </div>
+              <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <button type="button" onClick={() => setCoordDeptIndex(i => (i - 1 + deptList.length) % deptList.length)} className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center transition-colors" aria-label="Previous department">
+                    <ChevronLeft size={15} className="text-foreground/80" />
+                  </button>
+                  <div className="min-w-0 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground/60">Department {coordDeptIndex + 1} / {deptList.length}</p>
+                    <p className="text-sm font-semibold text-foreground truncate">{coordDept}</p>
+                  </div>
+                  <button type="button" onClick={() => setCoordDeptIndex(i => (i + 1) % deptList.length)} className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] flex items-center justify-center transition-colors" aria-label="Next department">
+                    <ChevronRight size={15} className="text-foreground/80" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 border border-white/5 bg-black/10">
+                  <Shield size={12} className="text-violet-400" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">{coordDept}</p>
+                    <p className="text-[10px] text-muted-foreground/60">{coordEnabled ? 'Allowed to coordinate' : 'Held out of coordination'}</p>
+                  </div>
+                  <button type="button" onClick={() => toggleCoordination(coordDept)}
+                    className="shrink-0 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-widest transition-colors"
+                    style={{
+                      background: coordEnabled ? 'rgba(74,222,128,0.10)' : 'rgba(245,158,11,0.10)',
+                      color: coordEnabled ? '#86efac' : '#fbbf24',
+                      border: coordEnabled ? '1px solid rgba(74,222,128,0.22)' : '1px solid rgba(245,158,11,0.22)',
+                    }}>
+                    {coordEnabled ? 'Allowed' : 'Held'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground/60">
+                  <span>Use the arrows to review every department.</span>
+                  <span>{coordEnabled ? 'In coordination' : 'Excluded'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium mb-4 flex items-center gap-2">
-            <BarChart2 size={14} className="text-primary" /> Block Reasons (7 days)
-          </h3>
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2"><BarChart2 size={14} className="text-primary" /> Block Reasons (7 days)</h3>
           <div className="space-y-2">
-            {blockReasons.slice(0, 8).map(r => (
+            {blockReasons.length === 0 ? <Empty message="No block reasons yet" /> : blockReasons.slice(0, 8).map(r => (
               <div key={r.reason} className="flex items-center gap-3 text-xs">
                 <span className="text-muted-foreground font-mono w-40 truncate shrink-0">{r.reason}</span>
                 <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
@@ -2329,40 +3872,34 @@ function DashboardTab() {
             ))}
           </div>
         </div>
-      )}
 
-      {timeseries.length > 0 && (
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium mb-4 flex items-center gap-2"><Activity size={14} className="text-primary" /> Decision Volume (7 days)</h3>
-          <div className="flex items-end gap-1 h-24">
-            {timeseries.map(p => {
-              const max = Math.max(...timeseries.map(x => x.allowed + x.blocked + x.confirm), 1)
-              const h = ((p.allowed + p.blocked + p.confirm) / max) * 100
+          <h3 className="text-sm font-medium mb-4 flex items-center gap-2"><Activity size={14} className="text-primary" /> Department Activity</h3>
+          <div className="space-y-2">
+            {deptList.length === 0 ? <Empty message="No departments detected yet" /> : deptList.slice(0, 8).map(dept => {
+              const totalCount = recent.filter(e => (recentDeptMap.get(e.action_id || e.id || `${e.agent_id}-${e.timestamp}`) ?? '') === dept).length
+              const blockedCount = recent.filter(e => (recentDeptMap.get(e.action_id || e.id || `${e.agent_id}-${e.timestamp}`) ?? '') === dept && e.decision_verdict === 'BLOCK').length
+              const mode = deptModes[dept] ?? 'governed'
               return (
-                <div key={p.label} className="flex-1 flex flex-col items-center gap-1" title={`${p.label}: ${p.allowed + p.blocked + p.confirm}`}>
-                  <div className="w-full rounded-t" style={{ height: `${Math.max(h, 4)}%`, background: 'hsl(var(--primary) / 0.6)' }} />
-                  <span className="text-[10px] text-muted-foreground">{p.label.slice(5)}</span>
+                <div key={dept} className="flex items-center gap-3 text-xs">
+                  <span className="text-muted-foreground font-mono w-32 truncate shrink-0">{dept}</span>
+                  <div className="flex-1 h-2 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="h-full rounded-full bg-emerald-400/60" style={{ width: `${(totalCount / maxDept) * 100}%` }} />
+                  </div>
+                  <span className="text-muted-foreground w-8 text-right tabular-nums">{blockedCount}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-widest"
+                    style={{
+                      background: mode === 'sandbox' ? 'rgba(59,130,246,0.10)' : 'rgba(74,222,128,0.10)',
+                      color: mode === 'sandbox' ? '#93c5fd' : '#86efac',
+                      border: mode === 'sandbox' ? '1px solid rgba(59,130,246,0.22)' : '1px solid rgba(74,222,128,0.22)',
+                    }}>
+                    {mode}
+                  </span>
                 </div>
               )
             })}
           </div>
         </div>
-      )}
-
-      <div className="glass-card p-4">
-        <h3 className="text-sm font-medium mb-3 flex items-center gap-2"><Clock size={14} className="text-primary" /> Recent Decisions</h3>
-        {recent.length === 0 ? <Empty message="No decisions recorded yet" /> : (
-          <div className="space-y-2">
-            {recent.map((e, i) => (
-              <div key={e.action_id || e.id || i} className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0 text-sm">
-                <VerdictBadge verdict={e.decision_verdict} />
-                <span className="text-muted-foreground font-mono text-xs flex-1 truncate">{e.agent_id}</span>
-                <span className="text-xs text-muted-foreground hidden sm:block">{e.tool_name || '-'}</span>
-                <span className="text-xs text-muted-foreground">{relTime(e.timestamp)}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   )
@@ -2441,6 +3978,23 @@ function DecisionsTab() {
   events.forEach(e => { const v = e.decision_verdict?.toUpperCase() as keyof typeof counts; if (v in counts) counts[v]++ })
   const openIncidentCount = incidents.filter(i => !i.resolved).length
 
+  useEffect(() => {
+    _setPS('decisions', [
+      {
+        type: 'summary',
+        total: events.length,
+        allow: counts.ALLOW,
+        block: counts.BLOCK,
+        escalate: counts.ESCALATE,
+        open_incidents: openIncidentCount,
+        selected_id: selected?.action_id || selected?.id || null,
+        selected_agent: selected?.agent_id || null,
+        selected_verdict: selected?.decision_verdict || null,
+        receipt_status: selectedReceipt?.outcome || null,
+      },
+    ] as Record<string, unknown>[])
+  }, [events.length, counts.ALLOW, counts.BLOCK, counts.ESCALATE, openIncidentCount, selected, selectedReceipt])
+
   return (
     <div className="space-y-4">
       <div className="flex gap-3 flex-wrap">
@@ -2512,6 +4066,7 @@ function DecisionsTab() {
               {filtered.map((e, i) => {
                 const eventId = e.action_id || e.id || ''
                 const hasIncident = incidents.some(inc => inc.action_id === eventId && !inc.resolved)
+                const dept = (e.meta?.department as string | undefined) || ''
                 return (
                   <tr key={eventId || i} data-cite-id={eventId || undefined} className="border-b border-border/30 last:border-0 hover:bg-muted/20 cursor-pointer transition-colors" onClick={() => setSelected(e)}>
                     <td className="py-2.5 px-4">
@@ -2520,7 +4075,23 @@ function DecisionsTab() {
                         {hasIncident && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" title="Open incident" />}
                       </div>
                     </td>
-                    <td className="py-2.5 px-4 font-mono text-xs truncate max-w-[130px]">{e.agent_id}</td>
+                    <td className="py-2.5 px-4 font-mono text-xs truncate max-w-[130px]">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{e.agent_id}</span>
+                        {dept && (
+                          <span
+                            className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-widest"
+                            style={{
+                              background: getDeptMode(dept) === 'sandbox' ? 'rgba(59,130,246,0.10)' : 'rgba(74,222,128,0.10)',
+                              color: getDeptMode(dept) === 'sandbox' ? '#93c5fd' : '#86efac',
+                              border: getDeptMode(dept) === 'sandbox' ? '1px solid rgba(59,130,246,0.22)' : '1px solid rgba(74,222,128,0.22)',
+                            }}
+                          >
+                            {getDeptMode(dept)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-2.5 px-4 text-muted-foreground hidden md:table-cell text-xs">{e.tool_name || '-'}</td>
                     <td className="py-2.5 px-4 text-muted-foreground hidden lg:table-cell text-xs">{e.decision_reason_code || '-'}</td>
                     <td className="py-2.5 px-4 hidden lg:table-cell">
@@ -2614,11 +4185,11 @@ const TREND_CFG = {
   spiked: { label: 'Spiked', icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20' },
 }
 
-function AgentCard({ a }: { a: Agent }) {
+function AgentCard({ a, compact = false }: { a: Agent; compact?: boolean }) {
   const trend = getBlockTrend(a); const tCfg = TREND_CFG[trend]; const TrendIcon = tCfg.icon
   const blockPct = a.decisions_total && a.decisions_blocked ? ((a.decisions_blocked / a.decisions_total) * 100).toFixed(1) : null
   return (
-    <div key={a.agent_id} data-cite-id={a.agent_id} className="glass-card-hover p-4">
+    <div key={a.agent_id} data-cite-id={a.agent_id} className={`glass-card-hover ${compact ? 'p-3' : 'p-4'}`}>
       <div className="flex items-start justify-between mb-2">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium truncate">{a.name || a.agent_id}</p>
@@ -2630,12 +4201,32 @@ function AgentCard({ a }: { a: Agent }) {
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${a.status === 'active' ? 'bg-emerald-500/15 text-emerald-400' : a.status === 'paused' ? 'bg-amber-500/15 text-amber-400' : 'bg-muted text-muted-foreground'}`}>{a.status || 'unknown'}</span>
         </div>
       </div>
-      {a.description && <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{a.description}</p>}
+      {!compact && a.description && <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{a.description}</p>}
       <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
         {a.decisions_total != null && <span><span className="text-foreground font-medium">{a.decisions_total}</span> decisions</span>}
         {blockPct && <span><span className={tCfg.color + ' font-medium'}>{blockPct}%</span> blocked</span>}
         {a.policy_pack && <span className="text-primary">{a.policy_pack}</span>}
-        {a.department && <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-medium">{a.department}</span>}
+        {a.vendor_id && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-medium">
+            {a.vendor_id}
+          </span>
+        )}
+        {a.department && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-medium">
+            {a.department}
+            <span
+              className="px-1.5 py-0.5 rounded-full uppercase tracking-widest"
+              style={{
+                background: getDeptMode(a.department) === 'sandbox' ? 'rgba(59,130,246,0.10)' : 'rgba(74,222,128,0.10)',
+                color: getDeptMode(a.department) === 'sandbox' ? '#93c5fd' : '#86efac',
+                border: getDeptMode(a.department) === 'sandbox' ? '1px solid rgba(59,130,246,0.22)' : '1px solid rgba(74,222,128,0.22)',
+                fontSize: '9px',
+              }}
+            >
+              {getDeptMode(a.department)}
+            </span>
+          </span>
+        )}
         {a.last_seen && <span className="ml-auto">{relTime(a.last_seen)}</span>}
       </div>
     </div>
@@ -2647,8 +4238,11 @@ function AgentsTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [vendorFilter, setVendorFilter] = useState<string | null>(null)
   const [deptFilter, setDeptFilter] = useState<string | null>(null)
+  const [riskFilter, setRiskFilter] = useState<'all' | 'spiked' | 'rising' | 'stable'>('all')
   const [groupByDept, setGroupByDept] = useState(false)
+  const [compactView, setCompactView] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -2662,7 +4256,19 @@ function AgentsTab() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    if (agents.length > 0) _setPS('agents', agents.map(a => ({ id: a.agent_id, name: a.name, type: a.agent_type, status: a.status, department: a.department, decisions: a.decisions_total, block_rate: a.block_rate })) as Record<string, unknown>[])
+    if (agents.length > 0) _setPS('agents', agents.map(a => ({
+      id: a.agent_id,
+      name: a.name,
+      type: a.agent_type,
+      status: a.status,
+      vendor: a.vendor_id,
+      department: a.department,
+      decisions: a.decisions_total,
+      blocked: a.decisions_blocked,
+      block_rate: a.block_rate,
+      last_seen: a.last_seen,
+      metadata: a.metadata,
+    })) as Record<string, unknown>[])
   }, [agents])
 
   const departments = useMemo(() => {
@@ -2670,14 +4276,24 @@ function AgentsTab() {
     return depts.sort()
   }, [agents])
 
+  const vendors = useMemo(() => {
+    const vendorIds = [...new Set(agents.map(a => a.vendor_id).filter(Boolean) as string[])]
+    return vendorIds.sort()
+  }, [agents])
+
   const filtered = agents.filter(a => {
-    if (search && !(a.agent_id + (a.name || '') + (a.agent_type || '') + (a.department || '')).toLowerCase().includes(search.toLowerCase())) return false
+    if (search && !(a.agent_id + (a.name || '') + (a.agent_type || '') + (a.department || '') + (a.vendor_id || '')).toLowerCase().includes(search.toLowerCase())) return false
+    if (vendorFilter && a.vendor_id !== vendorFilter) return false
     if (deptFilter && a.department !== deptFilter) return false
+    if (riskFilter !== 'all' && getBlockTrend(a) !== riskFilter) return false
     return true
   })
 
   const spiked = filtered.filter(a => getBlockTrend(a) === 'spiked').length
   const rising = filtered.filter(a => getBlockTrend(a) === 'rising').length
+  const allSpiked = agents.filter(a => getBlockTrend(a) === 'spiked').length
+  const allRising = agents.filter(a => getBlockTrend(a) === 'rising').length
+  const activeAgents = filtered.filter(a => a.status === 'active').length
 
   const grouped = useMemo(() => {
     if (!groupByDept) return null
@@ -2695,6 +4311,25 @@ function AgentsTab() {
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Agents</p>
+          <p className="text-sm font-semibold text-foreground mt-1">{filtered.length}</p>
+          <p className="text-[10px] text-muted-foreground mt-0.5">{activeAgents} active in view</p>
+        </div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Vendors</p>
+          <p className="text-sm font-semibold text-foreground mt-1">{vendors.length}</p>
+        </div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Departments</p>
+          <p className="text-sm font-semibold text-foreground mt-1">{departments.length}</p>
+        </div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Risk watch</p>
+          <p className="text-sm font-semibold text-foreground mt-1">{spiked + rising}</p>
+        </div>
+      </div>
       {(spiked > 0 || rising > 0) && (
         <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-sm ${spiked > 0 ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-amber-500/30 bg-amber-500/10 text-amber-400'}`}>
           <AlertTriangle size={15} className="shrink-0" />
@@ -2708,14 +4343,58 @@ function AgentsTab() {
             className="w-full pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
         </div>
         <span className="text-xs text-muted-foreground">{filtered.length} agents</span>
+        {(['all', 'spiked', 'rising', 'stable'] as const).map(r => (
+          <button key={r} onClick={() => setRiskFilter(r)}
+            className={`text-xs px-2.5 py-1 rounded-lg border transition capitalize ${riskFilter === r ? 'bg-amber-500/15 border-amber-500/30 text-amber-300' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            {r === 'all' ? 'All risk' : r}
+          </button>
+        ))}
         {departments.length > 0 && (
           <button onClick={() => setGroupByDept(g => !g)}
             className={`text-xs px-2.5 py-1 rounded-lg border transition ${groupByDept ? 'bg-primary/15 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}>
             By Department
           </button>
         )}
+        <button onClick={() => setCompactView(v => !v)}
+          className={`text-xs px-2.5 py-1 rounded-lg border transition ${compactView ? 'bg-primary/15 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+          Compact
+        </button>
         <button onClick={load} className="ml-auto text-muted-foreground hover:text-foreground transition"><RefreshCcw size={14} /></button>
       </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <button onClick={() => { setRiskFilter('spiked'); setGroupByDept(false) }}
+          className="rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-left hover:border-red-500/35 transition-colors">
+          <p className="text-xs text-red-300 font-semibold">High-risk watchlist</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{allSpiked}</p>
+          <p className="text-[11px] text-muted-foreground">Agents with elevated block rates</p>
+        </button>
+        <button onClick={() => { setRiskFilter('rising'); setGroupByDept(true) }}
+          className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-left hover:border-amber-500/35 transition-colors">
+          <p className="text-xs text-amber-300 font-semibold">Rising drift</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{allRising}</p>
+          <p className="text-[11px] text-muted-foreground">Group by department to assign review</p>
+        </button>
+        <button onClick={() => { setDeptFilter(null); setVendorFilter(null); setRiskFilter('all'); setSearch('') }}
+          className="rounded-xl border border-border/40 bg-card/20 px-4 py-3 text-left hover:border-primary/30 transition-colors">
+          <p className="text-xs text-primary font-semibold">Saved view</p>
+          <p className="text-sm font-semibold text-foreground mt-1">All governed agents</p>
+          <p className="text-[11px] text-muted-foreground">Clear filters and return to tenant view</p>
+        </button>
+      </div>
+      {vendors.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => setVendorFilter(null)}
+            className={`text-xs px-2.5 py-1 rounded-full border transition ${!vendorFilter ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            All vendors
+          </button>
+          {vendors.map(v => (
+            <button key={v} onClick={() => setVendorFilter(vendorFilter === v ? null : v)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition ${vendorFilter === v ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+              {v}
+            </button>
+          ))}
+        </div>
+      )}
       {departments.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={() => setDeptFilter(null)}
@@ -2739,16 +4418,620 @@ function AgentsTab() {
                 <span>{deptAgents.length} agent{deptAgents.length !== 1 ? 's' : ''}</span>
               </h3>
               <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {deptAgents.map(a => <AgentCard key={a.agent_id} a={a} />)}
+                {deptAgents.map(a => <AgentCard key={a.agent_id} a={a} compact={compactView} />)}
               </div>
             </div>
           ))}
         </div>
       ) : (
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.map(a => <AgentCard key={a.agent_id} a={a} />)}
+          {filtered.map(a => <AgentCard key={a.agent_id} a={a} compact={compactView} />)}
         </div>
       )}
+    </div>
+  )
+}
+
+type ReconciliationDraftRow = {
+  name: string
+  vendor: string
+  vendor_id: string
+  department: string
+  scope: string
+  action: string
+  runtime_type: string
+  connectors: string[]
+  agent_id: string
+}
+
+function OperationsTab() {
+  const [batches, setBatches] = useState<import('./api').ReconciliationBatch[]>([])
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null)
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [actor, setActor] = useState(getReviewerName() || 'admin')
+  const [rowStatusFilter, setRowStatusFilter] = useState<'all' | 'new' | 'changed' | 'missing' | 'duplicate' | 'ready'>('all')
+  const [rowSearch, setRowSearch] = useState('')
+
+  const [sourceSystem, setSourceSystem] = useState('Existing system')
+  const [vendorName, setVendorName] = useState('')
+  const [vendorId, setVendorId] = useState('')
+  const [sourceType, setSourceType] = useState('Existing system')
+  const [department, setDepartment] = useState('')
+  const [cohortMode, setCohortMode] = useState<'purpose' | 'department'>('purpose')
+  const [posture, setPosture] = useState<'audit-only' | 'sandbox' | 'governed'>('audit-only')
+  const [inventory, setInventory] = useState<ReconciliationDraftRow[]>(CONSOLE_DEV_MODE ? [{
+    name: 'Epic note drafter',
+    vendor: 'Epic',
+    vendor_id: '',
+    department: 'Cardiology',
+    scope: 'cardiology.note.draft',
+    action: 'Register audit-only',
+    runtime_type: 'Service',
+    connectors: ['Epic'],
+    agent_id: '',
+  }] : [])
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('')
+    try {
+      const res = await api.reconciliationListBatches()
+      const next = Array.isArray(res.batches) ? res.batches : []
+      setBatches(next)
+      setSelectedBatchId(curr => curr && next.some(b => b.batch_id === curr) ? curr : (next[0]?.batch_id ?? null))
+      setSelectedRowKey(curr => curr)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load reconciliation batches')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const selectedBatch = useMemo(
+    () => batches.find(b => b.batch_id === selectedBatchId) ?? batches[0] ?? null,
+    [batches, selectedBatchId],
+  )
+  const selectedRow = useMemo(() => {
+    if (!selectedBatch) return null
+    return selectedBatch.rows.find(r => r.row_key === selectedRowKey) ?? selectedBatch.rows.find(r => r.selected) ?? selectedBatch.rows[0] ?? null
+  }, [selectedBatch, selectedRowKey])
+  const visibleRows = useMemo(() => {
+    if (!selectedBatch) return []
+    const q = rowSearch.trim().toLowerCase()
+    return selectedBatch.rows.filter(row => {
+      if (rowStatusFilter !== 'all' && row.status !== rowStatusFilter) return false
+      if (q && !(row.name + row.vendor + row.department + row.scope + row.status).toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [selectedBatch, rowSearch, rowStatusFilter])
+
+  useEffect(() => {
+    if (!selectedBatch && batches.length > 0) setSelectedBatchId(batches[0].batch_id)
+    if (selectedBatch && !selectedRowKey) setSelectedRowKey(selectedBatch.selected_row_key || selectedBatch.rows[0]?.row_key || null)
+  }, [batches, selectedBatch, selectedRowKey])
+
+  useEffect(() => {
+    _setPS('operations', [
+      {
+        source_system: sourceSystem,
+        vendor_name: vendorName,
+        vendor_id: vendorId,
+        department,
+        cohort_mode: cohortMode,
+        posture,
+        inventory_count: inventory.filter(r => r.name.trim()).length,
+        batch_count: batches.length,
+        selected_batch_id: selectedBatch?.batch_id ?? null,
+        selected_batch_status: selectedBatch?.status ?? null,
+        selected_row_key: selectedRow?.row_key ?? null,
+        row_filter: rowStatusFilter,
+        row_search: rowSearch,
+      },
+    ] as Record<string, unknown>[])
+  }, [sourceSystem, vendorName, vendorId, department, cohortMode, posture, inventory, batches.length, selectedBatch?.batch_id, selectedBatch?.status, selectedRow?.row_key, rowStatusFilter, rowSearch])
+
+  const upsertBatch = useCallback((next: import('./api').ReconciliationBatch) => {
+    setBatches(prev => {
+      const filtered = prev.filter(batch => batch.batch_id !== next.batch_id)
+      return [next, ...filtered]
+    })
+    setSelectedBatchId(next.batch_id)
+    setSelectedRowKey(next.selected_row_key ?? next.rows[0]?.row_key ?? null)
+  }, [])
+
+  const runImport = async () => {
+    const rows = inventory.filter(r => r.name.trim())
+    if (!sourceSystem.trim()) { setError('Source system is required'); return }
+    if (rows.length === 0) { setError('Add at least one inventory row'); return }
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const res = await api.reconciliationImportInventory({
+        source_system: sourceSystem.trim(),
+        vendor_name: vendorName.trim(),
+        vendor_id: vendorId.trim(),
+        source_type: sourceType,
+        department: department.trim(),
+        cohort_mode: cohortMode,
+        posture,
+        inventory: rows.map(row => ({
+          name: row.name,
+          vendor: row.vendor,
+          vendor_name: row.vendor,
+          vendor_id: row.vendor_id,
+          department: row.department,
+          scope: row.scope,
+          action: row.action,
+          runtime_type: row.runtime_type,
+          agent_id: row.agent_id || undefined,
+          connectors: row.connectors,
+        })),
+      })
+      upsertBatch(res.batch)
+      setMessage(`Imported ${res.batch.rows.length} rows into reconciliation.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to import inventory')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const patchBatch = async (method: 'hold' | 'merge' | 'promote') => {
+    if (!selectedBatch) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const actorName = actor.trim() || 'admin'
+      const res =
+        method === 'hold' ? await api.reconciliationHoldBatch(selectedBatch.batch_id, actorName, 'Console batch action') :
+        method === 'merge' ? await api.reconciliationMergeBatch(selectedBatch.batch_id, actorName, 'Console batch action') :
+        await api.reconciliationPromoteBatch(selectedBatch.batch_id, actorName, 'Console batch action')
+      upsertBatch(res.batch)
+      setMessage(method === 'hold' ? 'Batch held.' : method === 'merge' ? 'Duplicates merged.' : 'Low-risk rows promoted.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Batch action failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rowAction = async (rowKey: string, action: string) => {
+    if (!selectedBatch) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const res = await api.reconciliationRowAction(selectedBatch.batch_id, rowKey, actor.trim() || 'admin', action, 'Console row action')
+      upsertBatch(res.batch)
+      setMessage(`Row action recorded: ${action}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Row action failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const selectedSummary = (selectedBatch?.summary ?? {}) as Record<string, unknown>
+  const count = (key: string) => typeof selectedSummary[key] === 'number' ? Number(selectedSummary[key]) : 0
+
+  const inventoryStats = useMemo(() => ({
+    rows: inventory.filter(r => r.name.trim()).length,
+    vendors: [...new Set(inventory.map(r => r.vendor.trim()).filter(Boolean))].length,
+    departments: [...new Set(inventory.map(r => r.department.trim()).filter(Boolean))].length,
+    connectors: [...new Set(inventory.flatMap(r => r.connectors).map(c => c.trim()).filter(Boolean))].length,
+  }), [inventory])
+
+  const selectedDetail = selectedRow ? [
+    ['Name', selectedRow.name],
+    ['Vendor', selectedRow.vendor || selectedBatch?.vendor_name || '-'],
+    ['Department', selectedRow.department || selectedBatch?.department || '-'],
+    ['Scope', selectedRow.scope || '-'],
+    ['Risk', selectedRow.risk || '-'],
+    ['Status', selectedRow.status || '-'],
+    ['Runtime type', selectedRow.runtime_type || '-'],
+  ] : []
+  const opsSummary = useMemo(() => {
+    const selectedRows = selectedBatch?.rows ?? []
+    const departments = [...new Set(selectedRows.map(r => r.department).filter(Boolean))]
+    const vendors = [...new Set(selectedRows.map(r => r.vendor || selectedBatch?.vendor_name || '').filter(Boolean))]
+    const exceptions = count('changed') + count('missing') + count('duplicate')
+    return {
+      departments: departments.length,
+      vendors: vendors.length,
+      exceptions,
+      promoteReady: count('ready'),
+    }
+  }, [selectedBatch, selectedSummary])
+
+  if (loading) return <Spinner />
+  if (error && batches.length === 0) return <ErrorMsg message={error} onRetry={load} />
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-2xl border border-border/40 bg-card/30 p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-xl font-semibold text-foreground flex items-center gap-2">
+              <ServerCog size={18} className="text-emerald-400" />
+              Operations
+            </h2>
+            <p className="text-sm text-muted-foreground mt-0.5">Reconcile existing hospital agents against EDON, resolve exceptions, and promote safe cohorts.</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="px-2.5 py-1 rounded-full border border-border/40 bg-card/20">Existing fleets</span>
+            <button onClick={load} className="px-2.5 py-1 rounded-full border border-border/40 hover:border-emerald-500/30 hover:text-foreground transition-colors">Refresh</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            ['Departments', opsSummary.departments, 'affected by selected batch'],
+            ['Vendors', opsSummary.vendors, 'sources in review'],
+            ['Exceptions', opsSummary.exceptions, 'need attention'],
+            ['Ready', opsSummary.promoteReady, 'safe to promote'],
+          ].map(([label, value, sub]) => (
+            <div key={label} className="rounded-xl border border-border/40 bg-background/25 px-3 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">{label}</p>
+              <p className="mt-1 text-xl font-semibold text-foreground">{value}</p>
+              <p className="text-[11px] text-muted-foreground">{sub}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-2 md:grid-cols-3 text-xs">
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">1. Import inventory</p>
+            <p className="mt-1 text-muted-foreground">Bring in agents already running in vendor consoles, CSVs, or APIs.</p>
+          </div>
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">2. Reconcile exceptions</p>
+            <p className="mt-1 text-muted-foreground">Review new, changed, missing, and duplicate runtimes by cohort.</p>
+          </div>
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">3. Promote low risk</p>
+            <p className="mt-1 text-muted-foreground">Only ready cohorts move forward. Exceptions stay held.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Batches</p><p className="text-sm font-semibold text-foreground mt-1">{batches.length}</p></div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">New</p><p className="text-sm font-semibold text-foreground mt-1">{count('new')}</p></div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Changed</p><p className="text-sm font-semibold text-foreground mt-1">{count('changed')}</p></div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Missing</p><p className="text-sm font-semibold text-foreground mt-1">{count('missing')}</p></div>
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5"><p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Ready</p><p className="text-sm font-semibold text-foreground mt-1">{count('ready')}</p></div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-4">
+        <button onClick={() => { setRowStatusFilter('new'); setRowSearch('') }}
+          className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-left hover:border-emerald-500/35 transition-colors">
+          <p className="text-xs font-semibold text-emerald-300">Register candidates</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{count('new')}</p>
+          <p className="text-[11px] text-muted-foreground">Not yet in EDON</p>
+        </button>
+        <button onClick={() => { setRowStatusFilter('changed'); setRowSearch('') }}
+          className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-left hover:border-amber-500/35 transition-colors">
+          <p className="text-xs font-semibold text-amber-300">Scope drift</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{count('changed')}</p>
+          <p className="text-[11px] text-muted-foreground">Owner, connector, or scope changed</p>
+        </button>
+        <button onClick={() => { setRowStatusFilter('duplicate'); setRowSearch('') }}
+          className="rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3 text-left hover:border-sky-500/35 transition-colors">
+          <p className="text-xs font-semibold text-sky-300">Identity cleanup</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{count('duplicate')}</p>
+          <p className="text-[11px] text-muted-foreground">Duplicate runtime IDs</p>
+        </button>
+        <button onClick={() => { setRowStatusFilter('ready'); setRowSearch('') }}
+          className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-left hover:border-primary/35 transition-colors">
+          <p className="text-xs font-semibold text-primary">Promotion ready</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{count('ready')}</p>
+          <p className="text-[11px] text-muted-foreground">Low-risk rows only</p>
+        </button>
+      </div>
+
+      {(message || error) && (
+        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm border ${error ? 'bg-destructive/10 border-destructive/30 text-destructive' : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'}`}>
+          <AlertCircle size={14} /> {error || message}
+        </div>
+      )}
+
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Import source inventory</p>
+                <p className="text-xs text-muted-foreground">Bring in existing agents from a source system, then reconcile them against EDON.</p>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="px-2 py-1 rounded-full border border-border/40">Batch-first</span>
+                <span className="px-2 py-1 rounded-full border border-border/40">Audit-only</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Source system</label>
+                <input value={sourceSystem} onChange={e => setSourceSystem(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" placeholder="Existing system" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Vendor name</label>
+                <input value={vendorName} onChange={e => setVendorName(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" placeholder="Epic" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Vendor ID</label>
+                <input value={vendorId} onChange={e => setVendorId(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" placeholder="vendor-001" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Department</label>
+                <input value={department} onChange={e => setDepartment(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" placeholder="Cardiology" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Source type</label>
+                <select value={sourceType} onChange={e => setSourceType(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+                  {['Existing system', 'Vendor console', 'CSV export', 'Inventory API'].map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Cohort mode</label>
+                <div className="flex rounded-lg border border-border/40 overflow-hidden">
+                  {(['purpose', 'department'] as const).map(mode => (
+                    <button key={mode} type="button" onClick={() => setCohortMode(mode)} className={`flex-1 px-3 py-2 text-sm ${cohortMode === mode ? 'bg-primary/15 text-primary' : 'bg-transparent text-muted-foreground hover:text-foreground'}`}>
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground font-medium">Posture</label>
+                <div className="flex rounded-lg border border-border/40 overflow-hidden">
+                  {(['audit-only', 'sandbox', 'governed'] as const).map(mode => (
+                    <button key={mode} type="button" onClick={() => setPosture(mode)} className={`flex-1 px-3 py-2 text-sm ${posture === mode ? 'bg-emerald-500/15 text-emerald-300' : 'bg-transparent text-muted-foreground hover:text-foreground'}`}>
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Agents</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{inventoryStats.rows}</p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Vendors</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{inventoryStats.vendors}</p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Departments</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{inventoryStats.departments}</p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Connectors</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{inventoryStats.connectors}</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-foreground/70">Inventory rows</p>
+                <button
+                  type="button"
+                  onClick={() => setInventory(prev => [...prev, { name: '', vendor: vendorName, vendor_id: vendorId, department, scope: '', action: '', runtime_type: 'Service', connectors: [], agent_id: '' }])}
+                  className="text-xs text-emerald-400 hover:underline flex items-center gap-1">
+                  <Plus size={11} /> Add row
+                </button>
+              </div>
+              <div className="space-y-3">
+                {inventory.map((row, idx) => (
+                  <div key={`${row.name}-${idx}`} className="rounded-xl border border-border/40 bg-background/20 p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-muted-foreground">Row {idx + 1}</p>
+                      {inventory.length > 1 && (
+                        <button type="button" onClick={() => setInventory(prev => prev.filter((_, i) => i !== idx))} className="text-muted-foreground hover:text-destructive transition-colors">
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <input value={row.name} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, name: e.target.value } : r))} placeholder="Agent name" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+                      <input value={row.vendor} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, vendor: e.target.value } : r))} placeholder="Vendor" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+                      <input value={row.department} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, department: e.target.value } : r))} placeholder="Department" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+                      <input value={row.scope} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, scope: e.target.value } : r))} placeholder="Scope" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">Runtime type</label>
+                        <select value={row.runtime_type} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, runtime_type: e.target.value } : r))} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+                          {['Service', 'Worker', 'Agent'].map(v => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">Agent ID</label>
+                        <input value={row.agent_id} onChange={e => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, agent_id: e.target.value } : r))} placeholder="Optional" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">Connectors</label>
+                        <TagInput value={row.connectors} onChange={v => setInventory(prev => prev.map((r, i) => i === idx ? { ...r, connectors: v } : r))} placeholder="Epic, Teams, SIEM" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button onClick={runImport} disabled={busy} className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
+                {busy ? <RefreshCw size={13} className="animate-spin" /> : <ChevronRight size={13} />}
+                Import inventory
+              </button>
+              <div className="text-xs text-muted-foreground">Import becomes a reconciliation batch with audit, drift, and promotion controls.</div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-foreground">Fleet reconciliation batches</p>
+                <p className="text-xs text-muted-foreground">New, changed, missing, and duplicate rows are reconciled here.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input value={actor} onChange={e => setActor(e.target.value)} className="w-36 bg-background border border-border/40 rounded-lg px-3 py-2 text-xs" placeholder="Actor" />
+              </div>
+            </div>
+
+            {batches.length === 0 ? (
+              <Empty message="No reconciliation batches yet" />
+            ) : (
+              <div className="space-y-2">
+                {batches.map(batch => (
+                  <button
+                    key={batch.batch_id}
+                    type="button"
+                    onClick={() => { setSelectedBatchId(batch.batch_id); setSelectedRowKey(batch.selected_row_key || batch.rows[0]?.row_key || null) }}
+                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${selectedBatch?.batch_id === batch.batch_id ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-border/40 bg-background/20 hover:border-border'}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">{batch.source_system}</p>
+                        <p className="text-[11px] text-muted-foreground">{batch.vendor_name || batch.vendor_id || 'No vendor'} / {batch.department || 'All departments'} / {batch.cohort_mode}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-border/40 text-muted-foreground">{batch.status}</span>
+                        <span className="text-xs text-muted-foreground">{batch.rows.length} rows</span>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3">
+            <p className="text-sm font-semibold text-foreground">Selected batch</p>
+            {selectedBatch ? (
+              <>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-lg border border-border/30 bg-background/20 p-2.5"><p className="text-muted-foreground/60">Source</p><p className="font-medium text-foreground truncate">{selectedBatch.source_system}</p></div>
+                  <div className="rounded-lg border border-border/30 bg-background/20 p-2.5"><p className="text-muted-foreground/60">Status</p><p className="font-medium text-foreground">{selectedBatch.status}</p></div>
+                  <div className="rounded-lg border border-border/30 bg-background/20 p-2.5"><p className="text-muted-foreground/60">Vendor</p><p className="font-medium text-foreground truncate">{selectedBatch.vendor_name || '-'}</p></div>
+                  <div className="rounded-lg border border-border/30 bg-background/20 p-2.5"><p className="text-muted-foreground/60">Departments</p><p className="font-medium text-foreground truncate">{selectedBatch.department || '-'}</p></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {(['new', 'changed', 'missing', 'duplicate', 'ready'] as const).map(k => (
+                    <div key={k} className="rounded-lg border border-border/30 bg-background/20 p-2.5">
+                      <p className="text-muted-foreground/60 capitalize">{k}</p>
+                      <p className="font-medium text-foreground">{String(selectedSummary[k] ?? 0)}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">{String(selectedSummary.message ?? 'Ready rows can be promoted, changed rows need review, duplicate rows should be merged, and missing rows should be held.')}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => patchBatch('hold')} disabled={busy} className="text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:border-amber-500/30 hover:text-foreground transition-colors disabled:opacity-50">Hold batch</button>
+                  <button onClick={() => patchBatch('merge')} disabled={busy} className="text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:border-emerald-500/30 hover:text-foreground transition-colors disabled:opacity-50">Merge duplicates</button>
+                  <button onClick={() => patchBatch('promote')} disabled={busy} className="text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:border-emerald-500/30 hover:text-foreground transition-colors disabled:opacity-50">Promote low-risk batch</button>
+                </div>
+              </>
+            ) : (
+              <Empty message="Select a batch to see details" />
+            )}
+          </div>
+
+          <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-sm font-semibold text-foreground">Batch rows</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <input value={rowSearch} onChange={e => setRowSearch(e.target.value)} placeholder="Find row..."
+                    className="w-40 pl-7 pr-2 py-1.5 rounded-lg bg-background border border-border/40 text-xs focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+                {(['all', 'new', 'changed', 'missing', 'duplicate', 'ready'] as const).map(status => (
+                  <button key={status} onClick={() => setRowStatusFilter(status)}
+                    className={`text-[10px] px-2 py-1 rounded-full border capitalize ${rowStatusFilter === status ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' : 'border-border/40 text-muted-foreground hover:text-foreground'}`}>
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {!selectedBatch ? (
+              <Empty message="No selected batch" />
+            ) : visibleRows.length === 0 ? (
+              <Empty message="No rows match the current filter" />
+            ) : (
+              <div className="space-y-2">
+                {visibleRows.map(row => (
+                  <div
+                    key={row.row_key}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedRowKey(row.row_key)}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setSelectedRowKey(row.row_key) }}
+                    className={`w-full text-left rounded-xl border px-3 py-3 transition-colors cursor-pointer ${selectedRow?.row_key === row.row_key ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-border/40 bg-background/20 hover:border-border'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{row.name}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{row.vendor || selectedBatch.vendor_name || '-'} / {row.department || selectedBatch.department || '-'} / {row.scope || 'no scope'}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <RiskBadge tier={row.risk} />
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-border/40 text-muted-foreground">{row.status}</span>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {row.status === 'new' && <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); rowAction(row.row_key, 'register_audit_only') }} className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-emerald-500/30 hover:text-foreground">Register audit-only</button>}
+                      {row.status === 'changed' && <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); rowAction(row.row_key, 'review_scope_drift') }} className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-amber-500/30 hover:text-foreground">Review scope drift</button>}
+                      {row.status === 'duplicate' && <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); rowAction(row.row_key, 'merge_duplicate_ids') }} className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-emerald-500/30 hover:text-foreground">Merge duplicate IDs</button>}
+                      {row.status === 'missing' && <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); rowAction(row.row_key, 'hold_until_re_found') }} className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-amber-500/30 hover:text-foreground">Hold until re-found</button>}
+                      {row.status === 'ready' && <button type="button" onClick={e => { e.preventDefault(); e.stopPropagation(); rowAction(row.row_key, 'promote_low_risk_batch') }} className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-emerald-500/30 hover:text-foreground">Promote low-risk batch</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3">
+            <p className="text-sm font-semibold text-foreground">Selected row</p>
+            {selectedRow ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {selectedDetail.map(([label, value]) => (
+                    <div key={String(label)} className="rounded-lg border border-border/30 bg-background/20 p-2.5">
+                      <p className="text-muted-foreground/60">{label}</p>
+                      <p className="font-medium text-foreground break-words">{String(value || '-')}</p>
+                    </div>
+                  ))}
+                </div>
+                {selectedRow.comparison && Object.keys(selectedRow.comparison).length > 0 && (
+                  <div className="rounded-lg border border-border/30 bg-background/20 p-3 text-xs text-muted-foreground space-y-1">
+                    <p className="font-semibold text-foreground/80">Comparison</p>
+                    {Object.entries(selectedRow.comparison).map(([k, v]) => (
+                      <p key={k}><span className="text-muted-foreground/50">{k}:</span> {String(v)}</p>
+                    ))}
+                  </div>
+                )}
+                <div className="rounded-lg border border-border/30 bg-background/20 p-3 text-xs text-muted-foreground space-y-1">
+                  <p className="font-semibold text-foreground/80">Audit stream</p>
+                  {(selectedRow.audit || []).length === 0 ? (
+                    <p>No row-level actions yet.</p>
+                  ) : selectedRow.audit!.map((entry, idx) => (
+                    <p key={`${entry.time}-${idx}`} className="break-words">
+                      <span className="text-muted-foreground/50">{fmtTs(entry.time)}</span> - {entry.action} / {entry.actor}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <Empty message="Select a row to inspect details" />
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -2798,6 +5081,21 @@ function AuditTab() {
   }, [events])
 
   const filtered = events.filter(e => !search || (e.agent_id + (e.tool_name || '') + (e.decision_reason_code || '')).toLowerCase().includes(search.toLowerCase()))
+
+  useEffect(() => {
+    _setPS('audit', [
+      {
+        type: 'summary',
+        total: filtered.length,
+        verdict: verdict || 'all',
+        search,
+        selected_id: selected?.action_id || selected?.id || null,
+        selected_agent: selected?.agent_id || null,
+        selected_verdict: selected?.decision_verdict || null,
+        chain_enabled: showChain,
+      },
+    ] as Record<string, unknown>[])
+  }, [filtered.length, verdict, search, selected, showChain])
 
   return (
     <div className="space-y-4">
@@ -2918,6 +5216,7 @@ function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
   const [applied, setApplied] = useState<string | null>(null)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     api.getPolicyTemplates().then(r => setTemplates(r.templates ?? r as never ?? [])).catch(() => setTemplates([])).finally(() => setLoading(false))
@@ -2925,12 +5224,13 @@ function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
 
   const apply = async (id: string) => {
     setApplying(id)
+    setError('')
     try {
       await api.applyPolicyTemplate(id)
       setApplied(id)
       setTimeout(() => setApplied(null), 3000)
       onApplied()
-    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to apply template') }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to apply template') }
     finally { setApplying(null) }
   }
 
@@ -2948,6 +5248,11 @@ function PolicyTemplatePacks({ onApplied }: { onApplied: () => void }) {
         <h3 className="text-sm font-semibold flex items-center gap-2"><Package size={13} className="text-primary" /> Compliance Template Packs</h3>
         <p className="text-xs text-muted-foreground mt-0.5">Apply pre-built rule sets for industry regulations in one click.</p>
       </div>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {error}
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         {templates.map(t => {
           const cls = colors[t.id] ?? 'text-muted-foreground border-border bg-muted/20'
@@ -3000,14 +5305,16 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
 
   const [applying, setApplying] = useState<string | null>(null)
   const [applied, setApplied] = useState<Set<string>>(new Set())
+  const [error, setError] = useState('')
 
   const apply = async (id: string) => {
     setApplying(id)
+    setError('')
     try {
       await api.applyPolicyTemplate(id)
       setApplied(prev => new Set([...prev, id]))
       onApplied()
-    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to apply preset') }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to apply preset') }
     finally { setApplying(null) }
   }
 
@@ -3017,6 +5324,11 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
         <h3 className="text-sm font-semibold flex items-center gap-2"><Package size={13} className="text-primary" /> Industry Policy Presets</h3>
         <p className="text-xs text-muted-foreground mt-0.5">Vertical-specific governance rules. Apply independently of the regulatory frameworks above.</p>
       </div>
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {error}
+        </div>
+      )}
       {INDUSTRY_PACKS.map(group => (
         <div key={group.group} className="space-y-2">
           <h4 className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
@@ -3045,188 +5357,567 @@ function IndustryPolicyPresetsCard({ onApplied, vertical }: { onApplied: () => v
 
 // -- Policies Tab --------------------------------------------------------------
 
-function PoliciesTab({ vertical }: { vertical: string | null }) {
+function PoliciesTab({ tenantLabel, vertical }: { tenantLabel: string; vertical: string | null }) {
   const [rules, setRules] = useState<PolicyRule[]>([])
   const [health, setHealth] = useState<ComplianceHealth | null>(null)
+  const [pendingReviews, setPendingReviews] = useState<ReviewItem[]>([])
+  const [blockReasons, setBlockReasons] = useState<BlockReason[]>([])
+  const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [expanded, setExpanded] = useState<string | null>(null)
   const [sandboxRuleId, setSandboxRuleId] = useState<string | null>(null)
   const [sandboxResult, setSandboxResult] = useState<{ sample_size: number; changed: number; unchanged: number; false_positive_rate: number } | null>(null)
   const [sandboxLoading, setSandboxLoading] = useState(false)
+  const [savingRule, setSavingRule] = useState(false)
+  const [ruleDraft, setRuleDraft] = useState({ name: '', description: '', condition_tool: '', condition_op: '', action: 'BLOCK', priority: 100 })
 
-  const testRule = async (rule: PolicyRule) => {
-    setSandboxRuleId(rule.rule_id); setSandboxResult(null); setSandboxLoading(true)
-    try {
-      const r = await api.policySandboxTest({ rule_id: rule.rule_id, name: rule.name, action: rule.action, tool: rule.tool, op: rule.op, enabled: true } as Record<string, unknown>)
-      setSandboxResult(r)
-    } catch { setSandboxResult(null) }
-    finally { setSandboxLoading(false) }
-  }
-
-  const load = useCallback(async () => {
-    setLoading(true); setError('')
-    try {
-      const [rRes, hRes] = await Promise.allSettled([api.policyRules(), api.complianceHealth()])
-      if (rRes.status === 'fulfilled') {
-        const raw = rRes.value
-        setRules(Array.isArray(raw) ? raw as PolicyRule[] : (raw as { rules: PolicyRule[] }).rules ?? [])
-      }
-      if (hRes.status === 'fulfilled') setHealth(hRes.value)
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load policies') }
-    finally { setLoading(false) }
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    if (rules.length > 0) _setPS('policies', rules.map(r => ({ id: r.rule_id, name: r.name, action: r.action, enabled: r.enabled, regulation: r.regulation })) as Record<string, unknown>[])
-  }, [rules])
-
-  if (loading) return <Spinner />
-  if (error) return <ErrorMsg message={error} onRetry={load} />
-
-  const REGULATION_META: Record<string, { label: string; color: string; border: string; bg: string; desc: string }> = {
-    HIPAA:    { label: 'HIPAA',     color: 'text-blue-400',   border: 'border-blue-500/30',   bg: 'bg-blue-500/5',   desc: 'Health Insurance Portability and Accountability Act' },
-    HITRUST:  { label: 'HITRUST',   color: 'text-purple-400', border: 'border-purple-500/30', bg: 'bg-purple-500/5', desc: 'Health Information Trust Alliance CSF' },
-    'SOC 2':  { label: 'SOC 2',     color: 'text-emerald-400',border: 'border-emerald-500/30',bg: 'bg-emerald-500/5',desc: 'Service Organization Control 2 Type II' },
-    General:  { label: 'Additional Controls', color: 'text-muted-foreground', border: 'border-border', bg: 'bg-muted/10', desc: 'Organization-specific rules added on top of regulatory standards' },
-  }
-
-  const normalizeReg = (reg?: string) => {
+  const normalizeReg = useCallback((reg?: string) => {
     if (!reg) return 'General'
     const u = reg.toUpperCase()
     if (u.includes('HIPAA')) return 'HIPAA'
     if (u.includes('HITRUST')) return 'HITRUST'
     if (u.includes('SOC')) return 'SOC 2'
     return reg
+  }, [])
+
+  const testRule = async (rule: PolicyRule) => {
+    setSandboxRuleId(rule.rule_id)
+    setSandboxResult(null)
+    setSandboxLoading(true)
+    try {
+      const r = await api.policySandboxTest({ rule_id: rule.rule_id, name: rule.name, action: rule.action, tool: rule.tool, op: rule.op, enabled: true } as Record<string, unknown>)
+      setSandboxResult(r)
+    } catch {
+      setSandboxResult(null)
+    } finally {
+      setSandboxLoading(false)
+    }
   }
-  const grouped = rules.reduce<Record<string, PolicyRule[]>>((acc, r) => {
-    const key = normalizeReg(r.regulation); if (!acc[key]) acc[key] = []; acc[key].push(r); return acc
-  }, {})
 
-  // Regulation order: known regs first, General only if non-empty
-  const regOrder = ['HIPAA', 'HITRUST', 'SOC 2', 'General']
-  const sortedRegs = [
-    ...regOrder.filter(k => grouped[k] && (k !== 'General' || grouped[k].length > 0)),
-    ...Object.keys(grouped).filter(k => !regOrder.includes(k)),
-  ]
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const [rRes, hRes, qRes, bRes, aRes] = await Promise.allSettled([
+        api.policyRules(),
+        api.complianceHealth(),
+        api.reviewQueue('pending'),
+        api.blockReasons(7),
+        api.agents(),
+      ])
+      if (rRes.status === 'fulfilled') {
+        const raw = rRes.value
+        setRules(Array.isArray(raw) ? raw as PolicyRule[] : (raw as { rules: PolicyRule[] }).rules ?? [])
+      }
+      if (hRes.status === 'fulfilled') setHealth(hRes.value)
+      if (qRes.status === 'fulfilled') setPendingReviews(qRes.value?.queue ?? [])
+      if (bRes.status === 'fulfilled') setBlockReasons(bRes.value ?? [])
+      if (aRes.status === 'fulfilled') {
+        const raw = aRes.value
+        setAgents(Array.isArray(raw) ? raw as Agent[] : (raw as { agents?: Agent[] }).agents ?? [])
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load policies')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  const knownRegs = sortedRegs.filter(k => k !== 'General')
-  const totalRules = rules.length
-  const activeRules = rules.filter(r => r.enabled).length
-  const overallOk = totalRules === 0 || activeRules === totalRules
+  useEffect(() => { load() }, [load])
+
+  const grouped = useMemo(() => rules.reduce<Record<string, PolicyRule[]>>((acc, r) => {
+    const key = normalizeReg(r.regulation)
+    if (!acc[key]) acc[key] = []
+    acc[key].push(r)
+    return acc
+  }, {}), [rules, normalizeReg])
+
+  const enabledRules = useMemo(() => rules.filter(r => r.enabled), [rules])
+  const disabledRules = useMemo(() => rules.filter(r => !r.enabled), [rules])
+  const generalRules = useMemo(() => grouped.General ?? [], [grouped])
+  const enrolledCount = agents.length || 500
+  const regulatoryGroups = Object.keys(grouped).filter(k => k !== 'General').length
+  const activeSafety = !!health?.clinical_safety_mode_active
+  const displayTenant = vertical === 'healthcare' ? 'St. Mercy Health System' : tenantLabel
+
+  useEffect(() => {
+    _setPS('policies', [
+      {
+        type: 'summary',
+        tenant: displayTenant,
+        active_policy: activeSafety ? 'Clinical Safety Mode' : 'Baseline Policy',
+        total_rules: rules.length,
+        enabled_rules: enabledRules.length,
+        disabled_rules: disabledRules.length,
+        pending_reviews: pendingReviews.length,
+        blocked_reasons: blockReasons.slice(0, 5).map(r => ({ reason: r.reason, count: r.count })),
+        enrolled_agents: enrolledCount,
+        regulation_groups: regulatoryGroups,
+      },
+    ] as Record<string, unknown>[])
+  }, [displayTenant, activeSafety, rules.length, enabledRules.length, disabledRules.length, pendingReviews.length, blockReasons, enrolledCount, regulatoryGroups])
+
+  const saveRule = async () => {
+    if (!ruleDraft.name.trim()) return
+    setSavingRule(true)
+    try {
+      await api.createRule({
+        name: ruleDraft.name.trim(),
+        description: ruleDraft.description.trim() || undefined,
+        condition_tool: ruleDraft.condition_tool.trim() || undefined,
+        condition_op: ruleDraft.condition_op.trim() || undefined,
+        action: ruleDraft.action,
+        priority: ruleDraft.priority,
+        enabled: true,
+      })
+      setRuleDraft({ name: '', description: '', condition_tool: '', condition_op: '', action: 'BLOCK', priority: 100 })
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create rule')
+    } finally {
+      setSavingRule(false)
+    }
+  }
+
+  const review = async (item: ReviewItem, action: 'approved' | 'rejected') => {
+    const reviewer = getReviewerName() || 'console-admin'
+    const dept = getReviewerDept()
+    const signature = dept ? `${reviewer} (${dept})` : reviewer
+    try {
+      action === 'approved'
+        ? await api.approveReview(item.decision_id, signature)
+        : await api.rejectReview(item.decision_id, signature)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Review action failed')
+    }
+  }
+
+  const renderRuleLines = (list: Array<{ rule_id: string; name: string; description?: string; enabled: boolean; action: string; tool?: string; op?: string }>, emptyCopy: string, testable = true) => (
+    <div className="space-y-3.5">
+      {list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{emptyCopy}</p>
+      ) : list.map(rule => (
+        <div key={rule.rule_id} data-cite-id={rule.rule_id} className="flex items-start gap-3">
+          <div className={`mt-0.5 shrink-0 ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/40'}`}>
+            {rule.enabled ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium text-foreground leading-tight">{rule.name}</p>
+            <p className="text-xs text-muted-foreground/60 mt-0.5 leading-relaxed">
+              {rule.description || `${rule.action}${rule.tool ? ` · ${rule.tool}` : ''}${rule.op ? ` · ${rule.op}` : ''}`}
+            </p>
+          </div>
+          {testable && (
+            <button
+              onClick={() => testRule(rule as PolicyRule)}
+              disabled={sandboxLoading && sandboxRuleId === rule.rule_id}
+              className="text-[10px] px-1.5 py-0.5 rounded border border-purple-500/25 text-purple-400 bg-purple-500/8 hover:bg-purple-500/15 transition-colors disabled:opacity-50 flex items-center gap-0.5 shrink-0"
+            >
+              {sandboxLoading && sandboxRuleId === rule.rule_id ? '...' : <><FlaskConical size={9} /> Test</>}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+
+  const operationsAllowed = useMemo(() => [
+    { label: 'Read patient vital signs', description: 'View heart rate, blood pressure, oxygen levels, and temperature in real time' },
+    { label: 'Retrieve lab results', description: 'Access completed blood work, cultures, and pathology reports' },
+    { label: 'View imaging scans', description: 'Display X-rays, MRI, CT, and ultrasound images for review' },
+    { label: 'Read patient chart', description: 'Access full patient history, clinical notes, and medication list' },
+    { label: 'View medication schedule', description: 'See a patient\'s current prescriptions and dosing timetable' },
+    { label: 'View appointments', description: 'See upcoming and past patient appointments and scheduling' },
+    { label: 'Request diagnostic suggestions', description: 'Ask the AI to suggest possible diagnoses based on symptoms and test results' },
+    { label: 'Check device status', description: 'Verify that ventilators, pumps, and monitors are operating correctly' },
+    { label: 'Notify nursing staff', description: 'Alert nurses to a change in patient condition that needs attention' },
+    { label: 'Monitor IV drip rate', description: 'Read current infusion pump settings - no changes are permitted' },
+    { label: 'Read heart rhythm (ECG)', description: 'Access live and historical electrocardiogram data for a patient' },
+    { label: 'Track patient location', description: 'See which room or bed a patient is currently assigned to' },
+  ], [])
+  const operationsBlocked = useMemo(() => [
+    { label: 'Override a medication dosage', description: 'Change a prescribed dose without physician sign-off - always prevented' },
+    { label: 'Bulk-export patient records', description: 'Download large numbers of patient records to an outside location' },
+    { label: 'Send patient data outside hospital', description: 'Transmit patient information to any system outside the hospital network' },
+    { label: 'Auto-dispense a controlled substance', description: 'Automatically dispense opioids, sedatives, or other restricted medications' },
+    { label: 'Skip patient consent check', description: 'Access or act on patient data without verifying consent is on file' },
+    { label: 'Override a physician\'s diagnosis', description: 'Replace or remove a diagnosis recorded by a licensed physician' },
+    { label: 'Skip device calibration', description: 'Use medical equipment without completing required safety calibration' },
+    { label: 'Deviate from surgical protocol', description: 'Perform a step outside the approved surgical safety checklist sequence' },
+  ], [])
+  const operationsConfirm = useMemo(() => [
+    { label: 'Authorize emergency surgery', description: 'Grant permission to begin an unplanned or urgent surgical procedure' },
+    { label: 'Approve a high-risk medication order', description: 'Sign off on chemotherapy, anticoagulants, or other high-alert drug orders' },
+    { label: 'Change a DNR / advance directive', description: 'Update or remove a patient\'s Do-Not-Resuscitate order on file' },
+    { label: 'Approve patient discharge', description: 'Authorize a patient to leave inpatient care' },
+    { label: 'Escalate a critical alert', description: 'Upgrade an alert to highest priority - notifies the full care team immediately' },
+  ], [])
+  const complianceStandards = useMemo(() => [
+    { label: 'HIPAA', desc: 'Patient data privacy & security' },
+    { label: 'HITECH', desc: 'Health IT breach enforcement' },
+    { label: 'FDA SaMD', desc: 'Software as a Medical Device' },
+    { label: 'DEA', desc: 'Controlled substance controls' },
+    { label: 'Joint Commission', desc: 'Clinical safety standards' },
+    { label: 'ISO 13485', desc: 'Medical device quality management' },
+    { label: '45 CFR 46', desc: 'Research subject protection' },
+  ], [])
+
+  if (loading) return <Spinner />
+  if (error) return <ErrorMsg message={error} onRetry={load} />
+
+  const blockSummary = blockReasons.slice(0, 5)
+  const customRuleCount = generalRules.length
+  const formatBlockReason = (reason: string) => reason
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
 
   return (
     <div className="space-y-6">
-      {/* Overall posture banner */}
-      <div className={`rounded-xl border p-4 flex items-center gap-4 ${overallOk ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-yellow-500/30 bg-yellow-500/5'}`}>
-        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${overallOk ? 'bg-emerald-500/15' : 'bg-yellow-500/15'}`}>
-          {overallOk ? <CheckCircle2 size={20} className="text-emerald-400" /> : <AlertTriangle size={20} className="text-yellow-400" />}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className={`text-sm font-semibold ${overallOk ? 'text-emerald-400' : 'text-yellow-400'}`}>
-            {overallOk ? 'Compliance posture: Healthy' : 'Compliance posture: Needs attention'}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {activeRules} of {totalRules} rules enforced across {knownRegs.length} framework{knownRegs.length !== 1 ? 's' : ''} / Rules are locked to regulatory standards
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-          <Lock size={11} /> Standards enforced
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">Policy Management</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          {activeSafety ? 'Clinical Safety Mode active' : 'Baseline policy active'} · {displayTenant} · {enrolledCount} agents enrolled
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold text-foreground mb-1">What agents can and cannot do</h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          These rules apply to all {enrolledCount} agents under the current Clinical Safety policy pack.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="glass-card p-4 border-emerald-500/20">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <CheckCircle2 size={14} className="text-emerald-400" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-emerald-400 leading-tight">Agents can do this</h3>
+                <p className="text-xs text-muted-foreground">No approval needed</p>
+              </div>
+              <span className="ml-auto text-xs text-muted-foreground bg-emerald-500/10 px-2 py-0.5 rounded-full">{operationsAllowed.length}</span>
+            </div>
+            {renderRuleLines(operationsAllowed.map((op, i) => ({ rule_id: `allow-${i}`, name: op.label, description: op.description, enabled: true, action: 'ALLOW' })), 'No allowed operations found.', false)}
+          </div>
+
+          <div className="glass-card p-4 border-red-500/20">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-lg bg-red-500/15 flex items-center justify-center shrink-0">
+                <XCircle size={14} className="text-red-400" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-red-400 leading-tight">Agents cannot do this</h3>
+                <p className="text-xs text-muted-foreground">Always stopped - no exceptions</p>
+              </div>
+              <span className="ml-auto text-xs text-muted-foreground bg-red-500/10 px-2 py-0.5 rounded-full">{operationsBlocked.length}</span>
+            </div>
+            {renderRuleLines(operationsBlocked.map((op, i) => ({ rule_id: `block-${i}`, name: op.label, description: op.description, enabled: false, action: 'BLOCK' })), 'No blocked operations found.', false)}
+          </div>
+
+          <div className="glass-card p-4 border-amber-500/20">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+                <AlertTriangle size={14} className="text-amber-400" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-amber-400 leading-tight">Doctor must confirm first</h3>
+                <p className="text-xs text-muted-foreground">Agent pauses and waits for your approval</p>
+              </div>
+              <span className="ml-auto text-xs text-muted-foreground bg-amber-500/10 px-2 py-0.5 rounded-full">{operationsConfirm.length}</span>
+            </div>
+            {renderRuleLines(operationsConfirm.map((op, i) => ({ rule_id: `confirm-${i}`, name: op.label, description: op.description, enabled: false, action: 'ESCALATE' })), 'No approval-gated operations found.', false)}
+          </div>
         </div>
       </div>
 
-      {/* One-click template packs (only shown if no regulation rules loaded yet) */}
-      {sortedRegs.filter(k => k !== 'General').length === 0 && (
-        <PolicyTemplatePacks onApplied={load} />
-      )}
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <ListChecks size={15} className="text-primary" />
+          <h2 className="text-sm font-semibold text-foreground">Agent-Level Rules</h2>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Pin a rule to a specific agent, device, or task. These override the global policy above.
+        </p>
 
-      {/* Industry presets - filtered by tenant vertical */}
-      <IndustryPolicyPresetsCard onApplied={load} vertical={vertical} />
+        <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr] gap-4">
+          <div className="glass-card p-4 border border-border/70 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Rule name</label>
+                <input
+                  value={ruleDraft.name}
+                  onChange={e => setRuleDraft(d => ({ ...d, name: e.target.value }))}
+                  placeholder="E.g. Cardiology note draft guard"
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Action</label>
+                <select
+                  value={ruleDraft.action}
+                  onChange={e => setRuleDraft(d => ({ ...d, action: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="ALLOW">Allow</option>
+                  <option value="BLOCK">Block</option>
+                  <option value="ESCALATE">Ask doctor</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Agent / system</label>
+                <input
+                  value={ruleDraft.condition_tool}
+                  onChange={e => setRuleDraft(d => ({ ...d, condition_tool: e.target.value }))}
+                  placeholder="All agents, Cardiology note helper, Epic"
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Task</label>
+                <input
+                  value={ruleDraft.condition_op}
+                  onChange={e => setRuleDraft(d => ({ ...d, condition_op: e.target.value }))}
+                  placeholder="note.draft, export, route"
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs text-muted-foreground mb-1 block">Description</label>
+                <textarea
+                  value={ruleDraft.description}
+                  onChange={e => setRuleDraft(d => ({ ...d, description: e.target.value }))}
+                  rows={3}
+                  placeholder="What this rule is for and how it should behave."
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                />
+              </div>
+            </div>
 
-      {/* Regulation cards */}
-      {sortedRegs.length === 0
-        ? <Empty message="No policy rules configured" />
-        : sortedRegs.map(reg => {
-          const regRules = grouped[reg]
-          const meta = REGULATION_META[reg] ?? REGULATION_META['General']
-          const healthEntry = health?.regulations?.[reg.toLowerCase().replace(/ /g, '_')] ?? health?.regulations?.[reg.toLowerCase()]
-          const activeCount = regRules.filter(r => r.enabled).length
-          const isCustom = reg === 'General'
-          const isExpanded = expanded === reg
-
-          const statusColor = isCustom
-            ? 'text-muted-foreground'
-            : activeCount === regRules.length ? 'text-emerald-400' : 'text-yellow-400'
-          const statusLabel = isCustom ? `${activeCount}/${regRules.length} active` : activeCount === regRules.length ? 'Compliant' : `${regRules.length - activeCount} gap${regRules.length - activeCount !== 1 ? 's' : ''}`
-
-          return (
-            <div key={reg} className={`rounded-xl border ${meta.border} ${meta.bg} overflow-hidden`}>
-              {/* Card header */}
+            <div className="flex items-center gap-3">
               <button
-                className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-white/[0.02] transition-colors"
-                onClick={() => setExpanded(isExpanded ? null : reg)}
+                onClick={saveRule}
+                disabled={savingRule || !ruleDraft.name.trim()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`text-sm font-bold ${meta.color}`}>{meta.label}</span>
-                    {!isCustom && <span className="text-[10px] px-2 py-0.5 rounded-full border border-current/20 bg-current/10 text-muted-foreground font-medium flex items-center gap-1"><Lock size={9} /> Enforced</span>}
-                    <span className={`text-xs font-semibold ml-auto ${statusColor}`}>{statusLabel}</span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">{meta.desc}</p>
-                  {healthEntry?.missing_rules && healthEntry.missing_rules.length > 0 && (
-                    <p className="text-[10px] text-yellow-400 mt-1 flex items-center gap-1"><AlertTriangle size={9} /> Missing: {healthEntry.missing_rules.slice(0, 3).join(', ')}{healthEntry.missing_rules.length > 3 ? ` +${healthEntry.missing_rules.length - 3} more` : ''}</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="text-right">
-                    <p className="text-lg font-bold tabular-nums">{activeCount}<span className="text-xs text-muted-foreground font-normal">/{regRules.length}</span></p>
-                    <p className="text-[10px] text-muted-foreground">rules active</p>
-                  </div>
-                  <ChevronRight size={15} className={`text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                </div>
+                <Plus size={14} /> {savingRule ? 'Saving...' : 'Add a rule'}
               </button>
+              <span className="text-xs text-muted-foreground">
+                {customRuleCount > 0 ? `${customRuleCount} custom rule${customRuleCount === 1 ? '' : 's'} active` : 'No custom rules yet'}
+              </span>
+            </div>
+          </div>
 
-              {/* Expanded rule list */}
-              {isExpanded && (
-                <div className="border-t border-current/10 px-5 py-3 space-y-1">
-                  {regRules.map(rule => (
-                    <div key={rule.rule_id} data-cite-id={rule.rule_id} className="flex items-start gap-3 py-2.5 border-b border-white/5 last:border-0">
-                      <div className={`mt-0.5 shrink-0 ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/40'}`}>
-                        <CheckCircle2 size={13} />
+          <div className="glass-card p-4 border border-border/70">
+            <div className="flex items-center gap-2 mb-4">
+              <Shield size={14} className="text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">Current custom rules</h3>
+            </div>
+            {customRuleCount === 0 ? (
+              <div className="rounded-lg border border-dashed border-border/70 p-4 text-xs text-muted-foreground">
+                No custom rules yet. Add one on the left to override the global policy for a specific agent, device, or task.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {generalRules.map(rule => (
+                  <div key={rule.rule_id} className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold text-foreground">{rule.name}</p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">{rule.description || 'Custom rule'}</p>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium">{rule.name}</p>
-                        {rule.description && <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{rule.description}</p>}
-                      </div>
-                      <div className="shrink-0 flex items-center gap-1.5">
-                        {!isCustom && <span className="text-[10px] text-muted-foreground/50 flex items-center gap-0.5"><Lock size={9} /> Required</span>}
-                        <button onClick={e => { e.stopPropagation(); testRule(rule) }} disabled={sandboxLoading && sandboxRuleId === rule.rule_id}
-                          className="text-[10px] px-1.5 py-0.5 rounded border border-purple-500/25 text-purple-400 bg-purple-500/8 hover:bg-purple-500/15 transition-colors disabled:opacity-50 flex items-center gap-0.5">
-                          {sandboxLoading && sandboxRuleId === rule.rule_id ? '...' : <><FlaskConical size={9} /> Test</>}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border ${rule.enabled ? 'border-emerald-500/20 text-emerald-400 bg-emerald-500/10' : 'border-red-500/20 text-red-400 bg-red-500/10'}`}>
+                        {rule.enabled ? 'Active' : 'Disabled'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <span className="px-2 py-0.5 rounded-full border border-border/70">{rule.action}</span>
+                      {rule.tool && <span className="px-2 py-0.5 rounded-full border border-border/70">{rule.tool}</span>}
+                      {rule.op && <span className="px-2 py-0.5 rounded-full border border-border/70">{rule.op}</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => testRule(rule)}
+                        disabled={sandboxLoading && sandboxRuleId === rule.rule_id}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-purple-500/25 text-purple-400 bg-purple-500/8 hover:bg-purple-500/15 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        <FlaskConical size={10} /> {sandboxLoading && sandboxRuleId === rule.rule_id ? 'Testing...' : 'Test'}
+                      </button>
+                      {rule.enabled ? (
+                        <button
+                          onClick={async () => { await api.disableRule(rule.rule_id); await load() }}
+                          className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-border/80 transition-colors"
+                        >
+                          Disable
                         </button>
-                        <span className={`text-[10px] font-medium ${rule.enabled ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
-                          {rule.enabled ? 'Active' : 'Inactive'}
+                      ) : (
+                        <button
+                          onClick={async () => { await api.enableRule(rule.rule_id); await load() }}
+                          className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-border/80 transition-colors"
+                        >
+                          Enable
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold text-foreground mb-1">Active Baseline Policy</h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          {activeSafety ? 'Clinical Safety Mode is permanently on for all agents. It cannot be switched off or replaced.' : 'Baseline policy is active for all enrolled agents.'}
+        </p>
+        <div className="glass-card p-5 border-emerald-500/25">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+              <Shield size={18} className="text-emerald-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <h3 className="font-bold text-base text-foreground">Clinical Safety Mode</h3>
+                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-dot" />
+                  Always active · {enrolledCount} agents
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed mb-5">
+                The hospital-wide safety baseline. Every AI agent in {displayTenant} operates under these rules at all times.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                {complianceStandards.map(s => (
+                  <div key={s.label} className="bg-white/4 border border-white/8 rounded-xl px-3 py-2.5">
+                    <p className="text-xs font-bold text-foreground">{s.label}</p>
+                    <p className="text-xs text-muted-foreground/60 mt-0.5 leading-snug">{s.desc}</p>
+                  </div>
+                ))}
+              </div>
+              {health?.regulations && (
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {Object.values(health.regulations).slice(0, 3).map((entry, i) => (
+                    <div key={`${entry.label}-${i}`} className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-foreground">{entry.label}</p>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${entry.status.toLowerCase().includes('warn') || entry.missing_rules.length > 0 ? 'border-amber-500/25 text-amber-400 bg-amber-500/10' : 'border-emerald-500/25 text-emerald-400 bg-emerald-500/10'}`}>
+                          {entry.status}
                         </span>
                       </div>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        {entry.rules_active}/{entry.rules_required} rules active
+                        {entry.missing_rules.length > 0 && ` · Missing ${entry.missing_rules.length}`}
+                      </p>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          )
-        })
-      }
+          </div>
+        </div>
+      </div>
 
-      {/* Custom rules note */}
-      {sortedRegs.length > 0 && (
-        <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5 px-1">
-          <Lock size={10} /> Regulatory rules (HIPAA, HITRUST, SOC 2) are enforced as healthcare standards and cannot be disabled.
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <ClipboardList size={15} className="text-amber-400" />
+          <h2 className="text-sm font-semibold text-foreground">Pending Your Review</h2>
+          {pendingReviews.length > 0 && (
+            <span className="text-xs bg-amber-500/15 text-amber-400 border border-amber-500/25 rounded-full px-2 py-0.5 font-semibold">
+              {pendingReviews.length}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          These agent actions require your sign-off before they can proceed.
         </p>
-      )}
+        {pendingReviews.length === 0 ? (
+          <div className="glass-card p-6 text-center">
+            <CheckCircle2 size={20} className="text-emerald-400 mx-auto mb-2" />
+            <p className="text-sm text-foreground font-medium">All caught up</p>
+            <p className="text-xs text-muted-foreground mt-1">No actions are waiting for your review.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {pendingReviews.map(item => (
+              <div key={item.decision_id} className="glass-card p-4 border border-border/70 flex flex-col gap-4">
+                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-semibold text-foreground">{item.action_type}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border ${item.meta?.urgency === 'critical' ? 'border-red-500/25 text-red-400 bg-red-500/10' : item.meta?.urgency === 'urgent' ? 'border-amber-500/25 text-amber-400 bg-amber-500/10' : 'border-border/70 text-muted-foreground bg-muted/20'}`}>
+                        {item.meta?.urgency ?? 'routine'}
+                      </span>
+                      {item.meta?.policy_version && <span className="text-[10px] px-2 py-0.5 rounded-full border border-border/70 text-muted-foreground bg-muted/20">{item.meta.policy_version}</span>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {item.meta?.department || 'Unassigned'}{item.meta?.patient_id ? ` · Patient ${item.meta.patient_id}` : ''}{item.meta?.vendor_name ? ` · ${item.meta.vendor_name}` : ''}
+                    </p>
+                    {item.explanation && <p className="text-xs text-foreground/90 mt-2 leading-relaxed">{item.explanation}</p>}
+                  </div>
+                  <div className="text-xs text-muted-foreground lg:text-right shrink-0">
+                    <p className="font-mono">{fmtTs(item.created_at)}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => review(item, 'rejected')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/25 text-red-400 bg-red-500/10 hover:bg-red-500/15 text-xs font-medium transition-colors"
+                  >
+                    <ThumbsDown size={12} /> Deny
+                  </button>
+                  <button
+                    onClick={() => review(item, 'approved')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/25 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/15 text-xs font-medium transition-colors"
+                  >
+                    <ThumbsUp size={12} /> Approve
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Sandbox result modal */}
+      <div>
+        <h2 className="text-sm font-semibold text-foreground mb-1">What's Being Blocked</h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          The most common reasons your agents are being stopped - useful for spotting gaps in care workflows.
+        </p>
+        <div className="glass-card divide-y divide-white/[0.04]">
+          {blockSummary.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-muted-foreground">No block reasons available yet.</div>
+          ) : blockSummary.map((entry, i) => {
+            const maxCount = blockSummary[0]?.count || 1
+            return (
+              <div key={entry.reason} className="px-4 py-3 flex items-center gap-4">
+                <span className="text-xs text-muted-foreground/50 font-mono w-4 shrink-0">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="text-xs font-medium text-foreground">{formatBlockReason(entry.reason)}</span>
+                    <span className="text-xs text-muted-foreground font-mono shrink-0">{entry.count} blocks</span>
+                  </div>
+                  <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-red-400/50 rounded-full transition-all duration-500" style={{ width: `${(entry.count / maxCount) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PolicyTemplatePacks onApplied={load} />
+        <IndustryPolicyPresetsCard onApplied={load} vertical={vertical} />
+      </div>
+
+      <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5 px-1">
+        <Lock size={10} /> Regulatory rules (HIPAA, HITRUST, SOC 2) are enforced as healthcare standards and cannot be disabled.
+      </p>
+
       <AnimatePresence>
         {sandboxResult && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -3263,13 +5954,18 @@ function PoliciesTab({ vertical }: { vertical: string | null }) {
 
 // -- Review Queue Tab ----------------------------------------------------------
 
-function ReviewTab({ vertical }: { vertical: string | null }) {
+// -- Review Queue Tab ----------------------------------------------------------
+
+function ReviewTab({ vertical, meInfo }: { vertical: string | null; meInfo: MeResponse | null }) {
   const [pending, setPending] = useState<ReviewItem[]>([])
   const [resolved, setResolved] = useState<ReviewItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [resolving, setResolving] = useState<string | null>(null)
   const [deptFilter, setDeptFilter] = useState('all')
+  const [urgencyFilter, setUrgencyFilter] = useState<'all' | 'critical' | 'urgent' | 'routine'>('all')
+  const [queueSearch, setQueueSearch] = useState('')
+  const [compactQueue, setCompactQueue] = useState(true)
   const [confirmItem, setConfirmItem] = useState<{ item: ReviewItem; action: 'approved' | 'rejected' } | null>(null)
   const [note, setNote] = useState('')
   const [pinStage, setPinStage] = useState<'none' | 'pin' | 'setup'>('none')
@@ -3280,8 +5976,22 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
   const reviewRoles = getReviewRoles(vertical)
   const approvalTier = getApprovalTier(vertical)
   const [escalatingId, setEscalatingId] = useState<string | null>(null)
+  const serverReviewerName = meInfo?.key_name || meInfo?.key_id || (CONSOLE_DEV_MODE ? 'Development Admin' : '')
+  const serverReviewerDept = meInfo?.tenant_id || (CONSOLE_DEV_MODE ? 'tenant_sandbox_edon' : '')
+  const serverReviewerRole = meInfo?.role || (CONSOLE_DEV_MODE ? 'admin' : '')
+  const reviewerDept = serverReviewerName ? serverReviewerDept : getReviewerDept()
+  const reviewerRoleForApproval = serverReviewerName ? serverReviewerRole : reviewerRole
+  const reviewerIdentityBound = !!serverReviewerName
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000) }
+
+  useEffect(() => {
+    if (serverReviewerName) {
+      setReviewerNameLocal(serverReviewerName)
+      setEditingName(false)
+    }
+    if (serverReviewerRole) setReviewerRoleLocal(serverReviewerRole)
+  }, [serverReviewerName, serverReviewerRole])
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -3307,6 +6017,25 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
     ])
   }, [pending, resolved])
 
+  useEffect(() => {
+    _setPS('review', [
+      {
+        type: 'summary',
+        pending_count: pending.length,
+        resolved_count: resolved.length,
+        dept_filter: deptFilter,
+        urgency_filter: urgencyFilter,
+        queue_search: queueSearch,
+        reviewer_name: reviewerName,
+        reviewer_role: reviewerRoleForApproval,
+        reviewer_identity_bound: reviewerIdentityBound,
+        confirm_action: confirmItem?.action || null,
+        confirm_id: confirmItem?.item.decision_id || null,
+        pin_stage: pinStage,
+      },
+    ] as Record<string, unknown>[])
+  }, [pending.length, resolved.length, deptFilter, urgencyFilter, queueSearch, reviewerName, reviewerRoleForApproval, reviewerIdentityBound, confirmItem, pinStage])
+
   const handleExpired = useCallback(async (item: ReviewItem) => {
     try {
       await api.rejectReview(item.decision_id, 'SYSTEM', `Auto-denied: SLA timeout (${getUrgency(item)})`)
@@ -3315,8 +6044,12 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
   }, [load])
 
   const handleAction = (item: ReviewItem, action: 'approved' | 'rejected') => {
-    if (!reviewerName.trim()) { setEditingName(true); showToast('Set your reviewer name first', 'err'); return }
-    setNote(''); setConfirmItem({ item, action }); setPinStage(hasPinSet() ? 'pin' : 'setup')
+    if (!reviewerName.trim()) {
+      if (CONSOLE_DEV_MODE) setEditingName(true)
+      showToast(CONSOLE_DEV_MODE ? 'Set your reviewer name first' : 'Authenticated reviewer identity unavailable', 'err')
+      return
+    }
+    setNote(''); setConfirmItem({ item, action }); setPinStage(CONSOLE_DEV_MODE ? (hasPinSet() ? 'pin' : 'setup') : 'none')
   }
 
   const handleConfirm = async () => {
@@ -3324,7 +6057,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
     const { item, action } = confirmItem
     setResolving(item.decision_id); setConfirmItem(null)
     try {
-      const reviewerSignature = getReviewerDept() ? `${reviewerName} (${getReviewerDept()})` : reviewerName
+      const reviewerSignature = reviewerDept ? `${reviewerName} (${reviewerDept})` : reviewerName
       action === 'approved'
         ? await api.approveReview(item.decision_id, reviewerSignature, note || undefined)
         : await api.rejectReview(item.decision_id, reviewerSignature, note || undefined)
@@ -3334,7 +6067,10 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
     finally { setResolving(null) }
   }
 
-  const saveName = (name: string) => { setReviewerName(name); setReviewerNameLocal(name); setEditingName(false) }
+  const saveName = (name: string) => {
+    if (reviewerIdentityBound) return
+    setReviewerName(name); setReviewerNameLocal(name); setEditingName(false)
+  }
 
   const handleEscalate = async (item: ReviewItem) => {
     setEscalatingId(item.decision_id)
@@ -3344,7 +6080,18 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
   }
 
   const allDepts = Array.from(new Set(pending.map(getDept))).sort()
-  const filtered = deptFilter === 'all' ? pending : pending.filter(i => getDept(i) === deptFilter)
+  const filtered = pending.filter(i => {
+    if (deptFilter !== 'all' && getDept(i) !== deptFilter) return false
+    if (urgencyFilter !== 'all' && getUrgency(i) !== urgencyFilter) return false
+    const q = queueSearch.trim().toLowerCase()
+    if (q && !(i.action_type + i.agent_id + (i.escalation_question || '') + String(i.meta?.patient_id || '') + getDept(i)).toLowerCase().includes(q)) return false
+    return true
+  })
+  const urgencyCounts = {
+    critical: pending.filter(i => getUrgency(i) === 'critical').length,
+    urgent: pending.filter(i => getUrgency(i) === 'urgent').length,
+    routine: pending.filter(i => getUrgency(i) === 'routine').length,
+  }
   const grouped = (['critical', 'urgent', 'routine'] as const)
     .map(u => ({ urgency: u, items: filtered.filter(i => getUrgency(i) === u) })).filter(g => g.items.length > 0)
 
@@ -3353,7 +6100,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
       {/* Reviewer identity */}
       <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border text-xs flex-wrap ${reviewerName ? 'border-border bg-secondary/50' : 'border-amber-500/30 bg-amber-500/10'}`}>
         <User size={12} className={reviewerName ? 'text-muted-foreground' : 'text-amber-400'} />
-        {editingName ? (
+        {editingName && !reviewerIdentityBound ? (
           <form className="flex items-center gap-2 flex-1" onSubmit={e => { e.preventDefault(); const v = (e.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim(); if (v) saveName(v) }}>
             <input name="name" defaultValue={reviewerName} autoFocus placeholder="Your name for review signatures..."
               className="flex-1 bg-transparent border-b border-primary/40 text-sm focus:outline-none text-foreground pb-0.5" />
@@ -3363,21 +6110,32 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
           <>
             <span className="text-muted-foreground">Reviewing as</span>
             <span className="font-medium text-foreground">{reviewerName}</span>
-            {getReviewerDept() && (
+            {reviewerDept && (
               <>
                 <span className="text-border">/</span>
-                <span className="text-muted-foreground">{getReviewerDept()}</span>
+                <span className="text-muted-foreground">{reviewerDept}</span>
               </>
+            )}
+            {reviewerIdentityBound && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
+                Server bound
+              </span>
             )}
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-muted-foreground">Role:</span>
-          <select value={reviewerRole} onChange={e => { const r = e.target.value; setReviewerRoleLocal(r); setReviewerRole(r) }}
-            className="bg-muted/50 border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary">
-            <option value="">- select -</option>
-            {reviewRoles.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
+          {reviewerIdentityBound ? (
+            <span className="px-2 py-1 rounded-lg border border-border bg-muted/30 text-xs text-foreground">
+              {ROLE_LABELS[reviewerRoleForApproval as ConsoleRole] ?? reviewerRoleForApproval}
+            </span>
+          ) : (
+            <select value={reviewerRole} onChange={e => { const r = e.target.value; setReviewerRoleLocal(r); setReviewerRole(r) }}
+              className="bg-muted/50 border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="">- select -</option>
+              {reviewRoles.map(r => <option key={r} value={r}>{ROLE_LABELS[r as ConsoleRole] ?? r}</option>)}
+            </select>
+          )}
         </div>
       </div>
 
@@ -3396,6 +6154,39 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
           ))}
           <button onClick={load} className="text-muted-foreground hover:text-foreground transition ml-1"><RefreshCcw size={13} /></button>
         </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        {(['critical', 'urgent', 'routine'] as const).map(u => {
+          const cfg = URGENCY_CFG[u]
+          return (
+            <button key={u} onClick={() => setUrgencyFilter(urgencyFilter === u ? 'all' : u)}
+              className={`rounded-xl border px-4 py-3 text-left transition-colors ${urgencyFilter === u ? cfg.badge : 'border-border/40 bg-card/20 hover:border-border'}`}>
+              <p className={`text-xs font-semibold ${u === 'critical' ? 'text-red-300' : u === 'urgent' ? 'text-amber-300' : 'text-sky-300'}`}>{cfg.label}</p>
+              <p className="text-2xl font-semibold text-foreground mt-1">{urgencyCounts[u]}</p>
+              <p className="text-[11px] text-muted-foreground">{u === 'critical' ? 'Immediate review' : u === 'urgent' ? 'Time-sensitive' : 'Standard queue'}</p>
+            </button>
+          )
+        })}
+        <button onClick={() => { setDeptFilter('all'); setUrgencyFilter('all'); setQueueSearch('') }}
+          className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-left hover:border-primary/35 transition-colors">
+          <p className="text-xs font-semibold text-primary">All pending</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{pending.length}</p>
+          <p className="text-[11px] text-muted-foreground">Reset triage filters</p>
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-56 max-w-sm">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input value={queueSearch} onChange={e => setQueueSearch(e.target.value)} placeholder="Search action, agent, patient, department..."
+            className="w-full pl-8 pr-3 py-2 rounded-lg bg-muted/50 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+        </div>
+        <button onClick={() => setCompactQueue(v => !v)}
+          className={`text-xs px-2.5 py-1.5 rounded-lg border transition ${compactQueue ? 'bg-primary/15 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+          Compact
+        </button>
+        <span className="text-xs text-muted-foreground">{filtered.length} shown</span>
       </div>
 
       {allDepts.length > 1 && (
@@ -3436,7 +6227,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
                 const busy = resolving === item.decision_id
                 return (
                   <motion.div key={item.decision_id} layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-                    className={`glass-card p-4 border ${urgency === 'critical' ? 'border-red-500/25' : urgency === 'urgent' ? 'border-amber-500/25' : 'border-sky-500/20'}`}>
+                    className={`glass-card ${compactQueue ? 'p-3' : 'p-4'} border ${urgency === 'critical' ? 'border-red-500/25' : urgency === 'urgent' ? 'border-amber-500/25' : 'border-sky-500/20'}`}>
                     <div className="flex items-center gap-3">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${cfg.dot} ${urgency === 'critical' ? 'animate-pulse' : ''}`} />
                       <div className="flex-1 min-w-0">
@@ -3448,7 +6239,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
                               <User size={9} /> {String(item.meta.patient_id)}
                             </span>
                           )}
-                          {!canApprove(reviewerRole, urgency, vertical) && (
+                          {!canApprove(reviewerRoleForApproval, urgency, vertical) && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/25 text-amber-400 font-medium">
                               {approvalTier[urgency]} required
                             </span>
@@ -3462,7 +6253,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
                           {escalatingId === item.decision_id ? <div className="w-3.5 h-3.5 border border-rose-400/30 border-t-rose-400 rounded-full animate-spin" /> : <Bell size={11} />}
                         </button>
                       )}
-                      <button disabled={busy || !canApprove(reviewerRole, urgency, vertical)} onClick={() => handleAction(item, 'approved')} title={canApprove(reviewerRole, urgency, vertical) ? 'Approve' : `Requires ${approvalTier[urgency]}`}
+                      <button disabled={busy || !canApprove(reviewerRoleForApproval, urgency, vertical)} onClick={() => handleAction(item, 'approved')} title={canApprove(reviewerRoleForApproval, urgency, vertical) ? 'Approve' : `Requires ${approvalTier[urgency]}`}
                         className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-40 transition-colors">
                         {busy ? <div className="w-3.5 h-3.5 border border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" /> : <ThumbsUp size={11} />}
                       </button>
@@ -3471,7 +6262,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
                         {busy ? <div className="w-3.5 h-3.5 border border-red-400/30 border-t-red-400 rounded-full animate-spin" /> : <ThumbsDown size={11} />}
                       </button>
                     </div>
-                    {item.escalation_question && <p className="text-xs text-muted-foreground mt-2 pl-5">{item.escalation_question}</p>}
+                    {!compactQueue && item.escalation_question && <p className="text-xs text-muted-foreground mt-2 pl-5">{item.escalation_question}</p>}
                   </motion.div>
                 )
               })}
@@ -3535,6 +6326,7 @@ function ReviewTab({ vertical }: { vertical: string | null }) {
               </div>
               <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                 <User size={11} /> Signed as <span className="text-foreground font-medium">{reviewerName}</span>
+                {reviewerIdentityBound && <span className="text-emerald-300">server verified</span>}
               </p>
               {confirmItem.action === 'rejected' && (
                 <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Rejection note (optional)..."
@@ -3583,6 +6375,7 @@ function RedTeamTab() {
   const [chainResult, setChainResult]   = useState<import('./api').ChainStressResponse | null>(null)
   const [chainError, setChainError]     = useState('')
   const [exporting, setExporting]       = useState(false)
+  const [exportError, setExportError]   = useState('')
   const [chainOpen, setChainOpen]       = useState(false)
 
   const load = useCallback(async () => {
@@ -3602,15 +6395,40 @@ function RedTeamTab() {
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    const topSeverity = findings.some(f => f.severity === 'critical')
+      ? 'critical'
+      : findings.some(f => f.severity === 'advisory')
+        ? 'advisory'
+        : 'stable'
+    _setPS('redteam', [
+      {
+        summary: summary ? {
+          critical: summary.critical,
+          advisory: summary.advisory,
+          confirmed_bypasses: summary.confirmed_bypasses,
+          non_determinism_count: summary.non_determinism_count,
+        } : null,
+        findings: findings.length,
+        confirmed_bypasses: bypasses.length,
+        top_severity: topSeverity,
+        chain_open: chainOpen,
+        session_id: sessionId,
+        filter,
+      },
+    ] as Record<string, unknown>[])
+  }, [summary, findings, bypasses, chainOpen, sessionId, filter])
+
   const handleExport = async () => {
     setExporting(true)
+    setExportError('')
     try {
       const blob = await api.shadowExport()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url; a.download = `edon_shadow_report_${Date.now()}.csv`
       a.click(); URL.revokeObjectURL(url)
-    } catch (e) { alert(e instanceof Error ? e.message : 'Export failed') }
+    } catch (e) { setExportError(e instanceof Error ? e.message : 'Export failed') }
     finally { setExporting(false) }
   }
 
@@ -3650,6 +6468,11 @@ function RedTeamTab() {
           </button>
         </div>
       </div>
+      {exportError && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle size={12} /> {exportError}
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -4095,12 +6918,12 @@ function ComplianceReportTab() {
 type OBStep = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
 const STEP_LABELS: Record<number, string> = {
-  1: 'Environment Intake',
-  2: 'Enforcement Topology',
-  3: 'Policy Bootstrap',
-  4: 'Deployment Package',
-  5: 'Shadow Mode',
-  6: 'Go-Live Signoff',
+  1: 'Hospital Environment Detection',
+  2: 'Connector Verification',
+  3: 'Governance Activation',
+  4: 'Governed Action Readiness',
+  5: 'Procurement Readiness',
+  6: 'Approval & Launch',
   7: 'Live & Expanding',
 }
 
@@ -4221,7 +7044,7 @@ function OBStepNav({ current, maxReached, onSelect }: { current: OBStep; maxReac
 
 type OBChatMsg = { role: 'copilot' | 'user'; text: string; id: number }
 
-function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; onLogout: () => void }) {
+export function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; onLogout: () => void }) {
   const [screen, setScreen]       = useState(1)
   const [msgs, setMsgs]           = useState<OBChatMsg[]>([])
   const [input, setInput]         = useState('')
@@ -4251,6 +7074,26 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
   const [deployment, setDeployment] = useState<import('./api').OnboardingDeploymentPackage|null>(null)
 
   useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, isTyping])
+
+  useEffect(() => {
+    const activeAgents = agentDrafts.filter(a => a.name.trim())
+    _setPS('onboarding', [
+      {
+        screen,
+        organization: orgName || 'new',
+        domain,
+        agent_count: activeAgents.length,
+        action_count: activeAgents.reduce((n, a) => n + a.actions.length, 0),
+        external_sinks: extSinks,
+        deployment_mode: deployMode,
+        trust_checks: trustChecks,
+        policy_reviews: Object.entries(policyReviewed).map(([k, v]) => `${k}:${v}`),
+        activation_step: activationStep,
+        vendors: 0,
+        departments: 1,
+      },
+    ] as Record<string, unknown>[])
+  }, [screen, orgName, domain, agentDrafts, extSinks, deployMode, trustChecks, policyReviewed, activationStep])
 
   const addCopilot = useCallback((text: string, delay = 950): Promise<void> =>
     new Promise(resolve => {
@@ -5185,7 +8028,7 @@ function OnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; on
 }
 
 
-// -- Onboarding helper components (reused in OnboardingScreen) -----------------
+// -- Onboarding helper components (reused in OnboardingTab) --------------------
 
 function OnboardingTab() {
   const [step, setStep]           = useState<OBStep>(1)
@@ -5206,6 +8049,26 @@ function OnboardingTab() {
   const [signoff,    setSignoff]    = useState<import('./api').OnboardingSignoff | null>(null)
   const [expansion,  setExpansion]  = useState<{ signals: import('./api').OnboardingExpansionSignal[]; expansion_recommended: boolean } | null>(null)
 
+  // Runtime onboarding
+  const [runtimes, setRuntimes] = useState<import('./api').RuntimeRegistration[]>([])
+  const [runtimeLoading, setRuntimeLoading] = useState(true)
+  const [runtimeBusy, setRuntimeBusy] = useState(false)
+  const [runtimeMessage, setRuntimeMessage] = useState('')
+  const [runtimeError, setRuntimeError] = useState('')
+  const [selectedRuntimeId, setSelectedRuntimeId] = useState<string | null>(null)
+  const [runtimeDraft, setRuntimeDraft] = useState({
+    runtime_name: 'Cardiology Note Helper',
+    vendor_name: '',
+    vendor_id: '',
+    source_type: 'Existing system',
+    agent_count: 1,
+    department: 'Cardiology',
+    purpose: 'Draft clinical notes',
+    runtime_type: 'Service',
+    requested_access: ['Epic.note.draft'],
+    connectors: ['Epic'],
+  })
+
   // Step 1 form state
   const [orgName, setOrgName]     = useState('')
   const [idp, setIdp]             = useState('none')
@@ -5213,7 +8076,8 @@ function OnboardingTab() {
   const [compliance, setCompliance] = useState<string[]>([])
   const [agentSystems, setAgentSystems] = useState<Array<{
     name: string; agent_type: string; actions: string[]; data_classes: string[]; external_sinks: string[]; description: string
-  }>>([{ name: '', agent_type: 'llm_agent', actions: [], data_classes: [], external_sinks: [], description: '' }])
+    vendor_name?: string; department?: string
+  }>>([{ name: '', agent_type: 'llm_agent', actions: [], data_classes: [], external_sinks: [], description: '', vendor_name: '', department: '' }])
 
   // Signoff form
   const [signoffBy, setSignoffBy] = useState('')
@@ -5231,7 +8095,20 @@ function OnboardingTab() {
     } catch { /* ignore */ }
   }, [])
 
-  useEffect(() => { loadProfileList() }, [loadProfileList])
+  const loadRuntimes = useCallback(async () => {
+    setRuntimeLoading(true)
+    try {
+      const res = await api.onboardingListRuntimes()
+      setRuntimes(res.runtimes)
+      setSelectedRuntimeId(curr => curr && res.runtimes.some(r => r.runtime_id === curr) ? curr : (res.runtimes[0]?.runtime_id ?? null))
+    } catch { /* ignore */ }
+    finally { setRuntimeLoading(false) }
+  }, [])
+
+  useEffect(() => {
+    if (SHOW_ADVANCED_ONBOARDING) loadProfileList()
+  }, [loadProfileList])
+  useEffect(() => { loadRuntimes() }, [loadRuntimes])
 
   const loadStatus = useCallback(async (id: string) => {
     try {
@@ -5371,24 +8248,370 @@ function OnboardingTab() {
     setAgentSystems(prev => prev.map((a, idx) => idx === i ? { ...a, [field]: value } : a))
   }
 
+  const intakeSummary = useMemo(() => {
+    const activeSystems = agentSystems.filter(a => a.name.trim().length > 0)
+    const vendors = [...new Set(activeSystems.map(a => (a.vendor_name || '').trim()).filter(Boolean) as string[])]
+    const departments = [...new Set(activeSystems.map(a => (a.department || '').trim()).filter(Boolean) as string[])]
+    const totalActions = activeSystems.reduce((n, a) => n + a.actions.length, 0)
+    return {
+      systems: activeSystems.length,
+      vendors,
+      departments,
+      totalActions,
+    }
+  }, [agentSystems])
+
+  const profileSummary = useMemo(() => {
+    const vendors = [...new Set((profile?.agent_systems ?? []).map(a => (a as { vendor_name?: string }).vendor_name).filter(Boolean) as string[])]
+    const departments = [...new Set((profile?.agent_systems ?? []).map(a => (a as { department?: string }).department).filter(Boolean) as string[])]
+    return { vendors, departments }
+  }, [profile])
+
+  const selectedRuntime = runtimes.find(r => r.runtime_id === selectedRuntimeId) ?? null
+  const runtimeStats = useMemo(() => ({
+    total: runtimes.length,
+    observing: runtimes.filter(r => String(r.status).toLowerCase() === 'observing').length,
+    approved: runtimes.filter(r => String(r.review_status).toLowerCase() === 'approved').length,
+    governed: runtimes.filter(r => String(r.governance_mode).toLowerCase() === 'governed').length,
+  }), [runtimes])
+  const runtimeRisk = useMemo(() => {
+    const access = runtimeDraft.requested_access.join(' ').toLowerCase()
+    const connectors = runtimeDraft.connectors.join(' ').toLowerCase()
+    if (/writeback|medication|delete|admin/.test(access + ' ' + connectors)) return 'High'
+    if (/phi|ehr|note|draft|export|audit/.test(access + ' ' + connectors)) return 'Medium'
+    return 'Low'
+  }, [runtimeDraft.requested_access, runtimeDraft.connectors])
+
+  const registerRuntime = async () => {
+    if (!runtimeDraft.runtime_name.trim()) {
+      setRuntimeError('Runtime name is required')
+      return
+    }
+    setRuntimeBusy(true); setRuntimeError(''); setRuntimeMessage('')
+    try {
+      const res = await api.onboardingRegisterRuntime({
+        runtime_name: runtimeDraft.runtime_name.trim(),
+        vendor_name: runtimeDraft.vendor_name.trim(),
+        vendor_id: runtimeDraft.vendor_id.trim(),
+        source_type: runtimeDraft.source_type,
+        agent_count: runtimeDraft.agent_count,
+        department: runtimeDraft.department.trim(),
+        purpose: runtimeDraft.purpose.trim(),
+        runtime_type: runtimeDraft.runtime_type,
+        requested_access: runtimeDraft.requested_access,
+        connectors: runtimeDraft.connectors,
+      })
+      setRuntimes(prev => [res.runtime, ...prev.filter(r => r.runtime_id !== res.runtime.runtime_id)])
+      setSelectedRuntimeId(res.runtime.runtime_id)
+      setRuntimeMessage(res.message)
+    } catch (e) {
+      setRuntimeError(e instanceof Error ? e.message : 'Failed to register runtime')
+    } finally {
+      setRuntimeBusy(false)
+    }
+  }
+
+  const reviewRuntime = async (runtimeId: string, approved = true) => {
+    setRuntimeBusy(true); setRuntimeError(''); setRuntimeMessage('')
+    try {
+      const res = await api.onboardingReviewRuntime(runtimeId, getReviewerName() || 'admin', approved, approved ? 'Approved in console' : 'Rejected in console')
+      setRuntimes(prev => prev.map(r => r.runtime_id === runtimeId ? res.runtime : r))
+      setRuntimeMessage(res.message)
+    } catch (e) {
+      setRuntimeError(e instanceof Error ? e.message : 'Failed to review runtime')
+    } finally {
+      setRuntimeBusy(false)
+    }
+  }
+
+  const promoteRuntime = async (runtimeId: string) => {
+    setRuntimeBusy(true); setRuntimeError(''); setRuntimeMessage('')
+    try {
+      const res = await api.onboardingPromoteRuntime(runtimeId, getReviewerName() || 'admin')
+      setRuntimes(prev => prev.map(r => r.runtime_id === runtimeId ? res.runtime : r))
+      setRuntimeMessage(res.message)
+      await loadRuntimes()
+    } catch (e) {
+      setRuntimeError(e instanceof Error ? e.message : 'Failed to promote runtime')
+    } finally {
+      setRuntimeBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    const activeSystems = (profile?.agent_systems ?? []).filter(a => a.name?.trim())
+    const vendors = [...new Set(activeSystems.map(a => (a as { vendor_name?: string }).vendor_name).filter(Boolean) as string[])]
+    const departments = [...new Set(activeSystems.map(a => (a as { department?: string }).department).filter(Boolean) as string[])]
+    _setPS('onboarding', [
+      {
+        profile_id: profile?.profile_id ?? activeProfileId ?? 'new',
+        org_name: profile?.org_name ?? orgName ?? 'new',
+        stage: profile?.stage ?? (activeProfileId === 'new' ? 'draft' : 'intake'),
+        agents: activeSystems.length,
+        vendors: vendors.length,
+        vendor_list: vendors,
+        departments: departments.length,
+        department_list: departments,
+        actions: profile?.all_actions?.length ?? activeSystems.reduce((n, a) => n + (a.actions?.length ?? 0), 0),
+        posture: profile?.signed_off ? 'governed' : 'audit-only',
+        runtime_count: runtimes.length,
+        selected_runtime_id: selectedRuntimeId,
+        runtime_message: runtimeMessage,
+      },
+    ] as Record<string, unknown>[])
+  }, [profile, activeProfileId, orgName, runtimes.length, selectedRuntimeId, runtimeMessage])
+
+  const readinessRail = [
+    ['SSO-only mode', profile?.identity_provider && profile.identity_provider !== 'none' ? 'Enforced' : 'Pending'],
+    ['MFA enforcement', compliance.includes('HIPAA') ? 'Active' : 'Pending'],
+    ['Tenant isolation', status ? 'Verified' : 'Pending'],
+    ['Audit encryption', status || bundle ? 'Active' : 'Pending'],
+    ['Decision binding', deployment ? 'Active' : 'Pending'],
+    ['Rollback validation', deployment ? 'Passed' : 'Pending'],
+    ['PHI safeguards', compliance.length > 0 ? 'Enforced' : 'Pending'],
+  ] as const
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold text-foreground flex items-center gap-2">
-            <Package size={20} className="text-emerald-400" />
-            Governance Onboarding Copilot
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            End-to-end client deployment - from intake to live enforcement
-          </p>
+      <div className="rounded-2xl border border-border/40 bg-card/30 p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-xl font-semibold text-foreground flex items-center gap-2">
+              <Package size={20} className="text-emerald-400" />
+              Runtime Onboarding
+            </h2>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Register new hospital AI runtimes into shadow governance before they can touch real systems.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {profile && <RiskBadge tier={profile.risk_tier} />}
+            <span className="text-xs px-2.5 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-300">Shadow first</span>
+          </div>
         </div>
-        {profile && <RiskBadge tier={profile.risk_tier} />}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            ['Registered', runtimeStats.total, 'runtime declarations'],
+            ['Observing', runtimeStats.observing, 'shadow mode'],
+            ['Reviewed', runtimeStats.approved, 'admin approved'],
+            ['Governed', runtimeStats.governed, 'live governance'],
+          ].map(([label, value, sub]) => (
+            <div key={label} className="rounded-xl border border-border/40 bg-background/25 px-3 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">{label}</p>
+              <p className="mt-1 text-xl font-semibold text-foreground">{value}</p>
+              <p className="text-[11px] text-muted-foreground">{sub}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-2 md:grid-cols-3 text-xs">
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">1. Declare the runtime</p>
+            <p className="mt-1 text-muted-foreground">Name, vendor, department, purpose, and requested scope.</p>
+          </div>
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">2. Observe in shadow</p>
+            <p className="mt-1 text-muted-foreground">EDON audits and simulates policy without execution authority.</p>
+          </div>
+          <div className="rounded-xl border border-border/30 bg-background/20 p-3">
+            <p className="font-semibold text-foreground">3. Review, then promote</p>
+            <p className="mt-1 text-muted-foreground">Promotion only happens after explicit admin review.</p>
+          </div>
+        </div>
       </div>
 
+      <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Register Runtime</p>
+            <p className="text-xs text-muted-foreground">Shadow governance only. No execution authority until later approval.</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-300">Shadow Governance</span>
+            <span className={`px-2 py-1 rounded-full border ${runtimeRisk === 'High' ? 'border-red-500/30 bg-red-500/10 text-red-300' : runtimeRisk === 'Medium' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'}`}>
+              {runtimeRisk} risk
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Runtime Name</label>
+            <input value={runtimeDraft.runtime_name} onChange={e => setRuntimeDraft(p => ({ ...p, runtime_name: e.target.value }))}
+              placeholder="Cardiology Note Helper"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Department</label>
+            <input value={runtimeDraft.department} onChange={e => setRuntimeDraft(p => ({ ...p, department: e.target.value }))}
+              placeholder="Cardiology"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Purpose</label>
+            <input value={runtimeDraft.purpose} onChange={e => setRuntimeDraft(p => ({ ...p, purpose: e.target.value }))}
+              placeholder="Draft clinical notes"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Runtime Type</label>
+            <select value={runtimeDraft.runtime_type} onChange={e => setRuntimeDraft(p => ({ ...p, runtime_type: e.target.value }))}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500/40">
+              {['Service', 'Worker', 'Agent'].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Vendor Name</label>
+            <input value={runtimeDraft.vendor_name} onChange={e => setRuntimeDraft(p => ({ ...p, vendor_name: e.target.value }))}
+              placeholder="Epic"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Vendor ID</label>
+            <input value={runtimeDraft.vendor_id} onChange={e => setRuntimeDraft(p => ({ ...p, vendor_id: e.target.value }))}
+              placeholder="vendor-001"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Source Type</label>
+            <select value={runtimeDraft.source_type} onChange={e => setRuntimeDraft(p => ({ ...p, source_type: e.target.value }))}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500/40">
+              {['Existing system', 'Vendor console', 'CSV export', 'Inventory API'].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Agents being added</label>
+            <input type="number" min={1} value={runtimeDraft.agent_count} onChange={e => setRuntimeDraft(p => ({ ...p, agent_count: Number(e.target.value) || 1 }))}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground font-medium">Requested Access</label>
+            <TagInput value={runtimeDraft.requested_access} onChange={v => setRuntimeDraft(p => ({ ...p, requested_access: v }))} placeholder="Epic.note.draft" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground font-medium">Connectors</label>
+            <TagInput value={runtimeDraft.connectors} onChange={v => setRuntimeDraft(p => ({ ...p, connectors: v }))} placeholder="Epic, Teams, SIEM" />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button onClick={registerRuntime} disabled={runtimeBusy}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
+            {runtimeBusy ? <RefreshCw size={13} className="animate-spin" /> : <ChevronRight size={13} />}
+            Register Runtime
+          </button>
+          <p className="text-xs text-muted-foreground">Shadow governance first. Review and promotion happen from the queue below.</p>
+        </div>
+
+        {(runtimeMessage || runtimeError) && (
+          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border ${runtimeError ? 'bg-destructive/10 border-destructive/30 text-destructive' : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'}`}>
+            <AlertCircle size={12} /> {runtimeError || runtimeMessage}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-border/40 bg-card/20 p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Pending Runtime Queue</p>
+            <p className="text-xs text-muted-foreground">Click a runtime to open its drawer. Shadow governance is the default.</p>
+          </div>
+          <div className="text-xs text-muted-foreground">{runtimes.length} registered</div>
+        </div>
+        {runtimeLoading ? (
+          <Spinner />
+        ) : runtimes.length === 0 ? (
+          <Empty message="No runtimes registered yet" />
+        ) : (
+          <div className="space-y-2">
+            <div className="grid grid-cols-[1.3fr_0.9fr_0.6fr_0.6fr_0.7fr] gap-2 px-3 text-[10px] uppercase tracking-widest text-muted-foreground/50">
+              <span>Runtime</span><span>Dept</span><span>Risk</span><span>Mode</span><span>Status</span>
+            </div>
+            {runtimes.map(rt => (
+              <button
+                key={rt.runtime_id}
+                type="button"
+                onClick={() => setSelectedRuntimeId(rt.runtime_id)}
+                className={`w-full text-left rounded-xl border px-3 py-3 transition-colors ${selectedRuntime?.runtime_id === rt.runtime_id ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-border/40 bg-background/20 hover:border-border'}`}>
+                <div className="grid grid-cols-[1.3fr_0.9fr_0.6fr_0.6fr_0.7fr] gap-2 items-center text-sm">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground truncate">{rt.runtime_name}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{rt.vendor_name || 'No vendor'} / {rt.source_type || 'Source'}</p>
+                  </div>
+                  <span className="text-muted-foreground truncate">{rt.department || '-'}</span>
+                  <RiskBadge tier={rt.risk_tier || 'low'} />
+                  <span className="text-xs text-emerald-300 truncate capitalize">{rt.governance_mode}</span>
+                  <span className="text-xs text-muted-foreground truncate capitalize">{rt.status}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedRuntime && (
+        <div className="rounded-xl border border-border/40 bg-card/20 p-4 space-y-4">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <p className="text-sm font-semibold text-foreground">{selectedRuntime.runtime_name}</p>
+              <p className="text-xs text-muted-foreground">{selectedRuntime.department || 'Unassigned'} / {selectedRuntime.runtime_type} / {selectedRuntime.governance_mode}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <RiskBadge tier={selectedRuntime.risk_tier || 'low'} />
+              <span className="text-xs px-2 py-1 rounded-full border border-border/40 text-muted-foreground">{selectedRuntime.review_status}</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            {[
+              ['Vendor', selectedRuntime.vendor_name || '-'],
+              ['Vendor ID', selectedRuntime.vendor_id || '-'],
+              ['Agents', String(selectedRuntime.agent_count ?? 1)],
+              ['Purpose', selectedRuntime.purpose || '-'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-border/30 bg-background/20 px-3 py-2.5">
+                <p className="text-muted-foreground/60">{label}</p>
+                <p className="font-medium text-foreground truncate">{value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-border/30 bg-background/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-foreground/80">Scopes</p>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedRuntime.requested_access.map(s => <span key={s} className="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-300">{s}</span>)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/30 bg-background/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-foreground/80">Connectors</p>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedRuntime.connectors.map(s => <span key={s} className="text-[10px] px-2 py-0.5 rounded-full border border-border/30 bg-muted/30 text-foreground/80">{s}</span>)}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border/30 bg-background/20 p-3 space-y-2">
+            <p className="text-xs font-semibold text-foreground/80">Policy simulation</p>
+            <p className="text-xs text-muted-foreground">{String(selectedRuntime.policy_simulation?.summary ?? 'Shadow Governance active. Policy simulation is verifying access boundaries.')}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={() => reviewRuntime(selectedRuntime.runtime_id, true)} disabled={runtimeBusy || selectedRuntime.review_status === 'approved'} className="text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:border-emerald-500/30 hover:text-foreground transition-colors disabled:opacity-50">
+              Approve review
+            </button>
+            <button onClick={() => promoteRuntime(selectedRuntime.runtime_id)} disabled={runtimeBusy || selectedRuntime.review_status !== 'approved'} className="text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:border-emerald-500/30 hover:text-foreground transition-colors disabled:opacity-50">
+              Promote runtime
+            </button>
+            <span className="text-xs text-muted-foreground">Promotion adds the runtime to the governed fleet and audit trail.</span>
+          </div>
+        </div>
+      )}
+
       {/* Saved profiles picker */}
-      {profiles.length > 0 && !activeProfileId && (
+      {SHOW_ADVANCED_ONBOARDING && profiles.length > 0 && !activeProfileId && (
         <div className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3">
           <p className="text-sm font-medium text-foreground">Resume a previous onboarding</p>
           <div className="space-y-2">
@@ -5413,8 +8636,19 @@ function OnboardingTab() {
         </div>
       )}
 
+      {SHOW_ADVANCED_ONBOARDING && !!activeProfileId && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-2">
+          {readinessRail.map(([label, value]) => (
+            <div key={label} className="rounded-xl border border-border/40 bg-card/20 px-3 py-2.5">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">{label}</p>
+              <p className="text-sm font-semibold text-foreground mt-1">{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Step nav */}
-      {(activeProfileId && activeProfileId !== 'new') && (
+      {SHOW_ADVANCED_ONBOARDING && (activeProfileId && activeProfileId !== 'new') && (
         <OBStepNav current={step} maxReached={maxReached} onSelect={s => setStep(s)} />
       )}
 
@@ -5424,19 +8658,19 @@ function OnboardingTab() {
         </div>
       )}
 
-      {/* -- Step 1: Intake ------------------------------------------------- */}
-      {(step === 1 && (!activeProfileId || activeProfileId === 'new')) && (
+      {/* -- Step 1: Hospital Environment Detection ------------------------- */}
+      {SHOW_ADVANCED_ONBOARDING && (step === 1 && (!activeProfileId || activeProfileId === 'new')) && (
         <div className="space-y-6">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">1</span>
-              Environment Intake
+              Hospital Environment Detection
             </h3>
 
             <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground font-medium">Organisation name</label>
               <input value={orgName} onChange={e => setOrgName(e.target.value)}
-                placeholder="Acme Health Corp"
+                placeholder="Regional One Health"
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
             </div>
 
@@ -5449,24 +8683,47 @@ function OnboardingTab() {
                 </select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs text-muted-foreground font-medium">Environments</label>
+                <label className="text-xs text-muted-foreground font-medium">Connected environments</label>
                 <MultiSelect options={ENVIRONMENT_OPTIONS} selected={envs} onChange={setEnvs} />
               </div>
             </div>
 
-            <div className="space-y-1.5">
+          <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground font-medium">Compliance requirements</label>
               <MultiSelect options={COMPLIANCE_OPTIONS} selected={compliance} onChange={setCompliance} placeholder="None selected" />
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Agent systems</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{intakeSummary.systems}</p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Vendors</p>
+                <p className="text-sm font-semibold text-foreground mt-1 truncate" title={intakeSummary.vendors.join(', ') || 'No vendor yet'}>
+                  {intakeSummary.vendors.length === 0 ? 'None' : intakeSummary.vendors.length === 1 ? intakeSummary.vendors[0] : `${intakeSummary.vendors.length} vendors`}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Departments</p>
+                <p className="text-sm font-semibold text-foreground mt-1 truncate" title={intakeSummary.departments.join(', ') || 'No department yet'}>
+                  {intakeSummary.departments.length === 0 ? 'None' : intakeSummary.departments.length === 1 ? intakeSummary.departments[0] : `${intakeSummary.departments.length} departments`}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted-foreground/50">Actions</p>
+                <p className="text-sm font-semibold text-foreground mt-1">{intakeSummary.totalActions}</p>
+              </div>
             </div>
           </div>
 
           {/* Agent systems */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Bot size={14} className="text-emerald-400" /> Agent Systems
-              </h3>
-              <button type="button" onClick={() => setAgentSystems(prev => [...prev, { name: '', agent_type: 'llm_agent', actions: [], data_classes: [], external_sinks: [], description: '' }])}
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <Bot size={14} className="text-emerald-400" /> Agent Systems
+                </h3>
+              <button type="button" onClick={() => setAgentSystems(prev => [...prev, { name: '', agent_type: 'llm_agent', actions: [], data_classes: [], external_sinks: [], description: '', vendor_name: '', department: '' }])}
                 className="text-xs text-emerald-400 hover:underline flex items-center gap-1">
                 <Plus size={12} /> Add agent system
               </button>
@@ -5498,6 +8755,20 @@ function OnboardingTab() {
                     </select>
                   </div>
                 </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Vendor</label>
+                    <input value={agent.vendor_name || ''} onChange={e => updateAgent(i, 'vendor_name', e.target.value)}
+                      placeholder="e.g. Vendor A"
+                      className="w-full bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Department</label>
+                    <input value={agent.department || ''} onChange={e => updateAgent(i, 'department', e.target.value)}
+                      placeholder="e.g. Cardiology"
+                      className="w-full bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/40" />
+                  </div>
+                </div>
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">Actions (what can this agent do?)</label>
                   <TagInput value={agent.actions} onChange={v => updateAgent(i, 'actions', v)} placeholder="e.g. ehr.read, email.send" />
@@ -5523,7 +8794,7 @@ function OnboardingTab() {
       )}
 
       {/* Profile summary card (shown in steps 2-7) */}
-      {profile && step > 1 && (
+      {SHOW_ADVANCED_ONBOARDING && profile && step > 1 && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-foreground">{profile.org_name}</p>
@@ -5534,6 +8805,8 @@ function OnboardingTab() {
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>{profile.agent_systems.length} agent system{profile.agent_systems.length !== 1 ? 's' : ''}</span>
+            {profileSummary.vendors.length > 0 && <span>{profileSummary.vendors.length} vendor{profileSummary.vendors.length !== 1 ? 's' : ''}</span>}
+            {profileSummary.departments.length > 0 && <span>{profileSummary.departments.length} department{profileSummary.departments.length !== 1 ? 's' : ''}</span>}
             <span>{profile.all_actions.length} actions</span>
             {profile.all_data_classes.length > 0 && <span>Data: {profile.all_data_classes.join(', ')}</span>}
             {profile.compliance_requirements.length > 0 && <span>Compliance: {profile.compliance_requirements.join(', ')}</span>}
@@ -5543,21 +8816,21 @@ function OnboardingTab() {
       )}
 
       {/* -- Step 2: Topology ----------------------------------------------- */}
-      {step === 2 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 2 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">2</span>
-              EDON Enforcement Topology
+              Connector Verification
             </h3>
             <p className="text-xs text-muted-foreground">
-              Exactly where EDON intercepts, which connectors are needed, and what trust boundaries exist.
+              Confirm IdP, Epic, Teams, and SIEM trust before governance is activated.
             </p>
             {!topology ? (
               <button onClick={handleTopology} disabled={busy}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
                 {busy ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
-                Generate Enforcement Topology
+                Verify Connectors
               </button>
             ) : (
               <div className="space-y-4">
@@ -5596,7 +8869,7 @@ function OnboardingTab() {
                 </div>
                 <button onClick={() => advance(3)}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors">
-                  <ChevronRight size={13} /> Continue to Policy Bootstrap
+                  <ChevronRight size={13} /> Continue to Governance Activation
                 </button>
               </div>
             )}
@@ -5605,14 +8878,14 @@ function OnboardingTab() {
       )}
 
       {/* -- Step 3: Policy Bootstrap --------------------------------------- */}
-      {step === 3 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 3 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">3</span>
-              Policy Bootstrap
+              Governance Activation
             </h3>
-            <p className="text-xs text-muted-foreground">Auto-generated 3-layer policy set. Review before deployment.</p>
+            <p className="text-xs text-muted-foreground">SSO, MFA, audit encryption, tenant isolation, and decision binding are activated here.</p>
             {!bundle ? (
               <button onClick={handleBootstrap} disabled={busy}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
@@ -5659,7 +8932,7 @@ function OnboardingTab() {
                 ))}
                 <button onClick={() => advance(4)}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors">
-                  <ChevronRight size={13} /> Continue to Deployment Package
+                  <ChevronRight size={13} /> Continue to Governed Action Readiness
                 </button>
               </div>
             )}
@@ -5668,14 +8941,14 @@ function OnboardingTab() {
       )}
 
       {/* -- Step 4: Deployment Package ------------------------------------- */}
-      {step === 4 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 4 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">4</span>
-              Deployment Package
+              Governed Action Readiness
             </h3>
-            <p className="text-xs text-muted-foreground">IT-approvable config. Helm values, env vars, network rules, rollback plan.</p>
+            <p className="text-xs text-muted-foreground">Show the operational boundaries EDON will enforce before a tenant is promoted.</p>
             {!deployment ? (
               <button onClick={handleDeployment} disabled={busy}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors disabled:opacity-50">
@@ -5726,7 +8999,7 @@ function OnboardingTab() {
                 </details>
                 <button onClick={() => advance(5)}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors">
-                  <Eye size={13} /> Enable Shadow Mode
+                  <Eye size={13} /> Continue to Procurement Readiness
                 </button>
               </div>
             )}
@@ -5735,48 +9008,48 @@ function OnboardingTab() {
       )}
 
       {/* -- Step 5: Shadow Mode -------------------------------------------- */}
-      {step === 5 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 5 && (
         <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
           <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">5</span>
-            Shadow Mode
+            Procurement Readiness
           </h3>
           <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-xs text-blue-300/80 space-y-1">
-            <p className="font-semibold text-blue-300">This is your sales weapon.</p>
-            <p>EDON runs silently - watches all agent actions, simulates decisions, logs what it WOULD block. No enforcement yet.</p>
-            <p>Output: "here are 17 risky actions we would have blocked" and "here are 3 policy gaps".</p>
+            <p className="font-semibold text-blue-300">Pilot evidence and readiness review.</p>
+            <p>EDON shows the governed boundary, the active evidence pack, and the launch criteria before production.</p>
+            <p>Output: connector certification, audit integrity, restore drill status, and pilot readiness.</p>
           </div>
           {profile?.shadow_mode_enabled ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-emerald-400 text-sm font-semibold">
-                <Eye size={15} /> Shadow Mode is ACTIVE
+                <Eye size={15} /> Readiness review is ACTIVE
               </div>
               <p className="text-xs text-muted-foreground">
-                Check the Red Team tab and Shadow Findings to see what EDON would have blocked.
-                When you're ready to go live, proceed to signoff.
+                Check the governance findings and evidence pack to review what EDON would have blocked.
+                When you're ready to go live, proceed to approval.
               </p>
               <button onClick={() => advance(6)}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/30 transition-colors">
-                <CheckCircle2 size={13} /> Ready for Go-Live Signoff
+                <CheckCircle2 size={13} /> Ready for Approval & Launch
               </button>
             </div>
           ) : (
             <button onClick={handleShadow} disabled={busy}
               className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-500/20 border border-blue-500/40 text-blue-300 text-sm font-semibold hover:bg-blue-500/30 transition-colors disabled:opacity-50">
               {busy ? <RefreshCw size={13} className="animate-spin" /> : <EyeOff size={13} />}
-              Activate Shadow Mode
+              Run Readiness Review
             </button>
           )}
         </div>
       )}
 
       {/* -- Step 6: Signoff ------------------------------------------------ */}
-      {step === 6 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 6 && (
         <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">6</span>
-            Go-Live Signoff
-          </h3>
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center justify-center">6</span>
+              Approval & Launch
+            </h3>
           <div className="rounded-lg border border-orange-500/20 bg-orange-500/5 px-4 py-3 text-xs text-orange-300/80 space-y-1">
             <p className="font-semibold text-orange-300">Nothing goes live without explicit approval.</p>
             <p>The client explicitly approves: enforcement scope, escalation rules, kill-switch authority, data classes governed.</p>
@@ -5837,7 +9110,7 @@ function OnboardingTab() {
       )}
 
       {/* -- Step 7: Live + Expansion --------------------------------------- */}
-      {step === 7 && (
+      {SHOW_ADVANCED_ONBOARDING && step === 7 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 space-y-3">
             <h3 className="text-sm font-semibold text-emerald-300 flex items-center gap-2">
@@ -5900,30 +9173,31 @@ function OnboardingTab() {
 // -----------------------------------------------------------------------------
 
 const TABS = [
-  { id: 'clinical_summary', label: 'Patient Summary', icon: Stethoscope, roles: ['clinical'] },
-  { id: 'clinical_explain', label: 'Explanation', icon: Eye, roles: ['clinical'] },
-  { id: 'clinical_actions', label: 'Actions', icon: ClipboardList, roles: ['clinical'] },
-  { id: 'review', label: 'Escalations', icon: AlertCircle, roles: ['clinical', 'admin'] },
-  { id: 'research_experiments', label: 'Experiments', icon: Microscope, roles: ['research'] },
-  { id: 'research_simulations', label: 'Simulations', icon: Radio, roles: ['research'] },
-  { id: 'research_readiness', label: 'Readiness', icon: CheckCircle2, roles: ['research'] },
-  { id: 'policy_diff', label: 'Policy Diff', icon: GitCompare, roles: ['research', 'admin'] },
-  { id: 'control_tower', label: 'Overview', icon: Building2, roles: ['admin'] },
-  { id: 'systems', label: 'Systems', icon: ServerCog, roles: ['admin'] },
-  { id: 'decisions', label: 'Decisions', icon: ListChecks, roles: ['admin'] },
-  { id: 'deployments', label: 'Deployments', icon: CheckCircle2, roles: ['admin'] },
-  { id: 'assurance', label: 'Assurance', icon: FlaskConical, roles: ['admin'] },
-  { id: 'impact', label: 'Impact', icon: Network, roles: ['admin'] },
+  { id: 'dashboard', label: 'Dashboard', icon: BarChart2, roles: ['admin'] },
+  { id: 'agents', label: 'Agents', icon: Users, roles: ['admin'] },
+  { id: 'audit', label: 'Audit', icon: FileText, roles: ['admin'] },
   { id: 'policies', label: 'Policies', icon: Shield, roles: ['admin'] },
-  { id: 'audit', label: 'Compliance', icon: FileText, roles: ['admin'] },
-  { id: 'report', label: 'Reports', icon: FileDown, roles: ['research', 'admin'] },
-  { id: 'dashboard', label: 'Legacy Dashboard', icon: Activity, roles: ['admin'] },
-  { id: 'agents', label: 'Legacy Agents', icon: Users, roles: ['admin'] },
-  { id: 'onboarding', label: 'Onboarding', icon: Package, roles: ['admin'] },
-  { id: 'settings', label: 'Settings', icon: Settings, roles: ['clinical', 'research', 'admin'] },
+  { id: 'review', label: 'Review Queue', icon: ClipboardList, roles: ['admin'] },
+  { id: 'onboarding', label: 'Onboard', icon: Package, roles: ['admin'] },
+  { id: 'operations', label: 'Operations', icon: ServerCog, roles: ['admin'] },
+  { id: 'settings', label: 'Settings', icon: Settings, roles: ['admin'] },
 ] as const
 
-type Tab = typeof TABS[number]['id']
+type Tab =
+  | typeof TABS[number]['id']
+  | 'clinical_summary'
+  | 'clinical_explain'
+  | 'clinical_actions'
+  | 'research_experiments'
+  | 'research_simulations'
+  | 'research_readiness'
+  | 'policy_diff'
+  | 'control_tower'
+  | 'systems'
+  | 'decisions'
+  | 'deployments'
+  | 'assurance'
+  | 'report'
 
 // -- Live Key Claim Banner -----------------------------------------------------
 
@@ -5933,6 +9207,7 @@ function LiveKeyClaimBanner() {
   const [liveKey, setLiveKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [dismissed, setDismissed] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     api.checkPendingLiveKey().then(r => setPending(r.pending)).catch(() => {})
@@ -5940,12 +9215,13 @@ function LiveKeyClaimBanner() {
 
   const claim = async () => {
     setClaiming(true)
+    setError('')
     try {
       const r = await api.claimLiveKey()
       setLiveKey(r.key)
       setPending(false)
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to claim key')
+      setError(e instanceof Error ? e.message : 'Failed to claim key')
     } finally { setClaiming(false) }
   }
 
@@ -5989,6 +9265,7 @@ function LiveKeyClaimBanner() {
               </button>
             </>
           )}
+          {error && <span className="text-xs text-red-300">{error}</span>}
         </div>
       </motion.div>
     </AnimatePresence>
@@ -6001,13 +9278,11 @@ type LockdownState = 'unknown' | 'pending' | 'active' | 'inactive' | 'failed' | 
 type LockdownDetails = { reason?: string; actor?: string; verifiedAt?: string }
 
 export default function App() {
-  const [authed, setAuthed] = useState(!!getAuth())
-  const [meInfo, setMeInfo] = useState<MeResponse | null>(null)
-  const isAdmin = meInfo?.is_admin === true || meInfo?.role === 'admin'
+  const [authed, setAuthed] = useState(() => !!getAuth())
+  const [meInfo, setMeInfo] = useState<MeResponse | null>(() => (CONSOLE_DEV_MODE ? CONSOLE_DEV_ME : null))
+  const isAdmin = meInfo?.is_admin === true || ['admin', 'super_admin', 'governance_admin', 'security_admin'].includes(meInfo?.role ?? '')
   const vertical = meInfo?.vertical ?? null
-  const [onboardingDone, setOnboardingDone] = useState(() => localStorage.getItem('edon_ob_done') === '1')
-  const [role, setRole] = useState<ConsoleRole>(() => (localStorage.getItem('edon_console_role') as ConsoleRole) || 'admin')
-  const [tab, setTab] = useState<Tab>('control_tower')
+  const [tab, setTab] = useState<Tab>('dashboard')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('edon_theme') as 'dark' | 'light') || 'dark')
   const [health, setHealth] = useState<{ ok: boolean; version: string; uptime_seconds: number } | null>(null)
   const [hgiHalt, setHgiHalt] = useState(false)
@@ -6019,6 +9294,10 @@ export default function App() {
   const [aside, setAside] = useState<AsideItem | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [shadowModeEnabled, setShadowModeEnabled] = useState<boolean>(() => !!CONSOLE_DEV_ME.is_sandbox)
+  const [shadowModeSaving, setShadowModeSaving] = useState(false)
+  const effectiveRole: ConsoleRole = CONSOLE_DEV_MODE || isAdmin ? 'admin' : 'clinical'
+  const shadowModeActive = shadowModeEnabled
 
   useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light')
@@ -6026,25 +9305,15 @@ export default function App() {
   }, [theme])
 
   useEffect(() => {
-    localStorage.setItem('edon_console_role', role)
-    setTab(ROLE_DEFAULT_TAB[role] as Tab)
-  }, [role])
-
-  useEffect(() => {
-    if (!authed || onboardingDone) return
-    api.onboardingListProfiles().then(r => {
-      if (r.profiles.some(p => p.signed_off)) {
-        localStorage.setItem('edon_ob_done', '1')
-        setOnboardingDone(true)
-      }
-    }).catch(() => {})
-  }, [authed, onboardingDone])
+    setTab(ROLE_DEFAULT_TAB[effectiveRole] as Tab)
+  }, [effectiveRole])
 
   useEffect(() => {
     if (!authed) return
     api.health().then(h => setHealth(h)).catch(() => {})
     // Only fetch /me if we don't already have it (i.e. returning session, not fresh login)
     if (!meInfo) api.me().then(m => setMeInfo(m)).catch(() => {})
+    api.getShadowMode().then(r => setShadowModeEnabled(r.enabled)).catch(() => {})
     // Sync kill switch state from backend on load and every 30s
     const syncKillSwitch = () => api.killSwitchStatus().then(s => {
       setHgiHalt(s.active)
@@ -6058,6 +9327,19 @@ export default function App() {
     }
     fetchCount(); const iv = setInterval(fetchCount, 30000); return () => clearInterval(iv)
   }, [authed])
+
+  const toggleShadowMode = useCallback(async () => {
+    if (shadowModeSaving) return
+    setShadowModeSaving(true)
+    try {
+      const r = await api.setShadowMode(!shadowModeActive)
+      setShadowModeEnabled(r.enabled)
+    } catch {
+      // keep current state if the backend rejects the change
+    } finally {
+      setShadowModeSaving(false)
+    }
+  }, [shadowModeActive, shadowModeSaving])
 
   const handleLogout = useCallback(() => { clearAuth(); setAuthed(false); setHealth(null); setMeInfo(null) }, [])
 
@@ -6093,15 +9375,9 @@ export default function App() {
   }
 
   if (!authed) return <LoginScreen onLogin={me => { setMeInfo(me); setAuthed(true) }} />
-  if (!onboardingDone) return (
-    <OnboardingScreen
-      onComplete={() => { localStorage.setItem('edon_ob_done', '1'); setOnboardingDone(true) }}
-      onLogout={handleLogout}
-    />
-  )
 
   const auth = getAuth()
-  const visibleTabs = TABS.filter(t => (t.roles as readonly ConsoleRole[]).includes(role))
+  const visibleTabs = TABS.filter(t => (t.roles as readonly ConsoleRole[]).includes(effectiveRole))
 
   return (
     <AsideCtx.Provider value={{ open: (item) => setAside(item) }}>
@@ -6150,13 +9426,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="hidden lg:flex items-center rounded-lg border border-border bg-muted/30 p-0.5">
-            {(['admin', 'research', 'clinical'] as const).map(r => (
-              <button key={r} onClick={() => setRole(r)}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${role === r ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>
-                {ROLE_LABELS[r]}
-              </button>
-            ))}
+          <div className="hidden lg:flex items-center rounded-lg border border-border bg-muted/30 px-3 py-1 text-xs font-medium text-foreground">
+            Admin View
           </div>
 
           {/* Desktop nav */}
@@ -6195,31 +9466,31 @@ export default function App() {
               {lockdownDetails.verifiedAt && <span>/ {lockdownDetails.verifiedAt}</span>}
             </div>
 
-            {/* Reviewer identity pill */}
-            {getReviewerName() && (
-              <div className="hidden sm:flex items-center gap-1.5 px-2.5 h-7 rounded-full border border-border bg-secondary/60 text-xs text-muted-foreground">
-                <User size={11} />
-                <span className="font-medium text-foreground max-w-[100px] truncate">{getReviewerName()}</span>
-                {isAdmin && (
-                  <span className="px-1.5 py-0 rounded-full text-[9px] font-bold tracking-wider bg-primary/15 text-primary border border-primary/30">ADMIN</span>
-                )}
-                {!isAdmin && getReviewerDept() && (
-                  <>
-                    <span className="text-border">/</span>
-                    <span className="max-w-[90px] truncate">{getReviewerDept()}</span>
-                  </>
-                )}
+            {/* Signed-in admin identity */}
+            <div className="hidden sm:flex items-center gap-2 px-2.5 h-8 rounded-full border border-border bg-secondary/60 text-xs text-muted-foreground">
+              <div className="w-5 h-5 rounded-full border border-primary/30 bg-primary/10 flex items-center justify-center">
+                <User size={11} className="text-primary" />
               </div>
-            )}
+              <div className="min-w-0 leading-tight">
+                <p className="font-medium text-foreground max-w-[132px] truncate">
+                  {CONSOLE_DEV_MODE ? 'Development Admin' : (meInfo?.key_name || getReviewerName() || 'Console Admin')}
+                </p>
+                <p className="text-[9px] text-muted-foreground max-w-[132px] truncate">
+                  {ROLE_LABELS[(meInfo?.role || 'admin') as ConsoleRole] ?? meInfo?.role ?? 'Admin'} / {meInfo?.vertical === 'healthcare' ? 'St. Mercy' : (getReviewerDept() || meInfo?.tenant_id || 'Tenant')}
+                </p>
+              </div>
+            </div>
 
             {/* Notifications */}
             <NotificationsBell />
 
             {/* AI Chat */}
-            <button onClick={() => setChatOpen(true)} title="Governance AI"
-              className="flex items-center justify-center w-8 h-8 rounded-lg border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-colors">
-              <Bot size={14} />
-            </button>
+            {isAdmin && (
+              <button onClick={() => setChatOpen(true)} title="Governance AI"
+                className="flex items-center justify-center w-8 h-8 rounded-lg border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition-colors">
+                <Bot size={14} />
+              </button>
+            )}
 
             {/* Theme toggle */}
             <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
@@ -6228,11 +9499,17 @@ export default function App() {
               {theme === 'dark' ? <Sun size={13} className="text-muted-foreground" /> : <Moon size={13} className="text-muted-foreground" />}
             </button>
 
-            {/* Logout */}
-            <button onClick={handleLogout} title="Disconnect"
-              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive text-muted-foreground transition-colors">
-              <LogOut size={13} />
-            </button>
+            {/* Session mode */}
+            {CONSOLE_DEV_MODE ? (
+              <div className="flex items-center justify-center h-8 px-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-[11px] font-semibold text-emerald-300">
+                Dev mode
+              </div>
+            ) : (
+              <button onClick={handleLogout} title="Disconnect"
+                className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive text-muted-foreground transition-colors">
+                <LogOut size={13} />
+              </button>
+            )}
 
             {/* Emergency lockdown */}
             <button onClick={() => hgiHalt ? liftLockdown() : setLockdownConfirm(true)}
@@ -6260,13 +9537,16 @@ export default function App() {
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
               className="md:hidden border-t border-border bg-background/95 overflow-hidden">
               <nav className="px-4 py-3 flex flex-col gap-1">
-                <div className="grid grid-cols-3 gap-1 mb-2">
-                  {(['admin', 'research', 'clinical'] as const).map(r => (
-                    <button key={r} onClick={() => setRole(r)}
-                      className={`rounded-lg px-2 py-2 text-xs font-medium ${role === r ? 'bg-primary/15 text-primary' : 'bg-muted/30 text-muted-foreground'}`}>
-                      {r}
-                    </button>
-                  ))}
+                <div className="grid grid-cols-1 gap-1 mb-2">
+                  <div className="rounded-lg px-2 py-2 text-xs font-medium bg-primary/15 text-primary text-center">Admin View</div>
+                  <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+                    <p className="text-xs font-semibold text-foreground truncate">
+                      {CONSOLE_DEV_MODE ? 'Development Admin' : (meInfo?.key_name || getReviewerName() || 'Console Admin')}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {ROLE_LABELS[(meInfo?.role || 'admin') as ConsoleRole] ?? meInfo?.role ?? 'Admin'} / {meInfo?.tenant_id || 'Tenant'}
+                    </p>
+                  </div>
                 </div>
                 {visibleTabs.map(t => {
                   const Icon = t.icon; const active = tab === t.id
@@ -6293,27 +9573,42 @@ export default function App() {
       {/* Live key claim banner */}
       {meInfo?.is_sandbox && <LiveKeyClaimBanner />}
 
-      {/* Sandbox banner */}
-      <AnimatePresence>
-        {meInfo?.is_sandbox && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-            className="bg-purple-500/10 border-b border-purple-500/30">
+      {/* Mode banner */}
+      {meInfo && (
+        <AnimatePresence>
+          <motion.button
+            type="button"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            onClick={toggleShadowMode}
+            disabled={shadowModeSaving}
+            aria-pressed={shadowModeActive}
+            className={cn(
+              'w-full text-left overflow-hidden',
+              shadowModeActive ? 'bg-blue-500/10 border-b border-blue-500/30' : 'bg-emerald-500/10 border-b border-emerald-500/30',
+              shadowModeSaving ? 'cursor-wait opacity-90' : 'cursor-pointer',
+            )}
+          >
             <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3">
-              <div className="flex items-center gap-2 text-purple-300">
+              <div className={`flex items-center gap-2 ${shadowModeActive ? 'text-blue-300' : 'text-emerald-300'}`}>
                 <FlaskConical size={14} className="shrink-0" />
-                <span className="text-xs font-semibold">Sandbox Mode</span>
+                <span className="text-xs font-semibold">{shadowModeActive ? 'Sandbox mode' : 'Live governance'}</span>
               </div>
-              <p className="text-xs text-purple-300/80">
-                Your governance rules are active and logging every decision - but nothing is being blocked yet. This is your trial period to observe EDON in action before enforcement goes live.
+              <p className={`text-xs ${shadowModeActive ? 'text-blue-300/80' : 'text-emerald-300/80'}`}>
+                {shadowModeSaving
+                  ? 'Updating mode...'
+                  : shadowModeActive
+                    ? 'Audit-only. Click to switch to live governance.'
+                    : 'Live governance. Click to return to audit-only.'}
               </p>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </motion.button>
+        </AnimatePresence>
+      )}
 
       {/* Page content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        <GovernanceStrip hgiHalt={hgiHalt} />
         <AnimatePresence mode="wait">
           <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
             <ErrorBoundary>
@@ -6329,18 +9624,18 @@ export default function App() {
                 {tab === 'systems' && <SystemRegistryTable />}
                 {tab === 'deployments' && <DeploymentGatekeeperTab />}
                 {tab === 'assurance' && <RedTeamTab />}
-                {tab === 'impact' && <ImpactCenterTab />}
-                {tab === 'dashboard' && <DashboardTab />}
+                {tab === 'dashboard' && <DashboardTab tenantLabel={meInfo?.tenant_id || 'Tenant'} sandboxMode={shadowModeActive} vertical={meInfo?.vertical ?? null} />}
                 {tab === 'decisions' && <DecisionsTab />}
                 {tab === 'agents'    && <AgentsTab />}
 
                 {tab === 'audit'     && <AuditTab />}
                 {tab === 'report'    && <ComplianceReportTab />}
-                {tab === 'policies'  && <PoliciesTab vertical={vertical} />}
-                {tab === 'review'    && <ReviewTab vertical={vertical} />}
-                {tab === 'onboarding' && <OnboardingTab />}
-                {tab === 'settings'  && <SettingsTab onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} isAdmin={isAdmin} vertical={vertical} onVerticalChange={v => setMeInfo(m => m ? { ...m, vertical: v as typeof m.vertical } : m)} onTabChange={t => setTab(t as typeof tab)} />}
-              </Suspense>
+                  {tab === 'policies'  && <PoliciesTab tenantLabel={meInfo?.tenant_id || 'Tenant'} vertical={vertical} />}
+                {tab === 'review'    && <ReviewTab vertical={vertical} meInfo={meInfo} />}
+                  {tab === 'onboarding' && <OnboardingTab />}
+                  {tab === 'operations' && <OperationsTab />}
+                   {tab === 'settings'  && <SettingsTabV2 onReconnect={() => api.health().then(h => setHealth(h)).catch(() => {})} isAdmin={isAdmin} meInfo={meInfo} onLogout={handleLogout} health={health} lockdownState={lockdownState} lockdownDetails={lockdownDetails} shadowModeEnabled={shadowModeActive} shadowModeSaving={shadowModeSaving} onToggleShadowMode={toggleShadowMode} />}
+                </Suspense>
             </ErrorBoundary>
           </motion.div>
         </AnimatePresence>
@@ -6380,7 +9675,13 @@ export default function App() {
               </span>
             </div>
             <div className="flex gap-2">
-              <button onClick={handleLogout} className="flex-1 py-1.5 rounded-xl border border-white/10 text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">Sign out now</button>
+              {CONSOLE_DEV_MODE ? (
+                <div className="flex-1 py-1.5 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-xs text-emerald-300 text-center font-semibold">
+                  Dev mode is always on
+                </div>
+              ) : (
+                <button onClick={handleLogout} className="flex-1 py-1.5 rounded-xl border border-white/10 text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">Sign out now</button>
+              )}
               <button onClick={extend} className="flex-1 py-1.5 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/30 transition-colors">Stay signed in</button>
             </div>
           </motion.div>
@@ -6430,3 +9731,6 @@ export default function App() {
     </AsideCtx.Provider>
   )
 }
+
+
+

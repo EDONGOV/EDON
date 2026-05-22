@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from ..logging_config import get_logger
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
+from ..department_scope import get_department_scope
 
 logger = get_logger(__name__)
 
@@ -148,6 +149,7 @@ def _profile_from_agent_row(agent: Dict[str, Any], stats: Dict[str, Any]) -> Dic
         "mag_enabled": bool(agent.get("mag_enabled", False)),
         "cav_enabled": bool(agent.get("cav_enabled", True)),
         "metadata": agent.get("metadata") or {},
+        "vendor_id": agent.get("vendor_id") or None,
         "department": agent.get("department") or None,
         "status": agent.get("status", "active"),
         "registered_at": agent.get("registered_at"),
@@ -169,6 +171,7 @@ def _legacy_profile(agent_id: str, tenant_id: str, display_name: str, first_seen
         "mag_enabled": False,
         "cav_enabled": False,
         "metadata": {},
+        "vendor_id": None,
         "status": "active",
         "registered_at": first_seen,
         "last_seen_at": None,
@@ -604,6 +607,11 @@ async def list_agents(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     db = get_db()
+    department_scope = get_department_scope(request)
+    if department_scope and department and department != department_scope:
+        raise HTTPException(status_code=403, detail="Department-scoped users cannot view other departments")
+    if department_scope:
+        department = department_scope
 
     # Primary: agents table
     try:
@@ -626,7 +634,7 @@ async def list_agents(
         profiles.append(_profile_from_agent_row(agent, stats))
 
     # Fallback: add auto-registered agents from tenant_agents not in agents table
-    if not status or status == "active":
+    if not department_scope and (not status or status == "active"):
         try:
             registered_ids = {p["agent_id"] for p in profiles}
             for la in db.get_tenant_agents(tenant_id):
@@ -685,12 +693,17 @@ async def get_agent(request: Request, agent_id: str):
         match = next((a for a in legacy if a["agent_id"] == agent_id), None)
         if not match:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        if get_department_scope(request):
+            raise HTTPException(status_code=403, detail="Department-scoped users cannot view legacy unassigned agents")
         profile = _legacy_profile(
             match["agent_id"], tenant_id,
             match.get("display_name", match["agent_id"]),
             match.get("first_seen"),
         )
     else:
+        department_scope = get_department_scope(request)
+        if department_scope and agent.get("department") != department_scope:
+            raise HTTPException(status_code=403, detail="Department-scoped users cannot view other departments")
         stats = _get_lifetime_stats(db, tenant_id, agent_id)
         profile = _profile_from_agent_row(agent, stats)
 

@@ -188,7 +188,7 @@ def resolve_tenant_for_clerk(claims: Dict[str, Any], fallback_email: Optional[st
             email=email,
             auth_provider="clerk",
             auth_subject=clerk_sub,
-            role="viewer" if config.ENTERPRISE_MODE else "user",
+            role="viewer",
         )
     else:
         user_id = user["id"]
@@ -203,6 +203,27 @@ def resolve_tenant_for_clerk(claims: Dict[str, Any], fallback_email: Optional[st
         db.create_tenant(tenant_id=tenant_id, user_id=user_id)
         tenant = db.get_tenant(tenant_id)
 
+    def _claim_value(*names: str) -> Optional[str]:
+        for name in names:
+            value = claims.get(name)
+            if value is None and isinstance(claims.get("public_metadata"), dict):
+                value = claims["public_metadata"].get(name)
+            if value is None and isinstance(claims.get("organization_metadata"), dict):
+                value = claims["organization_metadata"].get(name)
+            if value is not None:
+                return str(value).strip()
+        return None
+
+    role_claim = os.getenv("EDON_SSO_ROLE_CLAIM", "edon_role")
+    department_claim = os.getenv("EDON_SSO_DEPARTMENT_CLAIM", "edon_department")
+    allowed_roles = {"viewer", "operator", "auditor", "governance_admin", "security_admin"}
+    mapped_role = (_claim_value(role_claim, "role", "roles") or "viewer").split(",")[0].strip()
+    if mapped_role not in allowed_roles:
+        mapped_role = "viewer"
+    mapped_department = _claim_value(department_claim, "department", "dept")
+    if mapped_role not in {"governance_admin", "security_admin"} and not mapped_department:
+        mapped_role = "viewer"
+
     return {
         "tenant_id": tenant["id"],
         "status": tenant["status"],
@@ -210,6 +231,10 @@ def resolve_tenant_for_clerk(claims: Dict[str, Any], fallback_email: Optional[st
         "api_key_id": None,
         "user_id": user_id,
         "email": email,
+        "role": mapped_role,
+        "department": mapped_department,
+        "identity_provider": "clerk",
+        "session_policy": "department_scoped" if mapped_department else "tenant_scoped",
     }
 
 
@@ -253,6 +278,11 @@ def verify_token(token: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
                     "api_key_id": api_key["id"],
                     "key_name": api_key.get("name"),
                     "role": api_key.get("role", "user"),
+                    "department": api_key.get("department"),
+                    "scope_group": api_key.get("scope_group"),
+                    "purpose": api_key.get("purpose"),
+                    "scope": api_key.get("scope"),
+                    "environment": api_key.get("environment"),
                     "is_sandbox": api_key.get("is_sandbox", False),
                 }
             # Orphaned key (no tenant): fall through to env token / Clerk
@@ -430,6 +460,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/auth/signup",
         "/auth/session",
         "/auth/sync",
+        "/access/user-invites/accept",
         "/billing/plans",
         "/billing/checkout",
         "/billing/webhook",

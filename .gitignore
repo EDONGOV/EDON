@@ -59,6 +59,8 @@ admin/node_modules/
 admin/dist/
 console/node_modules/
 console/dist/
+solo-console/node_modules/
+solo-console/dist/
 sdk/javascript/node_modules/
 sdk/javascript/dist/
 

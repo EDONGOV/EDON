@@ -248,6 +248,11 @@ class PostgreSQLDatabase:
                     name TEXT,
                     status TEXT NOT NULL DEFAULT 'active',
                     role TEXT NOT NULL DEFAULT 'user',
+                    department TEXT,
+                    scope_group TEXT,
+                    purpose TEXT,
+                    scope TEXT,
+                    environment TEXT,
                     created_at TEXT NOT NULL,
                     last_used_at TEXT
                 )
@@ -256,6 +261,45 @@ class PostgreSQLDatabase:
             # Migration: add expires_at to api_keys if not present
             # Use IF NOT EXISTS to avoid transaction abort on second run (PostgreSQL 9.6+)
             cur.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TEXT")
+            for col in ("department", "scope_group", "purpose", "scope", "environment"):
+                cur.execute(f"ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS {col} TEXT")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS console_user_invites (
+                    invite_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    department TEXT,
+                    scope TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    invited_by TEXT,
+                    invite_token_hash TEXT NOT NULL UNIQUE,
+                    invite_url TEXT,
+                    expires_at TEXT NOT NULL,
+                    accepted_at TEXT,
+                    revoked_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_console_user_invites_tenant ON console_user_invites(tenant_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_console_user_invites_token ON console_user_invites(invite_token_hash)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_console_user_invites_status ON console_user_invites(status)")
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS console_department_owners (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    department TEXT NOT NULL,
+                    owner_email TEXT NOT NULL,
+                    updated_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(tenant_id, department)
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_console_department_owners_tenant ON console_department_owners(tenant_id)")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS channel_tokens (
@@ -1152,6 +1196,11 @@ class PostgreSQLDatabase:
         name: Optional[str] = None,
         role: str = 'user',
         expires_at: Optional[str] = None,
+        department: Optional[str] = None,
+        scope_group: Optional[str] = None,
+        purpose: Optional[str] = None,
+        scope: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> str:
         import uuid
         api_key_id = f"key_{uuid.uuid4().hex[:16]}"
@@ -1159,9 +1208,9 @@ class PostgreSQLDatabase:
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, created_at, expires_at)
-                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)
-            """, (api_key_id, tenant_id, key_hash, name, role, now, expires_at))
+                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, department, scope_group, purpose, scope, environment, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (api_key_id, tenant_id, key_hash, name, role, department, scope_group, purpose, scope, environment, now, expires_at))
         return api_key_id
 
     def list_auditor_grants(self, tenant_id: str) -> list:
@@ -1188,6 +1237,184 @@ class PostgreSQLDatabase:
                 "UPDATE api_keys SET status = 'revoked' WHERE id = %s AND tenant_id = %s",
                 (key_id, tenant_id),
             )
+            return cur.rowcount > 0
+
+    def create_console_user_invite(
+        self,
+        *,
+        tenant_id: str,
+        email: str,
+        role: str,
+        department: Optional[str],
+        scope: Optional[str],
+        invited_by: Optional[str],
+        invite_token_hash: str,
+        invite_url: str,
+        expires_at: str,
+    ) -> Dict[str, Any]:
+        import uuid
+        now = datetime.now(UTC).isoformat()
+        invite_id = f"inv_{uuid.uuid4().hex[:16]}"
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE console_user_invites
+                SET status = 'revoked', revoked_at = %s, updated_at = %s
+                WHERE tenant_id = %s AND lower(email) = lower(%s) AND status = 'pending'
+            """, (now, now, tenant_id, email))
+            cur.execute("""
+                INSERT INTO console_user_invites (
+                    invite_id, tenant_id, email, role, department, scope, status,
+                    invited_by, invite_token_hash, invite_url, expires_at,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s)
+            """, (
+                invite_id, tenant_id, email, role, department, scope,
+                invited_by, invite_token_hash, invite_url, expires_at, now, now,
+            ))
+        invite = self.get_console_user_invite(invite_id=invite_id, tenant_id=tenant_id)
+        return invite or {
+            "invite_id": invite_id,
+            "tenant_id": tenant_id,
+            "email": email,
+            "role": role,
+            "department": department,
+            "scope": scope,
+            "status": "pending",
+            "invited_by": invited_by,
+            "invite_url": invite_url,
+            "expires_at": expires_at,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_console_user_invites(self, tenant_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT invite_id, tenant_id, email, role, department, scope, status,
+                       invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                       created_at, updated_at
+                FROM console_user_invites
+                WHERE tenant_id = %s
+                ORDER BY created_at DESC
+            """, (tenant_id,))
+            return self._rows_to_dicts(cur, cur.fetchall())
+
+    def get_console_user_invite(
+        self,
+        *,
+        invite_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        token_hash: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not invite_id and not token_hash:
+            return None
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if token_hash:
+                cur.execute("""
+                    SELECT invite_id, tenant_id, email, role, department, scope, status,
+                           invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                           created_at, updated_at
+                    FROM console_user_invites
+                    WHERE invite_token_hash = %s
+                """, (token_hash,))
+            else:
+                cur.execute("""
+                    SELECT invite_id, tenant_id, email, role, department, scope, status,
+                           invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                           created_at, updated_at
+                    FROM console_user_invites
+                    WHERE invite_id = %s AND tenant_id = %s
+                """, (invite_id, tenant_id))
+            row = cur.fetchone()
+            return self._row_to_dict(cur, row) if row else None
+
+    def revoke_console_user_invite(self, *, invite_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE console_user_invites
+                SET status = 'revoked', revoked_at = %s, updated_at = %s
+                WHERE invite_id = %s AND tenant_id = %s AND status != 'accepted'
+            """, (now, now, invite_id, tenant_id))
+            if cur.rowcount <= 0:
+                return None
+        return self.get_console_user_invite(invite_id=invite_id, tenant_id=tenant_id)
+
+    def accept_console_user_invite(self, *, token_hash: str) -> Optional[Dict[str, Any]]:
+        now = datetime.now(UTC).isoformat()
+        invite = self.get_console_user_invite(token_hash=token_hash)
+        if not invite or invite.get("status") != "pending":
+            return None
+        if invite.get("expires_at") and invite["expires_at"] < now:
+            with self._get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE console_user_invites
+                    SET status = 'expired', updated_at = %s
+                    WHERE invite_id = %s
+                """, (now, invite["invite_id"]))
+            return None
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE console_user_invites
+                SET status = 'accepted', accepted_at = %s, updated_at = %s
+                WHERE invite_token_hash = %s AND status = 'pending'
+            """, (now, now, token_hash))
+            if cur.rowcount <= 0:
+                return None
+        return self.get_console_user_invite(token_hash=token_hash)
+
+    def list_console_department_owners(self, tenant_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, tenant_id, department, owner_email, updated_by, created_at, updated_at
+                FROM console_department_owners
+                WHERE tenant_id = %s
+                ORDER BY department ASC
+            """, (tenant_id,))
+            return self._rows_to_dicts(cur, cur.fetchall())
+
+    def upsert_console_department_owner(
+        self,
+        *,
+        tenant_id: str,
+        department: str,
+        owner_email: str,
+        updated_by: Optional[str],
+    ) -> Dict[str, Any]:
+        import uuid
+        now = datetime.now(UTC).isoformat()
+        owner_id = f"dept_owner_{uuid.uuid4().hex[:16]}"
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO console_department_owners (
+                    id, tenant_id, department, owner_email, updated_by, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id, department) DO UPDATE
+                SET owner_email = EXCLUDED.owner_email,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING id, tenant_id, department, owner_email, updated_by, created_at, updated_at
+            """, (owner_id, tenant_id, department, owner_email, updated_by, now, now))
+            row = cur.fetchone()
+            return self._row_to_dict(cur, row)
+
+    def delete_console_department_owner(self, *, tenant_id: str, department: str) -> bool:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                DELETE FROM console_department_owners
+                WHERE tenant_id = %s AND department = %s
+            """, (tenant_id, department))
             return cur.rowcount > 0
 
     def get_api_key_by_hash(self, key_hash: str) -> Optional[Dict[str, Any]]:
@@ -1231,9 +1458,27 @@ class PostgreSQLDatabase:
                 WHERE id = %s AND tenant_id = %s
             """, (old_expires_at, api_key_id, tenant_id))
             cur.execute("""
-                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, created_at)
-                VALUES (%s, %s, %s, %s, 'active', %s, %s)
-            """, (new_key_id, tenant_id, new_key_hash, new_key_name, role, now.isoformat()))
+                SELECT department, scope_group, purpose, scope, environment
+                FROM api_keys
+                WHERE id = %s AND tenant_id = %s
+            """, (api_key_id, tenant_id))
+            existing = cur.fetchone()
+            cur.execute("""
+                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, department, scope_group, purpose, scope, environment, created_at)
+                VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                new_key_id,
+                tenant_id,
+                new_key_hash,
+                new_key_name,
+                role,
+                existing[0] if existing else None,
+                existing[1] if existing else None,
+                existing[2] if existing else None,
+                existing[3] if existing else None,
+                existing[4] if existing else None,
+                now.isoformat(),
+            ))
 
         return {"new_key_id": new_key_id, "old_expires_at": old_expires_at}
 

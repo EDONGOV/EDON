@@ -64,6 +64,52 @@ def normalize_deployment_mode(mode: str | None) -> str:
     return mode
 
 
+def _classify_runtime_risk(requested_access: list[str], connectors: list[str], agent_count: int) -> tuple[int, str]:
+    text = " ".join((requested_access or []) + (connectors or [])).lower()
+    score = 0
+    if any(keyword in text for keyword in ("writeback", "admin", "medication", "delete", "destroy")):
+        score += 4
+    if any(keyword in text for keyword in ("export", "phi", "ehr", "note", "draft")):
+        score += 2
+    if "siem" in text or "audit" in text:
+        score += 1
+    score += min(max(agent_count, 0) // 100, 3)
+    score = min(score, 10)
+    if score >= 7:
+        tier = "critical"
+    elif score >= 5:
+        tier = "high"
+    elif score >= 3:
+        tier = "medium"
+    else:
+        tier = "low"
+    return score, tier
+
+
+def _build_policy_simulation(requested_access: list[str], risk_tier: str) -> dict:
+    approvals = [
+        access for access in requested_access
+        if any(keyword in access.lower() for keyword in ("writeback", "export", "admin", "medication"))
+    ]
+    blocked = [
+        access for access in requested_access
+        if any(keyword in access.lower() for keyword in ("delete", "destroy"))
+    ]
+    return {
+        "shadow": True,
+        "policy_mode": "shadow",
+        "allowed": [access for access in requested_access if access not in blocked],
+        "blocked": blocked,
+        "approval_required": approvals,
+        "risk_tier": risk_tier,
+        "summary": (
+            "Shadow Governance active. Policy simulation is verifying access boundaries."
+            if risk_tier in {"low", "medium"}
+            else "Shadow Governance active. Policy simulation shows approval-bound access."
+        ),
+    }
+
+
 @dataclass
 class AgentSystemSpec:
     name: str
@@ -110,6 +156,37 @@ class GovernanceDeploymentProfile:
         d = asdict(self)
         d["agent_systems"] = [asdict(a) for a in self.agent_systems]
         return d
+
+
+@dataclass
+class RuntimeRegistration:
+    runtime_id: str
+    tenant_id: str
+    runtime_name: str
+    vendor_name: str
+    vendor_id: str
+    source_type: str
+    agent_count: int
+    department: str
+    purpose: str
+    runtime_type: str
+    requested_access: list[str]
+    connectors: list[str]
+    governance_mode: str = "shadow"
+    status: str = "observing"
+    review_status: str = "pending"
+    risk_score: int = 0
+    risk_tier: str = "low"
+    policy_simulation: dict = field(default_factory=dict)
+    audit_stream: list[dict] = field(default_factory=list)
+    recent_actions: list[str] = field(default_factory=list)
+    review_notes: str = ""
+    promoted_agent_id: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 def _derive_risk(profile: GovernanceDeploymentProfile) -> tuple[int, str]:
@@ -174,6 +251,18 @@ class OnboardingStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_profiles_tenant
                     ON profiles (tenant_id);
+                CREATE TABLE IF NOT EXISTS runtime_registrations (
+                    runtime_id   TEXT PRIMARY KEY,
+                    tenant_id    TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'observing',
+                    data         TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runtime_registrations_tenant
+                    ON runtime_registrations (tenant_id);
+                CREATE INDEX IF NOT EXISTS idx_runtime_registrations_status
+                    ON runtime_registrations (status);
             """)
 
     def create(
@@ -318,6 +407,148 @@ class OnboardingStore:
         logger.info(f"[onboarding] signed off: {profile_id} by={signed_off_by}")
         return _from_dict(d)
 
+    def register_runtime(
+        self,
+        tenant_id: str,
+        runtime_name: str,
+        vendor_name: str,
+        vendor_id: str,
+        source_type: str,
+        agent_count: int,
+        department: str,
+        purpose: str,
+        runtime_type: str,
+        requested_access: list[str],
+        connectors: list[str],
+        *,
+        governance_mode: str = "shadow",
+        status: str = "observing",
+        review_status: str = "pending",
+        review_notes: str = "",
+    ) -> RuntimeRegistration:
+        tenant_id = _require_tenant_id(tenant_id, context="register an onboarding runtime")
+        runtime_id = f"rtm-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC).isoformat()
+        risk_score, risk_tier = _classify_runtime_risk(requested_access, connectors, agent_count)
+        policy_simulation = _build_policy_simulation(requested_access, risk_tier)
+        record = RuntimeRegistration(
+            runtime_id=runtime_id,
+            tenant_id=tenant_id,
+            runtime_name=runtime_name,
+            vendor_name=vendor_name,
+            vendor_id=vendor_id,
+            source_type=source_type,
+            agent_count=max(int(agent_count), 0),
+            department=department,
+            purpose=purpose,
+            runtime_type=runtime_type,
+            requested_access=requested_access,
+            connectors=connectors,
+            governance_mode=governance_mode,
+            status=status,
+            review_status=review_status,
+            risk_score=risk_score,
+            risk_tier=risk_tier,
+            policy_simulation=policy_simulation,
+            audit_stream=[
+                {
+                    "action": "register_runtime",
+                    "actor": "system",
+                    "result": status,
+                    "time": now,
+                    "summary": "Registered in shadow governance",
+                }
+            ],
+            recent_actions=["Registered in shadow governance"],
+            review_notes=review_notes,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "INSERT INTO runtime_registrations (runtime_id, tenant_id, status, data, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (runtime_id, tenant_id, status, json.dumps(record.as_dict()), now, now),
+            )
+        logger.info(f"[onboarding] runtime registered: {runtime_id} tenant={tenant_id} tier={risk_tier}")
+        return record
+
+    def _load_runtime(self, runtime_id: str) -> Optional[RuntimeRegistration]:
+        with self._lock, self._conn() as conn:
+            row = conn.execute(
+                "SELECT data FROM runtime_registrations WHERE runtime_id=?",
+                (runtime_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _runtime_from_dict(json.loads(row["data"]))
+
+    def get_runtime(self, runtime_id: str) -> Optional[RuntimeRegistration]:
+        return self._load_runtime(runtime_id)
+
+    def list_runtimes_for_tenant(self, tenant_id: str) -> list[dict]:
+        tenant_id = _require_tenant_id(tenant_id, context="list onboarding runtimes")
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                "SELECT data FROM runtime_registrations WHERE tenant_id=? ORDER BY created_at DESC",
+                (tenant_id,),
+            ).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def _store_runtime(self, record: RuntimeRegistration) -> RuntimeRegistration:
+        now = datetime.now(UTC).isoformat()
+        record.updated_at = now
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "UPDATE runtime_registrations SET status=?, data=?, updated_at=? WHERE runtime_id=?",
+                (record.status, json.dumps(record.as_dict()), now, record.runtime_id),
+            )
+        return record
+
+    def review_runtime(self, runtime_id: str, reviewed_by: str, approved: bool, notes: str = "") -> Optional[RuntimeRegistration]:
+        record = self._load_runtime(runtime_id)
+        if record is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        record.review_status = "approved" if approved else "rejected"
+        record.status = "reviewed" if approved else "held"
+        if notes:
+            record.review_notes = notes
+        record.recent_actions.append(f"Review {'approved' if approved else 'rejected'} by {reviewed_by}")
+        record.audit_stream.append({
+            "action": "review_runtime",
+            "actor": reviewed_by,
+            "result": record.review_status,
+            "time": now,
+            "notes": notes,
+        })
+        return self._store_runtime(record)
+
+    def promote_runtime(
+        self,
+        runtime_id: str,
+        promoted_by: str,
+        *,
+        agent_id: Optional[str] = None,
+    ) -> Optional[RuntimeRegistration]:
+        record = self._load_runtime(runtime_id)
+        if record is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        record.status = "promoted"
+        record.governance_mode = "governed"
+        record.review_status = "approved"
+        record.promoted_agent_id = agent_id or runtime_id
+        record.recent_actions.append(f"Promoted by {promoted_by}")
+        record.audit_stream.append({
+            "action": "promote_runtime",
+            "actor": promoted_by,
+            "result": "promoted",
+            "time": now,
+            "agent_id": record.promoted_agent_id,
+        })
+        return self._store_runtime(record)
+
 
 def _from_dict(d: dict) -> GovernanceDeploymentProfile:
     specs = [AgentSystemSpec(**a) for a in d.get("agent_systems", [])]
@@ -328,6 +559,18 @@ def _from_dict(d: dict) -> GovernanceDeploymentProfile:
     d["policy_pack"] = (d.get("policy_pack") or get_market_pack(d["market_pack"])["policy_pack"]).strip().lower()
     d["agent_systems"] = specs
     return GovernanceDeploymentProfile(**d)
+
+
+def _runtime_from_dict(d: dict) -> RuntimeRegistration:
+    d = dict(d)
+    d["requested_access"] = list(d.get("requested_access") or [])
+    d["connectors"] = list(d.get("connectors") or [])
+    d["audit_stream"] = list(d.get("audit_stream") or [])
+    d["recent_actions"] = list(d.get("recent_actions") or [])
+    d["policy_simulation"] = dict(d.get("policy_simulation") or {})
+    d["agent_count"] = int(d.get("agent_count") or 0)
+    d["risk_score"] = int(d.get("risk_score") or 0)
+    return RuntimeRegistration(**d)
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

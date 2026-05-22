@@ -573,6 +573,9 @@ class Config:
         if not self.ENCRYPT_AUDIT_PAYLOAD:
             violations.append("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
 
+        if (os.getenv("EDON_AUDIT_ALLOW_UNSIGNED_LEGACY") or "").strip().lower() == "true":
+            violations.append("EDON_AUDIT_ALLOW_UNSIGNED_LEGACY must be false in production")
+
         clerk_configured = any(
             (os.getenv(name) or "").strip()
             for name in ("CLERK_SECRET_KEY", "CLERK_PUBLIC_KEY", "CLERK_JWKS_URL")
@@ -584,6 +587,8 @@ class Config:
                 violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set when Clerk auth is enabled")
 
         if self.ENTERPRISE_MODE:
+            if self.ENABLE_OPTIONAL_SURFACES:
+                violations.append("EDON_ENABLE_OPTIONAL_SURFACES must be false in enterprise production")
             if not self.ENTERPRISE_SSO_ONLY:
                 violations.append("EDON_ENTERPRISE_SSO_ONLY must be true in enterprise mode")
             if not self.REQUIRE_ADMIN_MFA:
@@ -602,6 +607,62 @@ class Config:
                 violations.append("CLERK_ISSUER and CLERK_AUDIENCE must be set in enterprise mode")
             if not self.EDGE_BUNDLE_SIGNING_KEY:
                 violations.append("EDON_EDGE_BUNDLE_SIGNING_KEY must be set in enterprise mode")
+
+            cloud_provider = (os.getenv("EDON_CLOUD_PROVIDER") or "").strip().lower()
+            if cloud_provider not in {"aws", "azure", "gcp"}:
+                violations.append("EDON_CLOUD_PROVIDER must be one of aws, azure, or gcp in enterprise mode")
+
+            if (os.getenv("EDON_BAA_SIGNED") or "").strip().lower() not in {"1", "true", "yes"}:
+                violations.append("EDON_BAA_SIGNED must be true before HIPAA production deployment")
+
+            if (os.getenv("EDON_HIPAA_DEPLOYMENT_PROFILE") or "").strip().lower() not in {"1", "true", "yes"}:
+                violations.append("EDON_HIPAA_DEPLOYMENT_PROFILE must be true for healthcare production")
+
+            if (os.getenv("EDON_PRIVATE_NETWORK_ENABLED") or "").strip().lower() not in {"1", "true", "yes"}:
+                violations.append("EDON_PRIVATE_NETWORK_ENABLED must be true in enterprise mode")
+
+            if (os.getenv("EDON_WAF_ENABLED") or "").strip().lower() not in {"1", "true", "yes"}:
+                violations.append("EDON_WAF_ENABLED must be true in enterprise mode")
+
+            if (os.getenv("EDON_MANAGED_POSTGRES") or "").strip().lower() not in {"1", "true", "yes"}:
+                violations.append("EDON_MANAGED_POSTGRES must be true in enterprise mode")
+
+            if not any((os.getenv(name) or "").strip() for name in ("EDON_VAULT_URL", "VAULT_ADDR", "AWS_SECRETS_MANAGER_REGION", "AZURE_KEY_VAULT_URL", "GCP_SECRET_MANAGER_PROJECT")):
+                violations.append("A production vault provider must be configured")
+
+            if not any((os.getenv(name) or "").strip() for name in ("EDON_KMS_KEY_ID", "AWS_KMS_KEY_ID", "AZURE_KEY_VAULT_KEY_ID", "GCP_KMS_KEY_NAME")):
+                violations.append("A production KMS/signing key provider must be configured")
+
+            if not (os.getenv("EDON_SIGNING_KEY_HEX") or "").strip():
+                violations.append("EDON_SIGNING_KEY_HEX must be set from KMS/vault in production")
+
+            if not (os.getenv("EDON_AUDIT_CHAIN_SIGNING_KEY") or "").strip():
+                violations.append("EDON_AUDIT_CHAIN_SIGNING_KEY must be set from KMS/vault in production")
+
+            if not any((os.getenv(name) or "").strip() for name in ("EDON_BACKUP_BUCKET", "EDON_BACKUP_SCHEDULE", "PG_BACKUP_BUCKET")):
+                violations.append("Managed database backup destination/schedule must be configured")
+
+            if not (os.getenv("EDON_RESTORE_DRILL_LAST_RUN_AT") or "").strip():
+                violations.append("EDON_RESTORE_DRILL_LAST_RUN_AT must record the last restore drill")
+
+            if not any((os.getenv(name) or "").strip() for name in ("EDON_SIEM_ENDPOINT", "EDON_SENTINEL_WORKSPACE_ID", "EDON_SPLUNK_HEC_URL", "EDON_LOG_ARCHIVE_BUCKET")):
+                violations.append("Cloud-native log retention or SIEM export must be configured")
+
+            try:
+                retention_days = int((os.getenv("EDON_LOG_RETENTION_DAYS") or "0").strip())
+            except ValueError:
+                retention_days = 0
+            if retention_days < 365:
+                violations.append("EDON_LOG_RETENTION_DAYS must be at least 365 in enterprise mode")
+
+            if not (os.getenv("EDON_ALERT_WEBHOOK") or os.getenv("EDON_PAGERDUTY_ROUTING_KEY") or "").strip():
+                violations.append("Production alert routing must be configured")
+
+            if not (os.getenv("EDON_SSO_ROLE_CLAIM") or "").strip():
+                violations.append("EDON_SSO_ROLE_CLAIM must identify the IdP role claim")
+
+            if not (os.getenv("EDON_SSO_DEPARTMENT_CLAIM") or "").strip():
+                violations.append("EDON_SSO_DEPARTMENT_CLAIM must identify the IdP department claim")
 
         return violations
 

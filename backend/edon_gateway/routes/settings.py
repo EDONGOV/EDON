@@ -17,6 +17,15 @@ class CIDRRequest(BaseModel):
     cidr: str = Field(..., description="IPv4/IPv6 CIDR block, e.g. '203.0.113.0/24' or single IP '1.2.3.4'")
 
 
+ADMIN_ROLES = {"admin", "super_admin", "governance_admin", "security_admin"}
+
+
+def _require_admin(request: Request) -> None:
+    role = (getattr(request.state, "tenant_info", None) or {}).get("role", "viewer")
+    if role not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+
 def _normalize_cidr(cidr: str) -> str:
     cidr = cidr.strip()
     # Accept bare IPs — convert to /32 or /128
@@ -54,6 +63,7 @@ async def add_ip_allowlist(request: Request, body: CIDRRequest):
     tenant_id = get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
+    _require_admin(request)
 
     cidr = _normalize_cidr(body.cidr)
     db = get_db()
@@ -77,6 +87,7 @@ async def remove_ip_allowlist(request: Request, body: CIDRRequest):
     tenant_id = get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
+    _require_admin(request)
 
     cidr = _normalize_cidr(body.cidr)
     db = get_db()
@@ -121,6 +132,7 @@ async def set_shadow_mode(request: Request, body: ShadowModeRequest):
     tenant_id = get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
+    _require_admin(request)
 
     db = get_db()
     if not hasattr(db, "set_shadow_mode"):

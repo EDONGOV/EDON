@@ -37,13 +37,13 @@ export interface PolicyDiffRecord {
 }
 
 export const ROLE_LABELS: Record<ConsoleRole, string> = {
-  admin: 'Admin Control Tower',
-  research: 'Research Console',
-  clinical: 'Clinical View',
+  admin: 'Admin Persona',
+  research: 'Research Persona',
+  clinical: 'Clinical Persona',
 }
 
 export const ROLE_DEFAULT_TAB: Record<ConsoleRole, string> = {
-  admin: 'control_tower',
+  admin: 'dashboard',
   research: 'research_experiments',
   clinical: 'clinical_summary',
 }

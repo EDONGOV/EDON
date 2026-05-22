@@ -32,6 +32,7 @@ from ..onboarding.deployment_package import generate_deployment_package
 from ..onboarding.repeatable_architecture import build_repeatable_architecture_standard
 from ..onboarding.signoff import get_signoff_store
 from ..onboarding.expansion import check_expansion_signals
+from ..persistence import get_db
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
@@ -110,6 +111,8 @@ class AgentSystemInput(BaseModel):
     data_classes: list[str] = []
     external_sinks: list[str] = []
     description: str = ""
+    vendor_name: Optional[str] = None
+    department: Optional[str] = None
 
 
 class IntakeRequest(BaseModel):
@@ -163,6 +166,86 @@ class SignoffCreateRequest(BaseModel):
 class SignoffResolveRequest(BaseModel):
     resolved_by: str
     rejection_reason: Optional[str] = None
+
+
+class RuntimeRegistrationRequest(BaseModel):
+    runtime_name: str
+    vendor_name: str = ""
+    vendor_id: str = ""
+    source_type: str = "Existing system"
+    agent_count: int = 1
+    department: str = ""
+    purpose: str = ""
+    runtime_type: str = "Service"
+    requested_access: list[str] = []
+    connectors: list[str] = []
+
+
+class RuntimeReviewRequest(BaseModel):
+    reviewed_by: str
+    approved: bool = True
+    notes: Optional[str] = None
+
+
+class RuntimePromoteRequest(BaseModel):
+    promoted_by: str
+    agent_id: Optional[str] = None
+
+
+def _audit_runtime_event(runtime, tenant_id: str, *, action_op: str, verdict: str, actor: str, notes: str = "") -> None:
+    action = {
+        "id": f"{action_op}-{runtime.runtime_id}",
+        "tool": "onboarding",
+        "op": action_op,
+        "params": runtime.as_dict(),
+        "source": "onboarding",
+        "estimated_risk": runtime.risk_tier,
+        "computed_risk": runtime.risk_score,
+        "requested_at": runtime.updated_at or runtime.created_at,
+    }
+    decision = {
+        "verdict": verdict,
+        "reason_code": "ONBOARDING",
+        "explanation": notes or runtime.policy_simulation.get("summary", "Shadow Governance active."),
+        "policy_version": runtime.governance_mode,
+        "action_summary": f"{action_op}: {runtime.runtime_name}",
+    }
+    context = {
+        "tenant_id": tenant_id,
+        "runtime_id": runtime.runtime_id,
+        "runtime_name": runtime.runtime_name,
+        "vendor_name": runtime.vendor_name,
+        "vendor_id": runtime.vendor_id,
+        "source_type": runtime.source_type,
+        "agent_count": runtime.agent_count,
+        "department": runtime.department,
+        "purpose": runtime.purpose,
+        "runtime_type": runtime.runtime_type,
+        "requested_access": runtime.requested_access,
+        "connectors": runtime.connectors,
+        "governance_mode": runtime.governance_mode,
+        "status": runtime.status,
+        "review_status": runtime.review_status,
+        "risk_score": runtime.risk_score,
+        "risk_tier": runtime.risk_tier,
+        "actor": actor,
+        "notes": notes,
+    }
+    try:
+        db = get_db()
+        db.save_audit_event(
+            action,
+            decision,
+            intent_id=runtime.runtime_id,
+            agent_id=runtime.promoted_agent_id or runtime.runtime_id,
+            context=context,
+            customer_id=tenant_id,
+            action_summary=decision["action_summary"],
+            stated_intent="runtime onboarding",
+            user_message=notes or None,
+        )
+    except Exception as e:
+        logger.warning(f"[onboarding/runtime] could not persist audit event: {e}")
 
 
 # ── Step 1: Intake ────────────────────────────────────────────────────────────
@@ -260,6 +343,129 @@ async def get_profile(profile_id: str, request: Request):
     profile = store.get(profile_id)
     _assert_owns_profile(profile, tenant_id)
     return {"profile": profile.as_dict()}
+
+
+@router.post("/runtimes")
+async def register_runtime(request: Request, body: RuntimeRegistrationRequest):
+    tenant_id = _require_request_tenant(request, "register a governed runtime")
+    store = get_onboarding_store()
+    runtime = store.register_runtime(
+        tenant_id=tenant_id,
+        runtime_name=body.runtime_name,
+        vendor_name=body.vendor_name,
+        vendor_id=body.vendor_id,
+        source_type=body.source_type,
+        agent_count=body.agent_count,
+        department=body.department,
+        purpose=body.purpose,
+        runtime_type=body.runtime_type,
+        requested_access=body.requested_access,
+        connectors=body.connectors,
+    )
+    _audit_runtime_event(runtime, tenant_id, action_op="register_runtime", verdict="ALLOW", actor="system")
+    return {
+        "runtime": runtime.as_dict(),
+        "message": "Runtime registered in shadow governance.",
+        "next_step": {
+            "action": f"POST /v1/onboarding/runtimes/{runtime.runtime_id}/review",
+            "description": "Review the runtime before promotion",
+        },
+    }
+
+
+@router.get("/runtimes")
+async def list_runtimes(request: Request):
+    tenant_id = _require_request_tenant(request, "list governed runtimes")
+    store = get_onboarding_store()
+    runtimes = store.list_runtimes_for_tenant(tenant_id)
+    return {"runtimes": runtimes, "count": len(runtimes)}
+
+
+@router.get("/runtimes/{runtime_id}")
+async def get_runtime(runtime_id: str, request: Request):
+    tenant_id = _require_request_tenant(request, "view a governed runtime")
+    store = get_onboarding_store()
+    runtime = store.get_runtime(runtime_id)
+    if runtime is None or runtime.tenant_id != tenant_id:
+        raise HTTPException(404, "Runtime not found")
+    return {"runtime": runtime.as_dict()}
+
+
+@router.post("/runtimes/{runtime_id}/review")
+async def review_runtime(runtime_id: str, request: Request, body: RuntimeReviewRequest):
+    tenant_id = _require_request_tenant(request, "review a governed runtime")
+    store = get_onboarding_store()
+    runtime = store.get_runtime(runtime_id)
+    if runtime is None or runtime.tenant_id != tenant_id:
+        raise HTTPException(404, "Runtime not found")
+    reviewed = store.review_runtime(runtime_id, body.reviewed_by, body.approved, body.notes or "")
+    if reviewed is None:
+        raise HTTPException(404, "Runtime not found")
+    _audit_runtime_event(reviewed, tenant_id, action_op="review_runtime", verdict="ALLOW" if body.approved else "BLOCK", actor=body.reviewed_by, notes=body.notes or "")
+    return {
+        "runtime": reviewed.as_dict(),
+        "message": "Runtime review recorded.",
+    }
+
+
+@router.post("/runtimes/{runtime_id}/promote")
+async def promote_runtime(runtime_id: str, request: Request, body: RuntimePromoteRequest):
+    tenant_id = _require_request_tenant(request, "promote a governed runtime")
+    store = get_onboarding_store()
+    runtime = store.get_runtime(runtime_id)
+    if runtime is None or runtime.tenant_id != tenant_id:
+        raise HTTPException(404, "Runtime not found")
+    if runtime.review_status != "approved":
+        raise HTTPException(409, "Runtime must be approved before promotion")
+
+    promoted = store.promote_runtime(runtime_id, body.promoted_by, agent_id=body.agent_id)
+    if promoted is None:
+        raise HTTPException(404, "Runtime not found")
+
+    db = get_db()
+    try:
+        db.register_agent_full(
+            agent_id=promoted.promoted_agent_id or promoted.runtime_id,
+            tenant_id=tenant_id,
+            name=promoted.runtime_name,
+            agent_type=promoted.runtime_type.lower(),
+            description=promoted.purpose,
+            capabilities=promoted.requested_access,
+            policy_pack="hospital",
+            mag_enabled=False,
+            metadata={
+                "runtime_id": promoted.runtime_id,
+                "vendor_name": promoted.vendor_name,
+                "vendor_id": promoted.vendor_id,
+                "source_type": promoted.source_type,
+                "agent_count": promoted.agent_count,
+                "department": promoted.department,
+                "purpose": promoted.purpose,
+                "runtime_type": promoted.runtime_type,
+                "requested_access": promoted.requested_access,
+                "connectors": promoted.connectors,
+                "governance_mode": promoted.governance_mode,
+                "risk_score": promoted.risk_score,
+                "risk_tier": promoted.risk_tier,
+                "policy_simulation": promoted.policy_simulation,
+            },
+            vendor_id=promoted.vendor_id or None,
+            department=promoted.department or None,
+        )
+        try:
+            db.register_agent(tenant_id, promoted.promoted_agent_id or promoted.runtime_id)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.exception("[onboarding/runtime] failed to promote runtime into agent registry: %s", e)
+        raise HTTPException(500, f"Failed to promote runtime: {e}")
+
+    _audit_runtime_event(promoted, tenant_id, action_op="promote_runtime", verdict="ALLOW", actor=body.promoted_by)
+    return {
+        "runtime": promoted.as_dict(),
+        "agent": db.get_agent(promoted.promoted_agent_id or promoted.runtime_id, tenant_id=tenant_id),
+        "message": "Runtime promoted into governed agent fleet.",
+    }
 
 
 # ── Step 2: Topology ──────────────────────────────────────────────────────────

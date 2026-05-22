@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
 from ..config import config
+from ..department_scope import filter_events_for_department, get_department_scope
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ async def query_audit(
         customer_id=tenant_id,
         limit=limit,
     )
+    events = filter_events_for_department(events, department=get_department_scope(request), db=db, tenant_id=tenant_id)
 
     # Apply timestamp range filter in Python (DB layer doesn't accept date range)
     if from_ts or to_ts:
@@ -294,6 +296,7 @@ async def export_audit_trail(
         customer_id=tenant_id,
         limit=limit,
     )
+    events = filter_events_for_department(events, department=get_department_scope(request), db=db, tenant_id=tenant_id)
 
     if from_ts or to_ts:
         def _in_range(ev: dict) -> bool:
@@ -434,6 +437,7 @@ async def export_evidence_package(
     now_str = datetime.now(UTC).isoformat()
 
     events = db.query_audit_events(customer_id=tenant_id, limit=limit)
+    events = filter_events_for_department(events, department=get_department_scope(request), db=db, tenant_id=tenant_id)
 
     # Apply optional timestamp filter
     if from_ts or to_ts:
@@ -662,6 +666,7 @@ async def export_compliance_report(
         customer_id=tenant_id,
         limit=limit,
     )
+    events = filter_events_for_department(events, department=get_department_scope(request), db=db, tenant_id=tenant_id)
 
     if from_ts or to_ts:
         def _in_range(ev: dict) -> bool:
@@ -674,6 +679,18 @@ async def export_compliance_report(
         events = [e for e in events if _in_range(e)]
 
     report = _build_report_payload(events, tenant_id, from_ts, to_ts)
+    report["export_proof"] = {
+        "algorithm": "sha256",
+        "event_count": len(events),
+        "payload_hash": hashlib.sha256(
+            json.dumps(report.get("decisions", []), sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest(),
+        "chain_verification": db.verify_audit_chain(limit=min(len(events) or 1, 5000)) if hasattr(db, "verify_audit_chain") else None,
+        "generated_by": (getattr(request.state, "tenant_info", None) or {}).get("email")
+            or (getattr(request.state, "tenant_info", None) or {}).get("key_name")
+            or (getattr(request.state, "tenant_info", None) or {}).get("role")
+            or "tenant-console",
+    }
     ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
     if format == "json":

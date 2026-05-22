@@ -36,6 +36,7 @@ ENDPOINT_PERMISSIONS: Dict[str, Optional[str]] = {
     'POST /auth/signup':             None,
     'POST /auth/session':            None,
     'POST /auth/sync':               None,
+    'POST /access/user-invites/accept': None,
     'GET /health':                   None,
     'GET /healthz':                  None,
     'GET /health/dependencies':      None,
@@ -43,6 +44,96 @@ ENDPOINT_PERMISSIONS: Dict[str, Optional[str]] = {
     'GET /docs':                     None,
     'GET /openapi.json':             None,
 }
+
+
+def required_permission_for(method: str, path: str) -> Optional[str]:
+    """Resolve the RBAC permission for a route.
+
+    Keep high-risk console and runtime mutations explicit. The fallback exists
+    for legacy surfaces, but production-sensitive paths should be declared here
+    so broad "write" roles do not accidentally inherit admin operations.
+    """
+    method = method.upper()
+    path = path.rstrip("/") or "/"
+    endpoint_key = f"{method} {path}"
+    required = ENDPOINT_PERMISSIONS.get(endpoint_key)
+
+    if required is None and path.startswith("/billing/api-keys") and method in ("GET", "POST", "DELETE"):
+        return "api_keys"
+
+    if path.startswith("/admin"):
+        return None if path == "/admin/bootstrap-api-key" else "admin"
+
+    if path.startswith("/api-keys"):
+        if method in ("POST", "PATCH", "DELETE"):
+            return "admin"
+        if method == "GET":
+            return "api_keys"
+
+    if path.startswith("/access/user-invites") and method in ("GET", "POST", "DELETE"):
+        if path == "/access/user-invites/accept" and method == "POST":
+            return None
+        return "admin"
+
+    if path.startswith("/access/department-owners") and method in ("GET", "PUT", "DELETE"):
+        return "admin"
+
+    if path.startswith("/v1/onboarding"):
+        if method == "POST" and (
+            "/review" in path
+            or "/promote" in path
+            or "/signoffs/" in path
+            or path.endswith("/bootstrap")
+            or path.endswith("/shadow")
+            or path.endswith("/signoff/request")
+        ):
+            return "admin"
+        if method == "POST":
+            return "write"
+        if method == "GET":
+            return "read"
+
+    if path.startswith("/v1/operations/reconciliation"):
+        if method == "POST" and (
+            path.endswith("/promote")
+            or path.endswith("/hold")
+            or path.endswith("/merge")
+            or "/rows/" in path
+        ):
+            return "admin"
+        if method == "POST":
+            return "write"
+        if method == "GET":
+            return "read"
+
+    if path.startswith("/v1/assistant"):
+        if method == "POST" and (
+            path == "/v1/assistant/apply"
+            or "/memories/" in path
+        ):
+            return "admin"
+        if method == "POST":
+            return "read"
+        if method == "GET":
+            return "read"
+
+    if path.startswith("/v1/jarvis") or path.startswith("/v1/voice") or path.startswith("/v1/autonomous") or path.startswith("/v1/codex"):
+        return "admin" if method in ("POST", "PUT", "PATCH", "DELETE") else "read"
+
+    if path in ("/audit/export", "/audit/evidence-package") and method == "GET":
+        return "export"
+
+    if path.startswith("/policy-packs") and path.endswith("/apply") and method == "POST":
+        return "admin"
+
+    if path == "/settings/shadow-mode" and method == "POST":
+        return "admin"
+
+    if method == "GET":
+        return "read"
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return "write"
+    return required
 
 
 def check_permission(tenant_info: Optional[Dict], required_permission: str) -> bool:
@@ -76,34 +167,8 @@ class RBACMiddleware(BaseHTTPMiddleware):
         method = request.method
         path = request.url.path.rstrip('/')
 
-        # Find the required permission for this endpoint
         endpoint_key = f"{method} {path}"
-        required = ENDPOINT_PERMISSIONS.get(endpoint_key)
-
-        # Path-prefix: /billing/api-keys (list, create, delete by id) require api_keys
-        if required is None and path.startswith("/billing/api-keys") and method in ("GET", "POST", "DELETE"):
-            required = "api_keys"
-
-        # Admin-only routes: /admin/* mutations, API key management, policy-pack application,
-        # and audit export all require the 'admin' role (which has '*' permissions).
-        if required is None:
-            if path.startswith("/admin") and method in ("POST", "PUT", "PATCH", "DELETE"):
-                required = "admin"
-            elif path.startswith("/api-keys") and method in ("POST", "DELETE"):
-                required = "admin"
-            elif path.startswith("/policy-packs") and path.endswith("/apply") and method == "POST":
-                required = "admin"
-            elif path in ("/audit/export", "/audit/evidence-package") and method == "GET":
-                required = "export"
-            elif path == "/settings/shadow-mode" and method == "POST":
-                required = "admin"
-
-        # Default: unspecified endpoints require 'read' for GET, 'write' for mutations
-        if required is None:
-            if method == 'GET':
-                required = 'read'
-            elif method in ('POST', 'PUT', 'PATCH', 'DELETE'):
-                required = 'write'
+        required = required_permission_for(method, path)
 
         # Public endpoints pass through
         if required is None:
@@ -125,19 +190,8 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 "/billing/checkout",  # Public: start checkout (session created server-side)
                 "/admin/bootstrap-api-key",  # Protected by X-Bootstrap-Secret, not tenant auth
                 "/telegram/bot-webhook",     # Protected by X-Telegram-Bot-Api-Secret-Token
-                "/v1/jarvis/ask",
-                "/v1/voice/ask",
-                "/v1/voice/stream",
-                "/v1/autonomous/status",
-                "/v1/autonomous/run",
-                "/v1/autonomous/start",
-                "/v1/autonomous/stop",
-                "/v1/codex/task",
-                "/v1/codex/tasks",
             }
             path = request.url.path.rstrip("/")
-            if any(path == prefix or path.startswith(f"{prefix}/") for prefix in ("/v1/jarvis", "/v1/voice", "/v1/autonomous", "/v1/codex")):
-                return await call_next(request)
             # All /admin/* routes are protected by X-Bootstrap-Secret, not tenant auth
             if path.startswith("/admin/") or path == "/admin":
                 return await call_next(request)

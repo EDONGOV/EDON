@@ -200,6 +200,11 @@ class Database:
                     key_hash TEXT NOT NULL UNIQUE,  -- SHA256 hash of the actual key
                     name TEXT,  -- User-friendly name for the key
                     status TEXT NOT NULL DEFAULT 'active',  -- active, revoked
+                    department TEXT,
+                    scope_group TEXT,
+                    purpose TEXT,
+                    scope TEXT,
+                    environment TEXT,
                     created_at TEXT NOT NULL,
                     last_used_at TEXT,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
@@ -226,6 +231,12 @@ class Database:
                 conn.commit()
             except Exception:
                 pass  # Column already exists
+            for col in ["department", "scope_group", "purpose", "scope", "environment"]:
+                try:
+                    cursor.execute(f"ALTER TABLE api_keys ADD COLUMN {col} TEXT")
+                    conn.commit()
+                except Exception:
+                    pass
 
             # Channel tokens (e.g., Telegram/SMS)
             cursor.execute("""
@@ -510,6 +521,56 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+            # Console human access invites. These are separate from runtime API keys.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS console_user_invites (
+                    invite_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    department TEXT,
+                    scope TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    invited_by TEXT,
+                    invite_token_hash TEXT NOT NULL UNIQUE,
+                    invite_url TEXT,
+                    expires_at TEXT NOT NULL,
+                    accepted_at TEXT,
+                    revoked_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_console_user_invites_tenant
+                ON console_user_invites(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_console_user_invites_token
+                ON console_user_invites(invite_token_hash)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_console_user_invites_status
+                ON console_user_invites(status)
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS console_department_owners (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    department TEXT NOT NULL,
+                    owner_email TEXT NOT NULL,
+                    updated_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(tenant_id, department)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_console_department_owners_tenant
+                ON console_department_owners(tenant_id)
+            """)
+            conn.commit()
+
             # Pending live keys — temporary store for unclaimed live keys
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_live_keys (
@@ -581,6 +642,34 @@ class Database:
             if "display_name" not in columns:
                 cursor.execute("ALTER TABLE tenant_agents ADD COLUMN display_name TEXT")
                 conn.commit()
+
+            # Fleet reconciliation batches (source inventory vs EDON)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reconciliation_batches (
+                    batch_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    source_system TEXT NOT NULL,
+                    vendor_name TEXT,
+                    vendor_id TEXT,
+                    source_type TEXT,
+                    cohort_mode TEXT,
+                    posture TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_batches_tenant
+                ON reconciliation_batches(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_batches_status
+                ON reconciliation_batches(status)
+            """)
+            conn.commit()
 
             # Migration: customers table for backward-compat with RBAC tests
             cursor.execute("""
@@ -1338,12 +1427,13 @@ class Database:
         if _config.is_production() and not _config.ENCRYPT_AUDIT_PAYLOAD:
             raise RuntimeError("EDON_ENCRYPT_AUDIT_PAYLOAD must be true in production")
 
-        # Optional field-level encryption of action params (Tier 1 security)
+        # Optional field-level encryption of PHI-bearing audit payloads.
         is_payload_encrypted = 0
         if _config.ENCRYPT_AUDIT_PAYLOAD:
             try:
                 from ..security.encryption import encrypt_field
                 params_json = encrypt_field(params_json)
+                context_json = encrypt_field(context_json)
                 is_payload_encrypted = 1
             except Exception as _enc_err:
                 raise RuntimeError(f"Audit payload encryption failed: {_enc_err}") from _enc_err
@@ -1423,7 +1513,11 @@ class Database:
             rows = cursor.fetchall()
         prev_hash = ""
         checked = 0
-        allow_unsigned_legacy = (os.getenv("EDON_AUDIT_ALLOW_UNSIGNED_LEGACY", "true").lower() == "true")
+        from ..config import config as _config
+        default_allow_unsigned = "false" if _config.is_production() else "true"
+        allow_unsigned_legacy = (
+            os.getenv("EDON_AUDIT_ALLOW_UNSIGNED_LEGACY", default_allow_unsigned).lower() == "true"
+        )
         for row in rows:
             if row["chain_hash"] is None or row["chain_hash"] == "":
                 # Legacy row without chain hash - cannot verify; chain valid up to here
@@ -1510,6 +1604,22 @@ class Database:
             
             cursor.execute(query, params)
             
+            def _load_audit_json(value: str, encrypted: bool) -> Dict[str, Any]:
+                if not value:
+                    return {}
+                raw = value
+                if encrypted:
+                    try:
+                        from ..security.encryption import decrypt_field
+                        raw = decrypt_field(raw)
+                    except Exception:
+                        return {"_encrypted": True, "_unavailable": True}
+                try:
+                    parsed = json.loads(raw)
+                    return parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    return {}
+
             return [
                 {
                     "id": f"dec-{row['action_id']}-{row['created_at']}",
@@ -1526,7 +1636,10 @@ class Database:
                         "id": row["action_id"],
                         "tool": row["action_tool"],
                         "op": row["action_op"],
-                        "params": json.loads(row["action_params"]) if row["action_params"] else {},
+                        "params": _load_audit_json(
+                            row["action_params"],
+                            bool(row["is_payload_encrypted"]) if "is_payload_encrypted" in row.keys() else False,
+                        ),
                         "source": row["action_source"],
                         "estimated_risk": row["action_estimated_risk"],
                         "computed_risk": row["action_computed_risk"]
@@ -1541,7 +1654,10 @@ class Database:
                     "action_summary": row["action_summary"],
                     "stated_intent": row["stated_intent"],
                     "user_message": row["user_message"],
-                    "context": json.loads(row["context"]) if row["context"] else {},
+                    "context": _load_audit_json(
+                        row["context"],
+                        bool(row["is_payload_encrypted"]) if "is_payload_encrypted" in row.keys() else False,
+                    ),
                 }
                 for row in cursor.fetchall()
             ]
@@ -2590,6 +2706,11 @@ class Database:
         role: str = 'user',
         expires_at: Optional[str] = None,
         is_sandbox: bool = False,
+        department: Optional[str] = None,
+        scope_group: Optional[str] = None,
+        purpose: Optional[str] = None,
+        scope: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> str:
         """Create a new API key.
 
@@ -2612,9 +2733,23 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO api_keys
-                (id, tenant_id, key_hash, name, status, role, created_at, expires_at, is_sandbox)
-                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
-            """, (api_key_id, tenant_id, key_hash, name, role, now, expires_at, 1 if is_sandbox else 0))
+                (id, tenant_id, key_hash, name, status, role, department, scope_group, purpose, scope, environment, created_at, expires_at, is_sandbox)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                api_key_id,
+                tenant_id,
+                key_hash,
+                name,
+                role,
+                department,
+                scope_group,
+                purpose,
+                scope,
+                environment,
+                now,
+                expires_at,
+                1 if is_sandbox else 0,
+            ))
             conn.commit()
         return api_key_id
 
@@ -2649,6 +2784,225 @@ class Database:
                 UPDATE api_keys SET status = 'revoked'
                 WHERE id = ? AND tenant_id = ?
             """, (key_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def create_console_user_invite(
+        self,
+        *,
+        tenant_id: str,
+        email: str,
+        role: str,
+        department: Optional[str],
+        scope: Optional[str],
+        invited_by: Optional[str],
+        invite_token_hash: str,
+        invite_url: str,
+        expires_at: str,
+    ) -> Dict[str, Any]:
+        """Create or replace a pending console user invite for a tenant/email."""
+        import uuid
+        now = datetime.now(UTC).isoformat()
+        invite_id = f"inv_{uuid.uuid4().hex[:16]}"
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE console_user_invites
+                SET status = 'revoked', revoked_at = ?, updated_at = ?
+                WHERE tenant_id = ? AND lower(email) = lower(?) AND status = 'pending'
+            """, (now, now, tenant_id, email))
+            cursor.execute("""
+                INSERT INTO console_user_invites (
+                    invite_id, tenant_id, email, role, department, scope, status,
+                    invited_by, invite_token_hash, invite_url, expires_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            """, (
+                invite_id,
+                tenant_id,
+                email,
+                role,
+                department,
+                scope,
+                invited_by,
+                invite_token_hash,
+                invite_url,
+                expires_at,
+                now,
+                now,
+            ))
+            conn.commit()
+        invite = self.get_console_user_invite(invite_id=invite_id, tenant_id=tenant_id)
+        return invite or {
+            "invite_id": invite_id,
+            "tenant_id": tenant_id,
+            "email": email,
+            "role": role,
+            "department": department,
+            "scope": scope,
+            "status": "pending",
+            "invited_by": invited_by,
+            "invite_url": invite_url,
+            "expires_at": expires_at,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_console_user_invites(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """List console user invites for a tenant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT invite_id, tenant_id, email, role, department, scope, status,
+                       invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                       created_at, updated_at
+                FROM console_user_invites
+                WHERE tenant_id = ?
+                ORDER BY created_at DESC
+            """, (tenant_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_console_user_invite(
+        self,
+        *,
+        invite_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        token_hash: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one invite by id+tenant or token hash."""
+        if not invite_id and not token_hash:
+            return None
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if token_hash:
+                cursor.execute("""
+                    SELECT invite_id, tenant_id, email, role, department, scope, status,
+                           invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                           created_at, updated_at
+                    FROM console_user_invites
+                    WHERE invite_token_hash = ?
+                """, (token_hash,))
+            else:
+                cursor.execute("""
+                    SELECT invite_id, tenant_id, email, role, department, scope, status,
+                           invited_by, invite_url, expires_at, accepted_at, revoked_at,
+                           created_at, updated_at
+                    FROM console_user_invites
+                    WHERE invite_id = ? AND tenant_id = ?
+                """, (invite_id, tenant_id))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def revoke_console_user_invite(self, *, invite_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Revoke a pending console invite."""
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE console_user_invites
+                SET status = 'revoked', revoked_at = ?, updated_at = ?
+                WHERE invite_id = ? AND tenant_id = ? AND status != 'accepted'
+            """, (now, now, invite_id, tenant_id))
+            conn.commit()
+            if cursor.rowcount <= 0:
+                return None
+        return self.get_console_user_invite(invite_id=invite_id, tenant_id=tenant_id)
+
+    def accept_console_user_invite(self, *, token_hash: str) -> Optional[Dict[str, Any]]:
+        """Accept a console invite by token hash."""
+        now = datetime.now(UTC).isoformat()
+        invite = self.get_console_user_invite(token_hash=token_hash)
+        if not invite or invite.get("status") != "pending":
+            return None
+        if invite.get("expires_at") and invite["expires_at"] < now:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE console_user_invites
+                    SET status = 'expired', updated_at = ?
+                    WHERE invite_id = ?
+                """, (now, invite["invite_id"]))
+                conn.commit()
+            return None
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE console_user_invites
+                SET status = 'accepted', accepted_at = ?, updated_at = ?
+                WHERE invite_token_hash = ? AND status = 'pending'
+            """, (now, now, token_hash))
+            conn.commit()
+            if cursor.rowcount <= 0:
+                return None
+        return self.get_console_user_invite(token_hash=token_hash)
+
+    def list_console_department_owners(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """List department owner mappings for a tenant."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, department, owner_email, updated_by, created_at, updated_at
+                FROM console_department_owners
+                WHERE tenant_id = ?
+                ORDER BY department ASC
+            """, (tenant_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def upsert_console_department_owner(
+        self,
+        *,
+        tenant_id: str,
+        department: str,
+        owner_email: str,
+        updated_by: Optional[str],
+    ) -> Dict[str, Any]:
+        """Create or update a department owner mapping."""
+        import uuid
+        now = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, created_at FROM console_department_owners
+                WHERE tenant_id = ? AND department = ?
+            """, (tenant_id, department))
+            existing = cursor.fetchone()
+            if existing:
+                owner_id = existing["id"]
+                created_at = existing["created_at"]
+                cursor.execute("""
+                    UPDATE console_department_owners
+                    SET owner_email = ?, updated_by = ?, updated_at = ?
+                    WHERE id = ?
+                """, (owner_email, updated_by, now, owner_id))
+            else:
+                owner_id = f"dept_owner_{uuid.uuid4().hex[:16]}"
+                created_at = now
+                cursor.execute("""
+                    INSERT INTO console_department_owners (
+                        id, tenant_id, department, owner_email, updated_by, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (owner_id, tenant_id, department, owner_email, updated_by, now, now))
+            conn.commit()
+        return {
+            "id": owner_id,
+            "tenant_id": tenant_id,
+            "department": department,
+            "owner_email": owner_email,
+            "updated_by": updated_by,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+
+    def delete_console_department_owner(self, *, tenant_id: str, department: str) -> bool:
+        """Delete a department owner mapping."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM console_department_owners
+                WHERE tenant_id = ? AND department = ?
+            """, (tenant_id, department))
             conn.commit()
             return cursor.rowcount > 0
     
@@ -2743,11 +3097,29 @@ class Database:
                 UPDATE api_keys SET status = 'rotating', expires_at = ?
                 WHERE id = ? AND tenant_id = ?
             """, (old_expires_at, api_key_id, tenant_id))
+            cursor.execute("""
+                SELECT department, scope_group, purpose, scope, environment
+                FROM api_keys
+                WHERE id = ? AND tenant_id = ?
+            """, (api_key_id, tenant_id))
+            existing = cursor.fetchone()
             # Create new active key
             cursor.execute("""
-                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, created_at)
-                VALUES (?, ?, ?, ?, 'active', ?, ?)
-            """, (new_key_id, tenant_id, new_key_hash, new_key_name, role, now.isoformat()))
+                INSERT INTO api_keys (id, tenant_id, key_hash, name, status, role, department, scope_group, purpose, scope, environment, created_at)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                new_key_id,
+                tenant_id,
+                new_key_hash,
+                new_key_name,
+                role,
+                existing["department"] if existing else None,
+                existing["scope_group"] if existing else None,
+                existing["purpose"] if existing else None,
+                existing["scope"] if existing else None,
+                existing["environment"] if existing else None,
+                now.isoformat(),
+            ))
             conn.commit()
 
         return {"new_key_id": new_key_id, "old_expires_at": old_expires_at}
@@ -2764,7 +3136,7 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, name, status, key_hash, created_at, last_used_at
+                SELECT id, name, status, key_hash, department, scope_group, purpose, scope, environment, created_at, last_used_at
                 FROM api_keys 
                 WHERE tenant_id = ?
                 ORDER BY created_at DESC
@@ -2782,6 +3154,11 @@ class Database:
                     "status": row["status"],
                     "key_preview": preview,
                     "is_active": row["status"] == "active",
+                    "department": row["department"] if "department" in row.keys() else None,
+                    "scope_group": row["scope_group"] if "scope_group" in row.keys() else None,
+                    "purpose": row["purpose"] if "purpose" in row.keys() else None,
+                    "scope": row["scope"] if "scope" in row.keys() else None,
+                    "environment": row["environment"] if "environment" in row.keys() else None,
                     "created_at": row["created_at"],
                     "last_used": row["last_used_at"]
                 })
@@ -3508,6 +3885,7 @@ class Database:
                 "total_blocked": row["total_blocked"],
                 "total_escalated": row["total_escalated"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "vendor_id": row["vendor_id"] if "vendor_id" in row.keys() else None,
                 "department": row["department"] if "department" in row.keys() else None,
             }
 
@@ -3540,6 +3918,7 @@ class Database:
                 "total_blocked": row["total_blocked"],
                 "total_escalated": row["total_escalated"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                "vendor_id": row["vendor_id"] if "vendor_id" in row.keys() else None,
                 "department": row["department"] if "department" in row.keys() else None,
             })
         return result
@@ -4571,6 +4950,108 @@ class Database:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    # â”€â”€ Fleet reconciliation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def create_reconciliation_batch(
+        self,
+        batch_id: str,
+        tenant_id: str,
+        source_system: str,
+        *,
+        vendor_name: str = "",
+        vendor_id: str = "",
+        source_type: str = "",
+        cohort_mode: str = "purpose",
+        posture: str = "audit-only",
+        data: Optional[Dict[str, Any]] = None,
+        status: str = "open",
+    ) -> Dict[str, Any]:
+        now = datetime.now(UTC).isoformat()
+        payload = dict(data or {})
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO reconciliation_batches
+                    (batch_id, tenant_id, source_system, vendor_name, vendor_id,
+                     source_type, cohort_mode, posture, status, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                batch_id, tenant_id, source_system, vendor_name, vendor_id,
+                source_type, cohort_mode, posture, status, json.dumps(payload), now, now,
+            ))
+            conn.commit()
+        return self.get_reconciliation_batch(batch_id, tenant_id=tenant_id) or {}
+
+    def get_reconciliation_batch(self, batch_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if tenant_id is None:
+                cursor.execute("SELECT * FROM reconciliation_batches WHERE batch_id=?", (batch_id,))
+            else:
+                cursor.execute(
+                    "SELECT * FROM reconciliation_batches WHERE batch_id=? AND tenant_id=?",
+                    (batch_id, tenant_id),
+                )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            data = json.loads(row["data"]) if row["data"] else {}
+            return {
+                "batch_id": row["batch_id"],
+                "tenant_id": row["tenant_id"],
+                "source_system": row["source_system"],
+                "vendor_name": row["vendor_name"],
+                "vendor_id": row["vendor_id"],
+                "source_type": row["source_type"],
+                "cohort_mode": row["cohort_mode"],
+                "posture": row["posture"],
+                "status": row["status"],
+                "data": data,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    def list_reconciliation_batches(self, tenant_id: str) -> list[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT batch_id FROM reconciliation_batches WHERE tenant_id=? ORDER BY created_at DESC",
+                (tenant_id,),
+            )
+            rows = cursor.fetchall()
+        return [
+            self.get_reconciliation_batch(row["batch_id"], tenant_id=tenant_id)
+            for row in rows
+            if self.get_reconciliation_batch(row["batch_id"], tenant_id=tenant_id) is not None
+        ]
+
+    def update_reconciliation_batch(
+        self,
+        batch_id: str,
+        tenant_id: str,
+        *,
+        status: Optional[str] = None,
+        patch: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        batch = self.get_reconciliation_batch(batch_id, tenant_id=tenant_id)
+        if batch is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        if status:
+            batch["status"] = status
+        if patch:
+            data = batch.get("data") or {}
+            data.update(patch)
+            batch["data"] = data
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE reconciliation_batches SET status=?, data=?, updated_at=? WHERE batch_id=? AND tenant_id=?",
+                (batch["status"], json.dumps(batch.get("data") or {}), now, batch_id, tenant_id),
+            )
+            conn.commit()
+        return self.get_reconciliation_batch(batch_id, tenant_id=tenant_id)
 
     def review_memory(self, memory_id: str, tenant_id: str, review_status: str, reviewed_by: str) -> bool:
         now = datetime.now(UTC).isoformat()

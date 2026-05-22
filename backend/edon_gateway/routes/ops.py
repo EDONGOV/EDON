@@ -17,6 +17,7 @@ from ..integration_catalog import get_enterprise_integration_catalog
 from ..market_packs import get_market_pack
 from ..logging_config import get_logger
 from ..middleware.latency_slo import get_slo_stats
+from ..security.vault import get_vault_status
 from ..tenant_knowledge import build_tenant_knowledge_snapshot
 
 logger = get_logger(__name__)
@@ -252,6 +253,109 @@ async def health_dependencies(request: Request):
             "cors_strict": "*" not in config.CORS_ORIGINS,
             "postgres_required": config.is_production(),
         },
+    }
+
+
+@router.get("/ops/production-readiness")
+async def production_readiness(request: Request):
+    """Return deployment hardening checks for a first production client."""
+    db_status = _get_database_dependency_status(request.app)
+    violations = config.enterprise_violations()
+    smtp_configured = bool((os.getenv("EDON_SMTP_HOST") or os.getenv("SMTP_HOST") or "").strip())
+    idp_configured = bool(config.ENTERPRISE_IDENTITY_PROVIDERS) or bool((os.getenv("CLERK_ISSUER") or "").strip())
+    vault_status = get_vault_status()
+    vault_configured = vault_status.configured
+    kms_configured = vault_status.kms_configured
+    backup_configured = any(
+        (os.getenv(name) or "").strip()
+        for name in ("EDON_BACKUP_BUCKET", "EDON_BACKUP_SCHEDULE", "PG_BACKUP_BUCKET")
+    )
+    monitoring_configured = config.METRICS_ENABLED and bool((os.getenv("EDON_ALERT_WEBHOOK") or "").strip())
+    cloud_provider = (os.getenv("EDON_CLOUD_PROVIDER") or "").strip().lower()
+    cloud_profile = {
+        "provider": cloud_provider or "not_configured",
+        "baa_signed": (os.getenv("EDON_BAA_SIGNED") or "").strip().lower() in {"1", "true", "yes"},
+        "hipaa_profile": (os.getenv("EDON_HIPAA_DEPLOYMENT_PROFILE") or "").strip().lower() in {"1", "true", "yes"},
+        "private_network": (os.getenv("EDON_PRIVATE_NETWORK_ENABLED") or "").strip().lower() in {"1", "true", "yes"},
+        "waf": (os.getenv("EDON_WAF_ENABLED") or "").strip().lower() in {"1", "true", "yes"},
+        "managed_postgres": (os.getenv("EDON_MANAGED_POSTGRES") or "").strip().lower() in {"1", "true", "yes"},
+    }
+    cloud_ready = (
+        cloud_profile["provider"] in {"aws", "azure", "gcp"}
+        and cloud_profile["baa_signed"]
+        and cloud_profile["hipaa_profile"]
+        and cloud_profile["private_network"]
+        and cloud_profile["waf"]
+        and cloud_profile["managed_postgres"]
+    )
+    try:
+        log_retention_days = int((os.getenv("EDON_LOG_RETENTION_DAYS") or "0").strip())
+    except ValueError:
+        log_retention_days = 0
+    checks = [
+        {
+            "id": "sso_email_invites",
+            "label": "SSO/email invite delivery",
+            "status": "pass" if idp_configured and smtp_configured and os.getenv("EDON_SSO_ROLE_CLAIM") and os.getenv("EDON_SSO_DEPARTMENT_CLAIM") else "needs_config",
+            "detail": "Configure enterprise identity provider, role/department claims, and SMTP/email connector.",
+        },
+        {
+            "id": "production_hardening",
+            "label": "Production environment hardening",
+            "status": "pass" if not violations and cloud_ready and backup_configured and monitoring_configured else "needs_config",
+            "detail": "BAA, HIPAA profile, private networking, WAF, managed Postgres, backups, metrics, and alerting must be locked before go-live.",
+            "violations": violations,
+        },
+        {
+            "id": "runtime_credentials",
+            "label": "Real credential handling",
+            "status": "pass" if vault_configured and kms_configured and config.TOKEN_BINDING_ENABLED else "needs_config",
+            "detail": "Runtime credentials should use vault/KMS storage, rotation, and short-lived token exchange.",
+        },
+        {
+            "id": "monitoring_alerting",
+            "label": "Monitoring and alerting",
+            "status": "pass" if monitoring_configured and log_retention_days >= 365 and any((os.getenv(name) or "").strip() for name in ("EDON_SIEM_ENDPOINT", "EDON_SENTINEL_WORKSPACE_ID", "EDON_SPLUNK_HEC_URL", "EDON_LOG_ARCHIVE_BUCKET")) else "needs_config",
+            "detail": "Metrics, alert routing, SIEM export, and 365+ day log retention must be configured.",
+        },
+        {
+            "id": "backup_restore",
+            "label": "Backup and restore readiness",
+            "status": "pass" if backup_configured and bool((os.getenv("EDON_RESTORE_DRILL_LAST_RUN_AT") or "").strip()) else "needs_config",
+            "detail": "Managed database backups and a documented restore drill timestamp are required.",
+        },
+        {
+            "id": "client_e2e",
+            "label": "End-to-end client test",
+            "status": "manual_required",
+            "detail": "Run onboard runtime -> shadow audit -> review -> promote -> logged action -> report export.",
+        },
+        {
+            "id": "permission_enforcement",
+            "label": "Permission enforcement validation",
+            "status": "pass" if config.ENTERPRISE_DEFAULT_USER_ROLE == "viewer" and idp_configured else "needs_config",
+            "detail": "Validate SSO role claims and department-scoped access before client go-live.",
+        },
+    ]
+    return {
+        "ready": all(check["status"] == "pass" for check in checks),
+        "environment": "production" if config.is_production() else "non-production",
+        "database": db_status,
+        "cloud_profile": cloud_profile,
+        "vault": {
+            "provider": vault_status.provider,
+            "configured": vault_configured,
+            "kms_configured": kms_configured,
+            "secret_reference": vault_status.secret_reference,
+            "kms_reference": vault_status.kms_reference,
+        },
+        "observability": {
+            "metrics_enabled": config.METRICS_ENABLED,
+            "alerting_configured": monitoring_configured,
+            "log_retention_days": log_retention_days,
+        },
+        "checks": checks,
+        "next_required_action": next((check for check in checks if check["status"] != "pass"), None),
     }
 
 

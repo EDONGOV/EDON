@@ -72,6 +72,35 @@
     font-family: 'Inter', sans-serif;
     background: var(--page-bg);
     min-height: 100vh;
+    color-scheme: dark;
+  }
+
+  .light html,
+  .light body,
+  .light #root {
+    color-scheme: light;
+  }
+
+  select,
+  optgroup,
+  option {
+    background-color: hsl(220 14% 10%);
+    color: hsl(0 0% 98%);
+  }
+
+  select {
+    color-scheme: dark;
+  }
+
+  .light select,
+  .light optgroup,
+  .light option {
+    background-color: hsl(0 0% 100%);
+    color: hsl(220 15% 10%);
+  }
+
+  .light select {
+    color-scheme: light;
   }
 }
 
@@ -99,6 +128,71 @@
   .light .glass-card-hover:hover {
     border-color: hsl(220 12% 78%);
     box-shadow: 0 8px 24px rgba(60, 180, 100, 0.10), 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+
+  .light [class*="text-white"] {
+    color: hsl(var(--foreground)) !important;
+  }
+
+  .light [class*="text-white/"] {
+    color: hsl(var(--foreground) / 0.72) !important;
+  }
+
+  .light [class*="bg-black/"] {
+    background-color: hsl(220 18% 94% / 0.82) !important;
+  }
+
+  .light [class*="border-white/"] {
+    border-color: hsl(var(--border) / 0.9) !important;
+  }
+
+  .light [class*="bg-white/"] {
+    background-color: hsl(0 0% 100% / 0.72) !important;
+  }
+
+  .light .bg-primary,
+  .light .bg-red-500,
+  .light .bg-emerald-500,
+  .light .bg-blue-500,
+  .light .bg-amber-500,
+  .light [class*="bg-primary"] [class*="text-white"],
+  .light [class*="bg-red-"] [class*="text-white"],
+  .light [class*="bg-emerald-"] [class*="text-white"],
+  .light [class*="bg-blue-"] [class*="text-white"],
+  .light [class*="bg-amber-"] [class*="text-white"] {
+    color: hsl(0 0% 100%) !important;
+  }
+
+  .light .nav-item-active {
+    background: hsl(var(--primary) / 0.12) !important;
+    border-color: hsl(var(--primary) / 0.24) !important;
+  }
+
+  .light [class*="text-red-200"],
+  .light [class*="text-red-300"],
+  .light [class*="text-red-400"] {
+    color: hsl(0 74% 42%) !important;
+  }
+
+  .light [class*="text-emerald-200"],
+  .light [class*="text-emerald-300"],
+  .light [class*="text-emerald-400"] {
+    color: hsl(151 72% 30%) !important;
+  }
+
+  .light [class*="text-amber-200"],
+  .light [class*="text-amber-300"],
+  .light [class*="text-amber-400"] {
+    color: hsl(36 90% 34%) !important;
+  }
+
+  .light [class*="text-sky-200"],
+  .light [class*="text-sky-300"],
+  .light [class*="text-sky-400"],
+  .light [class*="text-blue-200"],
+  .light [class*="text-blue-300"],
+  .light [class*="text-blue-400"] {
+    color: hsl(213 82% 40%) !important;
   }
 
   .edon-brand {

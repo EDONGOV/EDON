@@ -13,6 +13,7 @@ from ..config import config
 from ..logging_config import get_logger
 from ..persistence import get_db
 from ..tenancy import get_request_tenant_id
+from ..department_scope import get_department_scope
 
 logger = get_logger(__name__)
 
@@ -150,6 +151,9 @@ async def create_support_ticket(request: Request, body: SupportTicketCreate, bac
         raise HTTPException(status_code=401, detail="Tenant context required")
 
     case = _build_support_case(body, tenant_id)
+    scope = get_department_scope(request)
+    if scope and case.get("department") and case["department"] != scope:
+        raise HTTPException(status_code=403, detail="Department-scoped users cannot create support cases for another department")
     db = get_db()
     if not hasattr(db, "save_support_case"):
         raise HTTPException(status_code=501, detail="Support cases not supported by this backend")
@@ -184,7 +188,10 @@ async def list_support_cases(request: Request, limit: int = 50):
     db = get_db()
     if not hasattr(db, "list_support_cases"):
         raise HTTPException(status_code=501, detail="Support cases not supported by this backend")
-    cases = db.list_support_cases(tenant_id, limit=limit)
+    cases = db.list_support_cases(tenant_id, limit=min(limit, 200))
+    scope = get_department_scope(request)
+    if scope:
+        cases = [case for case in cases if case.get("department") == scope]
     return {"tenant_id": tenant_id, "cases": cases, "count": len(cases)}
 
 
@@ -199,4 +206,7 @@ async def get_support_case(request: Request, case_id: str):
     case = db.get_support_case(case_id, tenant_id=tenant_id)
     if not case:
         raise HTTPException(status_code=404, detail=f"Support case not found: {case_id}")
+    scope = get_department_scope(request)
+    if scope and case.get("department") != scope:
+        raise HTTPException(status_code=403, detail="Department-scoped users cannot view this support case")
     return case

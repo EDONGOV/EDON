@@ -24,6 +24,9 @@ _SIGNUP_LIMITS = {
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+SELF_SERVE_USER_ROLE = "viewer"
+SELF_SERVE_API_KEY_ROLE = "viewer"
+
 
 # ── Self-serve registration (no Clerk required) ────────────────────────────────
 
@@ -112,7 +115,7 @@ async def register(request: Request, body: RegisterRequest):
         email=body.email,
         auth_provider="email",
         auth_subject=pw_hash,
-        role="viewer" if config.ENTERPRISE_MODE else "admin",
+        role=SELF_SERVE_USER_ROLE,
     )
     db.create_tenant(tenant_id=tenant_id, user_id=user_id)
 
@@ -122,7 +125,7 @@ async def register(request: Request, body: RegisterRequest):
         tenant_id=tenant_id,
         key_hash=key_hash,
         name="Default Key",
-        role="operator" if config.ENTERPRISE_MODE else "admin",
+        role=SELF_SERVE_API_KEY_ROLE,
     )
 
     return {
@@ -186,7 +189,7 @@ async def login(request: Request, body: RegisterRequest):
             tenant_id=tenant_id,
             key_hash=key_hash,
             name="Default Key",
-            role="operator" if config.ENTERPRISE_MODE else "admin",
+            role=SELF_SERVE_API_KEY_ROLE,
         )
 
     response: dict = {
@@ -226,7 +229,7 @@ def _provision_api_key_if_missing(db, tenant_id: str):
         tenant_id=tenant_id,
         key_hash=key_hash,
         name="Default Key",
-        role="operator" if config.ENTERPRISE_MODE else "admin",
+        role=SELF_SERVE_API_KEY_ROLE,
     )
     return raw_key, key_id
 

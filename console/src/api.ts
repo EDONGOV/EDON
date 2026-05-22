@@ -5,12 +5,17 @@ export interface AuthConfig {
   token: string
 }
 
+const CONSOLE_DEV_MODE = import.meta.env.VITE_CONSOLE_DEV_MODE === 'true'
+const CONSOLE_DEV_GATEWAY = import.meta.env.VITE_GATEWAY ?? 'http://localhost:8000'
+const CONSOLE_DEV_TOKEN = import.meta.env.VITE_CONSOLE_DEV_TOKEN ?? 'edon_sandbox_key_dev_only'
+
 let lastRequestId: string | null = null
 
 function getAuth(): AuthConfig | null {
   const raw = sessionStorage.getItem('edon_auth') || localStorage.getItem('edon_auth')
+  if (!raw && CONSOLE_DEV_MODE) return { gatewayUrl: CONSOLE_DEV_GATEWAY, token: CONSOLE_DEV_TOKEN }
   if (!raw) return null
-  try { return JSON.parse(raw) } catch { return null }
+  try { return JSON.parse(raw) } catch { return CONSOLE_DEV_MODE ? { gatewayUrl: CONSOLE_DEV_GATEWAY, token: CONSOLE_DEV_TOKEN } : null }
 }
 
 export function getLastRequestId(): string | null {
@@ -87,6 +92,7 @@ export interface Agent {
   description?: string
   capabilities?: string[]
   policy_pack?: string
+  vendor_id?: string | null
   department?: string
   last_seen?: string
   decisions_total?: number
@@ -154,8 +160,16 @@ export interface ApiKey {
   name?: string | null
   role: string
   status: string
+  key_preview?: string
+  is_active?: boolean
+  department?: string | null
+  scope_group?: string | null
+  purpose?: string | null
+  scope?: string | null
+  environment?: string | null
   created_at?: string
   last_used_at?: string
+  last_used?: string | null
   expires_at?: string
 }
 
@@ -169,6 +183,11 @@ export interface CreateKeyResponse {
   key: string
   name?: string
   role: string
+  department?: string | null
+  scope_group?: string | null
+  purpose?: string | null
+  scope?: string | null
+  environment?: string | null
   message: string
 }
 
@@ -180,6 +199,75 @@ export interface RotateKeyResponse {
   old_key_expires_at: string
   overlap_hours: number
   message: string
+}
+
+export interface AuditorGrant {
+  key_id: string
+  label?: string
+  name?: string
+  role?: string
+  status?: string
+  expires_at?: string
+  created_at?: string
+  last_used_at?: string | null
+  expired?: boolean
+  auditor_email?: string
+  scope_note?: string
+}
+
+export interface AuditorGrantListResponse {
+  grants: AuditorGrant[]
+  count: number
+}
+
+export interface AuditorInviteResponse {
+  key_id: string
+  api_key: string
+  auditor_email: string
+  scope_note?: string
+  role: 'auditor'
+  expires_at: string
+  expires_in_hours: number
+  warning?: string
+  permissions?: string[]
+}
+
+export interface ConsoleUserInvite {
+  invite_id: string
+  tenant_id?: string
+  email: string
+  role: string
+  department?: string | null
+  scope?: string | null
+  status: string
+  invited_by?: string | null
+  invite_url?: string | null
+  expires_at?: string
+  accepted_at?: string | null
+  revoked_at?: string | null
+  created_at?: string
+  updated_at?: string
+  expired?: boolean
+}
+
+export interface ConsoleUserInviteResponse {
+  invite: ConsoleUserInvite
+  invite_token: string
+  delivery: {
+    status: string
+    channel: string
+    message: string
+  }
+}
+
+export interface DepartmentOwner {
+  id?: string
+  tenant_id?: string
+  department: string
+  owner_email: string
+  updated_by?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface TenantSummary {
@@ -318,6 +406,11 @@ export interface AssistantChatResponse {
   citations: Citation[]
 }
 
+export interface AssistantExplainSuggestion {
+  title: string
+  body: string
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -358,6 +451,22 @@ export const api = {
 
   complianceHealth: () => request<ComplianceHealth>('/compliance/health'),
 
+  createRule: (rule: {
+    name: string
+    description?: string
+    condition_tool?: string
+    condition_op?: string
+    condition_risk_level?: string
+    condition_tags?: string[]
+    action: string
+    priority?: number
+    enabled?: boolean
+  }) =>
+    request<PolicyRule>('/policy/rules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    }),
+
   enableRule: (ruleId: string) =>
     request(`/policy/rules/${ruleId}/enable`, { method: 'POST' }),
 
@@ -389,10 +498,18 @@ export const api = {
   listApiKeys: () =>
     request<ApiKeyListResponse>('/api-keys'),
 
-  createApiKey: (name: string, role: string) =>
+  createApiKey: (payload: {
+    name: string
+    role: string
+    department?: string
+    scope_group?: string
+    purpose?: string
+    scope?: string
+    environment?: string
+  }) =>
     request<CreateKeyResponse>('/api-keys', {
       method: 'POST',
-      body: JSON.stringify({ name, role }),
+      body: JSON.stringify(payload),
     }),
 
   revokeApiKey: (keyId: string) =>
@@ -405,6 +522,48 @@ export const api = {
     }),
 
   // ── New tenant provisioning (requires bootstrap secret) ───────────────────
+  listAuditorGrants: () =>
+    request<AuditorGrantListResponse>('/auditors'),
+
+  inviteAuditor: (payload: { auditor_email: string; expires_in_hours?: number; scope_note?: string }) =>
+    request<AuditorInviteResponse>('/auditors/invite', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  revokeAuditorGrant: (keyId: string) =>
+    request<{ key_id?: string; status?: string }>(`/auditors/${keyId}`, { method: 'DELETE' }),
+
+  listConsoleUserInvites: () =>
+    request<{ invites: ConsoleUserInvite[]; count: number }>('/access/user-invites'),
+
+  createConsoleUserInvite: (payload: {
+    email: string
+    role: string
+    department?: string
+    scope?: string
+    expires_in_hours?: number
+  }) =>
+    request<ConsoleUserInviteResponse>('/access/user-invites', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  revokeConsoleUserInvite: (inviteId: string) =>
+    request<{ invite: ConsoleUserInvite; status: string }>(`/access/user-invites/${inviteId}`, { method: 'DELETE' }),
+
+  listDepartmentOwners: () =>
+    request<{ owners: DepartmentOwner[]; count: number }>('/access/department-owners'),
+
+  setDepartmentOwner: (department: string, owner_email: string) =>
+    request<{ owner: DepartmentOwner; status: string }>(`/access/department-owners/${encodeURIComponent(department)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ owner_email }),
+    }),
+
+  deleteDepartmentOwner: (department: string) =>
+    request<{ department: string; status: string }>(`/access/department-owners/${encodeURIComponent(department)}`, { method: 'DELETE' }),
+
   bootstrapTenant: (bootstrapSecret: string, tenantId: string, token: string, name: string, email: string, role = 'admin', plan = 'enterprise') =>
     request<BootstrapKeyResponse>('/admin/bootstrap-api-key', {
       method: 'POST',
@@ -576,7 +735,7 @@ export const api = {
   },
 
   assistantExplain: (type: string, id: string) =>
-    request<{ type: string; id: string; explanation: string }>('/v1/assistant/explain', {
+    request<{ type: string; id: string; explanation: string; suggestion?: AssistantExplainSuggestion; citations?: Citation[] }>('/v1/assistant/explain', {
       method: 'POST',
       body: JSON.stringify({ type, id }),
     }),
@@ -656,6 +815,7 @@ export const api = {
     agent_systems: Array<{
       name: string; agent_type: string; actions: string[]
       data_classes: string[]; external_sinks: string[]; description: string
+      vendor_name?: string; department?: string
     }>
     identity_provider: string
     environments: string[]
@@ -663,6 +823,39 @@ export const api = {
   }) => request<{ profile: OnboardingProfile; next_step: { action: string; description: string } }>(
     '/v1/onboarding/intake', { method: 'POST', body: JSON.stringify(body) }
   ),
+
+  onboardingRegisterRuntime: (body: {
+    runtime_name: string
+    vendor_name?: string
+    vendor_id?: string
+    source_type?: string
+    agent_count?: number
+    department?: string
+    purpose?: string
+    runtime_type?: string
+    requested_access?: string[]
+    connectors?: string[]
+  }) => request<{ runtime: RuntimeRegistration; message: string; next_step: { action: string; description: string } }>(
+    '/v1/onboarding/runtimes', { method: 'POST', body: JSON.stringify(body) }
+  ),
+
+  onboardingListRuntimes: () =>
+    request<{ runtimes: RuntimeRegistration[]; count: number }>('/v1/onboarding/runtimes'),
+
+  onboardingGetRuntime: (runtimeId: string) =>
+    request<{ runtime: RuntimeRegistration }>(`/v1/onboarding/runtimes/${runtimeId}`),
+
+  onboardingReviewRuntime: (runtimeId: string, reviewedBy: string, approved = true, notes?: string) =>
+    request<{ runtime: RuntimeRegistration; message: string }>(`/v1/onboarding/runtimes/${runtimeId}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ reviewed_by: reviewedBy, approved, notes }),
+    }),
+
+  onboardingPromoteRuntime: (runtimeId: string, promotedBy: string, agentId?: string) =>
+    request<{ runtime: RuntimeRegistration; agent?: Record<string, unknown>; message: string }>(
+      `/v1/onboarding/runtimes/${runtimeId}/promote`,
+      { method: 'POST', body: JSON.stringify({ promoted_by: promotedBy, agent_id: agentId }) }
+    ),
 
   onboardingListProfiles: () =>
     request<{ profiles: OnboardingProfile[]; count: number }>('/v1/onboarding/profiles'),
@@ -711,6 +904,61 @@ export const api = {
       `/v1/onboarding/profiles/${id}/expansion`
     ),
 
+  // â”€â”€ Fleet reconciliation / operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  reconciliationImportInventory: (body: {
+    source_system: string
+    vendor_name?: string
+    vendor_id?: string
+    source_type?: string
+    department?: string
+    cohort_mode?: string
+    posture?: string
+    inventory: Array<{
+      name: string
+      vendor?: string
+      vendor_name?: string
+      vendor_id?: string
+      department?: string
+      scope?: string
+      action?: string
+      runtime_type?: string
+      agent_id?: string
+      connectors?: string[]
+    }>
+  }) => request<{ batch: ReconciliationBatch; next_step: { action: string; description: string } }>(
+    '/v1/operations/reconciliation/import', { method: 'POST', body: JSON.stringify(body) }
+  ),
+
+  reconciliationListBatches: () =>
+    request<{ batches: ReconciliationBatch[]; count: number }>('/v1/operations/reconciliation'),
+
+  reconciliationGetBatch: (batchId: string) =>
+    request<{ batch: ReconciliationBatch }>(`/v1/operations/reconciliation/${batchId}`),
+
+  reconciliationHoldBatch: (batchId: string, actor: string, notes?: string) =>
+    request<{ batch: ReconciliationBatch; message: string }>(`/v1/operations/reconciliation/${batchId}/hold`, {
+      method: 'POST',
+      body: JSON.stringify({ actor, action: 'hold', notes }),
+    }),
+
+  reconciliationMergeBatch: (batchId: string, actor: string, notes?: string) =>
+    request<{ batch: ReconciliationBatch; merged: number }>(`/v1/operations/reconciliation/${batchId}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ actor, action: 'merge', notes }),
+    }),
+
+  reconciliationPromoteBatch: (batchId: string, actor: string, notes?: string) =>
+    request<{ batch: ReconciliationBatch; promoted: number }>(`/v1/operations/reconciliation/${batchId}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({ actor, action: 'promote', notes }),
+    }),
+
+  reconciliationRowAction: (batchId: string, rowKey: string, actor: string, action: string, notes?: string) =>
+    request<{ batch: ReconciliationBatch; row: ReconciliationRow }>(`/v1/operations/reconciliation/${batchId}/rows/${rowKey}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ actor, action, notes }),
+    }),
+
   killSwitchStatus: () =>
     request<{ active: boolean; tenant_id: string; reason?: string; activated_at?: string; activated_by?: string }>(
       '/settings/kill-switch'
@@ -752,6 +1000,7 @@ export interface OnboardingProfile {
   agent_systems: Array<{
     name: string; agent_type: string; actions: string[]
     data_classes: string[]; external_sinks: string[]; description: string
+    vendor_name?: string; department?: string
   }>
 }
 
@@ -843,4 +1092,69 @@ export interface OnboardingExpansionSignal {
   evidence: Record<string, unknown>
   recommended_action: string
   detected_at: string
+}
+
+export interface RuntimeRegistration {
+  runtime_id: string
+  tenant_id: string
+  runtime_name: string
+  vendor_name: string
+  vendor_id: string
+  source_type: string
+  agent_count: number
+  department: string
+  purpose: string
+  runtime_type: string
+  requested_access: string[]
+  connectors: string[]
+  governance_mode: 'shadow' | 'governed'
+  status: string
+  review_status: string
+  risk_score: number
+  risk_tier: string
+  policy_simulation: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  reviewed_at?: string
+  reviewed_by?: string
+  promoted_at?: string
+  promoted_by?: string
+  promoted_agent_id?: string
+}
+
+export interface ReconciliationRow {
+  row_key: string
+  name: string
+  vendor: string
+  vendor_id: string
+  department: string
+  scope: string
+  action: string
+  runtime_type: string
+  connectors: string[]
+  status: string
+  risk: string
+  matched_agent_id?: string | null
+  comparison?: Record<string, unknown>
+  selected?: boolean
+  audit?: Array<{ action: string; actor: string; notes: string; time: string }>
+}
+
+export interface ReconciliationBatch {
+  batch_id: string
+  source_system: string
+  vendor_name: string
+  vendor_id: string
+  source_type: string
+  department: string
+  cohort_mode: string
+  posture: string
+  rows: ReconciliationRow[]
+  missing: Array<Record<string, unknown>>
+  summary: Record<string, unknown>
+  selected_row_key?: string | null
+  selected_batch?: string | null
+  status: string
+  created_at: string
+  updated_at: string
 }

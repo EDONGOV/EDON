@@ -26,6 +26,7 @@ from ..logging_config import get_logger
 from ..persistence import get_db
 from ..tenant_knowledge import build_tenant_knowledge_snapshot, render_tenant_knowledge_snapshot
 from ..tenancy import get_request_tenant_id
+from ..middleware.rbac import check_permission
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/v1/assistant", tags=["assistant"])
@@ -34,6 +35,21 @@ _MODEL         = "claude-sonnet-4-6"
 _MAX_TOKENS    = 2048
 _MAX_TOOL_ROUNDS = 8
 _ANTHROPIC_API = "https://api.anthropic.com/v1"
+
+
+_ADMIN_CHAT_ROLES = {"admin", "super_admin", "governance_admin", "security_admin"}
+
+
+def _require_admin_chat_access(request: Request) -> dict[str, Any]:
+    tenant_info = getattr(request.state, "tenant_info", None) or {}
+    if not tenant_info:
+        raise HTTPException(status_code=401, detail="Tenant context required")
+    role = tenant_info.get("role", "viewer")
+    if role not in _ADMIN_CHAT_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not check_permission(tenant_info, "admin") and role not in _ADMIN_CHAT_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return tenant_info
 
 
 # ── Read tools ─────────────────────────────────────────────────────────────────
@@ -408,6 +424,67 @@ def _tool_explain_decision(args: dict, tenant_id: str) -> dict:
         return {"error": str(exc)}
 
 
+def _build_reasoning_suggestion(item_type: str, raw: dict) -> dict:
+    """Return a short, deterministic next-step suggestion for the reasoning drawer."""
+    if raw.get("error"):
+        return {
+            "title": "Check the source item",
+            "body": "The underlying record could not be loaded cleanly. Refresh the item or review the tenant data behind this view.",
+        }
+
+    if item_type == "decision":
+        verdict = str(raw.get("verdict") or "").upper()
+        reason = str(raw.get("reason_code") or raw.get("explanation") or "").strip()
+        if verdict == "BLOCK":
+            return {
+                "title": "Review the blocked path",
+                "body": f"Confirm the agent scope and policy rule that triggered the block. {reason or 'If the decision looks too strict, adjust the rule or narrow the action.'}",
+            }
+        if verdict in ("ESCALATE", "PAUSE"):
+            return {
+                "title": "Route to human review",
+                "body": f"Keep this action under review until the reviewer clears the invariant checks. {reason or 'If this is expected, tighten the approval path rather than widening execution.'}",
+            }
+        return {
+            "title": "Keep monitoring this flow",
+            "body": "The action was allowed, but it still merits trend monitoring if the same path starts drifting or blocking more often.",
+        }
+
+    if item_type == "agent":
+        block_rate = float(raw.get("block_rate_pct") or 0)
+        if block_rate >= 20:
+            return {
+                "title": "Inspect the agent scope",
+                "body": f"This agent is blocking at {block_rate:.1f}%. Review its allowed actions, connected systems, and department assignment before widening access.",
+            }
+        if block_rate >= 10:
+            return {
+                "title": "Watch for drift",
+                "body": f"This agent is blocking at {block_rate:.1f}%. Keep an eye on recent blocks and escalations before changing its permissions.",
+            }
+        return {
+            "title": "Keep the current posture",
+            "body": "The agent looks stable. Recheck it only if its block rate, escalations, or last-seen activity start moving the wrong way.",
+        }
+
+    # policy rule
+    action = str(raw.get("action") or "").upper()
+    if action == "BLOCK":
+        return {
+            "title": "Keep the rule, watch the exceptions",
+            "body": "This rule is enforcing a hard boundary. Review it only if the same workflow is producing too many false positives or manual overrides.",
+        }
+    if action == "ESCALATE":
+        return {
+            "title": "Confirm the approval chain",
+            "body": "This rule is intentionally routing activity to humans. Make sure the reviewer path, timing, and escalation owner still match the clinical workflow.",
+        }
+    return {
+        "title": "Monitor the rule trend",
+        "body": "This rule is low-friction right now. Keep it under review if related workflows begin to drift or trigger more blocks.",
+    }
+
+
 # ── Suggest tool ───────────────────────────────────────────────────────────────
 
 _PENDING_PROPOSALS: dict[str, dict] = {}  # write-through cache; keyed by proposal_id
@@ -592,10 +669,13 @@ You have two modes:
 Key rules:
 - Scope: You only see data for this tenant. Never reference other tenants.
 - Accuracy: Always fetch data with tools before answering stats questions. Never invent numbers from memory.
+- Citations: If you answer with numbers, rates, status claims, or rule/agent references drawn from tools, include inline citations for the specific facts.
 - Suggestions: When proposing a rule, be specific about tool, operation, and action. Include the relevant regulation.
 - Tone: Clear, direct, non-technical language. Avoid jargon. The user may be a compliance officer, not an engineer.
 - If asked to do something you can't (e.g. delete an agent, change billing), say so clearly.
 - Use the agent names and departments you know about this tenant — refer to agents by name, not just ID.
+- When the question is about how to use the console, explain the exact page, button, field, or workflow step in the current tenant UI.
+- Treat the page_context and tenant knowledge snapshot as the source of truth for what the user can currently see.
 
 INLINE CITATIONS: When your answer references a specific decision, agent, or policy rule that you fetched from a tool, embed a citation tag inline so users can click to highlight it in the console. Format exactly: [ref:TYPE:ID]
 - Decisions / audit events: [ref:DECISION:action_id_here]
@@ -790,6 +870,8 @@ class ChatRequest(BaseModel):
 
 class ApplyRequest(BaseModel):
     proposal: dict
+    approved_by: Optional[str] = None
+    review_status: str = "approved"
 
 
 class ExplainRequest(BaseModel):
@@ -998,7 +1080,8 @@ async def assistant_chat_stream(req: ChatRequest, request: Request):
 
     Events: {"delta": "text"} incremental tokens, then {"done": true, ...} metadata.
     """
-    tenant_id = get_request_tenant_id(request)
+    tenant_info = _require_admin_chat_access(request)
+    tenant_id = tenant_info.get("tenant_id") or get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
     if not req.message.strip():
@@ -1051,7 +1134,8 @@ async def assistant_chat(req: ChatRequest, request: Request):
     Returns an answer (Mode 1) or an answer + suggestion card (Mode 2).
     Pass prior turns in `conversation` for multi-turn context.
     """
-    tenant_id = get_request_tenant_id(request)
+    tenant_info = _require_admin_chat_access(request)
+    tenant_id = tenant_info.get("tenant_id") or get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
     if not req.message.strip():
@@ -1193,9 +1277,12 @@ async def assistant_apply(req: ApplyRequest, request: Request):
 
     The tenant must explicitly call this — the assistant never applies changes directly.
     """
-    tenant_id = get_request_tenant_id(request)
+    tenant_info = _require_admin_chat_access(request)
+    tenant_id = tenant_info.get("tenant_id") or get_request_tenant_id(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Tenant context required")
+    if req.review_status != "approved":
+        raise HTTPException(status_code=403, detail="Assistant proposals require explicit admin approval")
 
     proposal = req.proposal
     if not proposal or not proposal.get("type"):
@@ -1222,6 +1309,34 @@ async def assistant_apply(req: ApplyRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
     logger.info("[assistant] applied proposal type=%s tenant=%s", proposal.get("type"), tenant_id)
+    try:
+        get_db().save_audit_event(
+            action={
+                "action_id": f"assistant_apply_{proposal.get('proposal_id') or uuid.uuid4().hex[:12]}",
+                "tool": "assistant",
+                "op": "apply_proposal",
+                "params": {
+                    "proposal_id": proposal.get("proposal_id"),
+                    "type": proposal.get("type"),
+                    "approved_by": req.approved_by or tenant_info.get("email") or tenant_info.get("role"),
+                },
+                "source": "console",
+                "estimated_risk": "high",
+            },
+            decision={
+                "verdict": "ALLOW",
+                "reason_code": "ASSISTANT_ADMIN_APPROVED",
+                "explanation": "Assistant proposal applied only after explicit admin approval.",
+                "policy_version": "assistant-safety-v1",
+            },
+            intent_id=None,
+            agent_id="console_assistant",
+            context={"tenant_id": tenant_id, "proposal": proposal},
+            customer_id=tenant_id,
+            user_message="Assistant proposal applied by admin.",
+        )
+    except Exception as exc:
+        logger.warning("[assistant] apply audit failed tenant=%s: %s", tenant_id, exc)
     return result
 
 
@@ -1266,9 +1381,15 @@ async def assistant_explain(req: ExplainRequest, request: Request):
         )
 
     try:
-        answer, _, _ = await _run_assistant(prompt, tenant_id, [])
+        answer, _, citations = await _run_assistant(prompt, tenant_id, [])
     except Exception as exc:
         logger.error("[assistant] explain error tenant=%s type=%s id=%s: %s", tenant_id, item_type, req.id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return {"type": item_type, "id": req.id, "explanation": answer}
+    return {
+        "type": item_type,
+        "id": req.id,
+        "explanation": answer,
+        "suggestion": _build_reasoning_suggestion(item_type, raw),
+        "citations": citations,
+    }
