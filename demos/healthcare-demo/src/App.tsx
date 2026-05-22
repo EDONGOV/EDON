@@ -927,7 +927,7 @@ interface HCOnboardingSnapshot {
   agentDrafts: { name: string; phi: boolean; autonomous: boolean; actions: string[] }[]
 }
 
-function HCOnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; onLogout: () => void }) {
+export function HCOnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; onLogout: () => void }) {
   const saved = loadStoredJSON<Partial<HCOnboardingSnapshot>>(HC_ONBOARDING_STORAGE_KEY, {})
   const [screen, setScreen]       = useState(() => saved.screen ?? 1)
   const [msgs, setMsgs]           = useState<HCOBMsg[]>([])
@@ -1739,13 +1739,18 @@ function HCOnboardingScreen({ onComplete, onLogout }: { onComplete: () => void; 
 function HealthcareAccessGate({ onEnter }: { onEnter: () => void }) {
   const [name, setName]       = useState('Avery Brooks')
   const [dept, setDept]       = useState('Clinical AI Lead')
-  const [key, setKey]         = useState('edon_demo_st_mercy')
-  const [showKey, setShowKey] = useState(false)
+  const [key, setKey]         = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState('')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim() || !dept.trim() || !key.trim()) return
+    if (key.trim() !== 'edon-300000') {
+      setError('Enter the demo passcode to continue.')
+      return
+    }
+    setError('')
     setLoading(true)
     setTimeout(() => { setLoading(false); onEnter() }, 800)
   }
@@ -1860,17 +1865,14 @@ function HealthcareAccessGate({ onEnter }: { onEnter: () => void }) {
             </div>
 
             <div>
-              <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Demo Access Key</label>
+              <label className="text-xs text-muted-foreground mb-1.5 block font-medium">Demo Passcode</label>
               <div className="relative">
-                <input type={showKey ? 'text' : 'password'} value={key} onChange={e => setKey(e.target.value)}
+                <input type="password" value={key} onChange={e => setKey(e.target.value)}
                   className="w-full px-3 py-2.5 pr-10 rounded-xl bg-muted/40 border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                  placeholder="edon_demo_…" required />
-                <button type="button" onClick={() => setShowKey(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                  {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
+                  placeholder="Enter passcode" autoComplete="off" required />
               </div>
-              <p className="text-[11px] text-muted-foreground/50 mt-1">Any non-empty value · This is a demo environment.</p>
+              <p className="text-[11px] text-muted-foreground/50 mt-1">Use the demo passcode to unlock the healthcare simulation.</p>
+              {error && <p className="mt-1 text-[11px] text-red-400">{error}</p>}
             </div>
 
             <button type="submit" disabled={loading}
@@ -3506,7 +3508,7 @@ function AgentsTab({ deptModes }: AgentsTabProps) {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-white/[0.06] bg-black/20 p-3 space-y-2">
+              <div className="rounded-xl border border-white/[0.06] bg-black/20 p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-white">Recent registrations</p>
                   <span className="text-[10px] uppercase tracking-widest text-muted-foreground/60">{registerLedger.length} queued</span>
@@ -8289,7 +8291,7 @@ function SettingsTabHC() {
 
       <div className={cn(
         'grid grid-cols-1 gap-4 items-start',
-        settingsPanel === 'credentials' ? 'xl:grid-cols-[1.1fr_.9fr]' : 'xl:grid-cols-1',
+        settingsPanel === 'credentials' ? 'xl:grid-cols-1' : 'xl:grid-cols-1',
         settingsPanel === 'credentials' || settingsPanel === 'governance' || settingsPanel === 'gateway' || settingsPanel === 'security' || settingsPanel === 'support' ? '' : 'hidden',
       )}>
         <div className="space-y-4">
@@ -8304,50 +8306,52 @@ function SettingsTabHC() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="rounded-xl border border-white/[0.06] bg-black/20 p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">Current credential</span>
+                  <span className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground/70">Current credential</span>
                   <button
                     onClick={() => setShowSecret(v => !v)}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/8 bg-white/[0.03] px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground"
                   >
                     {showSecret ? <EyeOff size={11} /> : <Eye size={11} />}
                     {showSecret ? 'Hide' : 'Show'}
                   </button>
                 </div>
-                <code className="block rounded-lg border border-white/8 bg-black/30 px-3 py-2 text-xs font-mono break-all text-white/90">
+                <code className="block rounded-lg border border-white/10 bg-black/30 px-3 py-3 text-[11px] leading-5 font-mono break-all text-white/90">
                   {showSecret ? selectedCredential.secret : selectedCredential.secret.replace(/.(?=.{4})/g, '•')}
                 </code>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={() => copyText('Credential copied', selectedCredential.secret)} className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/15">
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => copyText('Credential copied', selectedCredential.secret)} className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15">
                     Copy credential
                   </button>
-                  <button onClick={rotateCredential} className="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
+                  <button onClick={rotateCredential} className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
                     Rotate
                   </button>
-            <button onClick={revokeCredential} className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/15">
+                  <button onClick={revokeCredential} className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-300 hover:bg-red-500/15">
                     Revoke
                   </button>
-                  <button onClick={deleteDepartmentCredential} className="rounded-lg border border-red-500/30 bg-red-500/15 px-3 py-1.5 text-xs text-red-200 hover:bg-red-500/25">
+                  <button onClick={deleteDepartmentCredential} className="rounded-lg border border-red-500/30 bg-red-500/15 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/25">
                     Delete department
                   </button>
                 </div>
-                <p className="text-[11px] text-muted-foreground/60">Admin-issued only. Human login stays SSO / invite based. Runtime exchanges into short-lived execution tokens.</p>
+                <p className="text-[11px] leading-5 text-muted-foreground/70">
+                  Admin-issued only. Human login stays SSO / invite based. Runtime exchanges into short-lived execution tokens.
+                </p>
                 <button
                   onClick={() => copyText('Diagnostics copied', diagnostics.map(([l, v]) => `${l}: ${v}`).join('\\n'))}
-                  className="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
                 >
                   Copy diagnostics
                 </button>
               </div>
 
-              <div className="rounded-xl border border-white/[0.06] bg-black/20 p-3 space-y-2">
+              <div className="rounded-xl border border-white/[0.06] bg-black/20 p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">Credential details</span>
+                  <span className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground/70">Credential details</span>
                   <span className="text-[11px] text-muted-foreground/60">Last used {selectedCredential.lastUsed}</span>
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   {[
                     ['Type', selectedCredential.type],
                     ['Owner', selectedCredential.owner],
@@ -8359,9 +8363,9 @@ function SettingsTabHC() {
                     ['Expires', selectedCredential.expiresAt],
                     ['Granted by', selectedCredential.grantedBy],
                   ].map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.05] bg-white/[0.03] px-3 py-2 text-xs">
-                      <span className="text-muted-foreground">{label}</span>
-                      <span className="font-medium text-white text-right">{value}</span>
+                    <div key={label} className="flex items-start justify-between gap-3 rounded-lg border border-white/[0.05] bg-white/[0.03] px-3 py-2.5 text-xs">
+                      <span className="shrink-0 text-muted-foreground">{label}</span>
+                      <span className="max-w-[60%] text-right font-medium leading-5 text-white">{value}</span>
                     </div>
                   ))}
                 </div>
@@ -8572,10 +8576,9 @@ interface TopNavProps {
   lockdown: boolean
   onLockdown: () => void
   pendingReviewCount: number
-  onRestartOnboarding: () => void
 }
 
-function TopNav({ activeTab, setActiveTab, lockdown, onLockdown, pendingReviewCount, onRestartOnboarding }: TopNavProps) {
+function TopNav({ activeTab, setActiveTab, lockdown, onLockdown, pendingReviewCount }: TopNavProps) {
   return (
     <header className="sticky top-0 z-40 border-b border-border/50 bg-background/80 backdrop-blur-xl">
       {lockdown && (
@@ -8660,14 +8663,6 @@ function TopNav({ activeTab, setActiveTab, lockdown, onLockdown, pendingReviewCo
             title={lockdown ? 'Lockdown active — click to lift' : 'Emergency lockdown'}>
             <AlertTriangle size={13} />
           </button>
-
-          <button
-            onClick={onRestartOnboarding}
-            className="flex items-center justify-center w-8 h-8 rounded-lg border border-border/60 bg-secondary/60 text-muted-foreground/60 hover:text-foreground hover:bg-secondary transition-colors"
-            title="Restart onboarding"
-          >
-            <RefreshCw size={13} />
-          </button>
         </div>
       </div>
     </header>
@@ -8678,7 +8673,7 @@ function TopNav({ activeTab, setActiveTab, lockdown, onLockdown, pendingReviewCo
 
 export default function App() {
   const [entered, setEntered] = useState(false)
-  const [onboarded, setOnboarded] = useState(() => localStorage.getItem('hc_demo_ob') !== '0')
+  const onboarded = true
   const [demoRuntimeMode, setDemoRuntimeMode] = useState<'sandbox' | 'live'>('sandbox')
   const [demoModeConfirm, setDemoModeConfirm] = useState<null | 'enable-live' | 'return-sandbox'>(null)
   const [deptModes, setDeptModes] = useState<Record<string, 'sandbox' | 'governed'>>(() => {
@@ -8752,14 +8747,6 @@ export default function App() {
     setPaused(false)
   }, [])
 
-  const handleRestartOnboarding = useCallback(() => {
-    localStorage.setItem('hc_demo_ob', '0')
-    setOnboarded(false)
-    setActiveTab('dashboard')
-    setChatOpen(false)
-    setAside(null)
-  }, [])
-
   const confirmDemoModeChange = useCallback(() => {
     if (demoModeConfirm === 'enable-live') setDemoRuntimeMode('live')
     if (demoModeConfirm === 'return-sandbox') setDemoRuntimeMode('sandbox')
@@ -8789,18 +8776,6 @@ export default function App() {
     return <HealthcareAccessGate onEnter={() => setEntered(true)} />
   }
 
-  if (!onboarded) {
-    return (
-      <HCOnboardingScreen
-        onComplete={() => {
-          localStorage.setItem('hc_demo_ob', '1')
-          setOnboarded(true)
-        }}
-        onLogout={() => setEntered(false)}
-      />
-    )
-  }
-
   return (
     <AsideCtx.Provider value={{ open: (item) => setAside(item as AsideItem) }}>
     <div className="min-h-screen bg-background">
@@ -8825,7 +8800,7 @@ export default function App() {
         </span>
       </button>
 
-      <TopNav activeTab={activeTab} setActiveTab={setActiveTab} lockdown={lockdown} onLockdown={() => lockdown ? setLockdown(false) : setLockdownConfirm(true)} pendingReviewCount={pendingReviewCount} onRestartOnboarding={handleRestartOnboarding} />
+      <TopNav activeTab={activeTab} setActiveTab={setActiveTab} lockdown={lockdown} onLockdown={() => lockdown ? setLockdown(false) : setLockdownConfirm(true)} pendingReviewCount={pendingReviewCount} />
 
       {/* Lockdown banner */}
       <AnimatePresence>
@@ -9110,6 +9085,9 @@ export default function App() {
     </AsideCtx.Provider>
   )
 }
+
+
+
 
 
 
